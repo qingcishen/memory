@@ -130,7 +130,7 @@ await mem.forgettable(0.05, { purge: true });
 | `src/retrieve.js` | 加权检索 + 命中强化 + 显式翻旧账(superseded 链) + 注入格式化 |
 | `src/reflect.js` | 反思总结 + 遗忘 |
 | `src/dedup.js` | 去重指纹 (M7, 纯逻辑): 反复说同一件事 → 强化而非新增 |
-| `src/state/affect.js` | 关系-情感状态机 (M1): 心情/关系状态, 随时间回落 + 随对话更新 |
+| `src/state/affect.js` | 关系-情感状态机 (M1): 心情/关系状态, 随时间回落 + 随对话更新; 显著变化写入历史轨迹 |
 | `src/engine/` | 自研激活引擎 (M2): `activation`(ACT-R+心情门控) / `vector-index` / `graph`(扩散) / `index`(门面) |
 | `src/memory/reconsolidate.js` | 重构性记忆 (M3): 想起时按当下情绪重写情感层, 永不改 fact_core |
 | `src/persona.js` / `src/narrative.js` | self 人格域隔离 / dyad 共同记忆 + 关系叙事 (M4) |

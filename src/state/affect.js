@@ -126,6 +126,77 @@ export function inferHeuristicDeltas(turns = []) {
   return d;
 }
 
+/** 两个状态之间的总变化幅度 (各字段绝对差之和)。用于判断是否值得记一条历史快照。 */
+export function stateDelta(before, after) {
+  const a = clampState(before);
+  const b = clampState(after);
+  let sum = 0;
+  for (const f of MOOD_FIELDS) sum += Math.abs(b.mood[f] - a.mood[f]);
+  for (const f of REL_FIELDS) sum += Math.abs(b.relationship[f] - a.relationship[f]);
+  return sum;
+}
+
+/** 给"从 before 到 after 这次变化"贴一个事件标签 (吵架/和好/变亲密…), 取动得最猛的方向。 */
+export function labelStateEvent(before, after) {
+  const a = clampState(before);
+  const b = clampState(after);
+  const dRepair = b.relationship.repair_debt - a.relationship.repair_debt;
+  const dTension = b.relationship.tension - a.relationship.tension;
+  const dCloseness = b.relationship.closeness - a.relationship.closeness;
+  const dValence = b.mood.valence - a.mood.valence;
+
+  if (dRepair > 0.1 && dTension > 0.05) return '吵架';
+  if (dRepair < -0.15) return '和好';
+  if (dCloseness > 0.08) return '变亲密';
+  if (dValence > 0.2) return '开心';
+  if (dValence < -0.2) return '低落';
+  return null;
+}
+
+/**
+ * 概括一段状态历史的走向 (纯逻辑)。history 按时间升序 (最早在前)。
+ * @returns { points, span, closenessTrend, trustTrend, peakTension, repairs, first, last }
+ */
+export function summarizeTrajectory(history = []) {
+  const pts = (history ?? [])
+    .map((h) => clampState(h))
+    .map((h, i) => ({ ...h, created_at: history[i].created_at }));
+  if (pts.length === 0) return { points: 0 };
+
+  const first = pts[0];
+  const last = pts[pts.length - 1];
+  let peakTension = 0;
+  let repairs = 0;
+  for (let i = 0; i < pts.length; i++) {
+    peakTension = Math.max(peakTension, pts[i].relationship.tension);
+    if (i > 0 && pts[i].relationship.repair_debt < pts[i - 1].relationship.repair_debt - 0.15) repairs++;
+  }
+  return {
+    points: pts.length,
+    span: { from: first.created_at ?? null, to: last.created_at ?? null },
+    closenessTrend: trend(first.relationship.closeness, last.relationship.closeness),
+    trustTrend: trend(first.relationship.trust, last.relationship.trust),
+    peakTension,
+    repairs,
+    first,
+    last,
+  };
+}
+
+/** 把轨迹概括拼成一句可读的中文 (给关系叙事/调试用)。 */
+export function formatTrajectory(summary) {
+  if (!summary || !summary.points) return '';
+  const map = { rising: '渐渐', falling: '有所', flat: '基本' };
+  const parts = [];
+  if (summary.closenessTrend === 'rising') parts.push('越来越亲近');
+  else if (summary.closenessTrend === 'falling') parts.push('比从前疏远了些');
+  if (summary.trustTrend === 'rising') parts.push('信任在加深');
+  else if (summary.trustTrend === 'falling') parts.push('信任有过动摇');
+  if (summary.repairs > 0) parts.push(`一起走过 ${summary.repairs} 次和好`);
+  if (summary.peakTension > 0.6) parts.push('中间有过激烈的争执');
+  return parts.length ? `关系走向: ${parts.join(', ')}。` : '';
+}
+
 /** 给状态一个可读标签, 便于注入 prompt / 调试 (M2 会正经用到)。 */
 export function moodLabel(state) {
   const { mood, relationship } = clampState(state);
@@ -148,6 +219,12 @@ function decayToward(value, baseline, hours, halfLife) {
   if (halfLife == null || !(hours > 0)) return value; // null = 不随时间衰减
   const factor = Math.pow(0.5, hours / halfLife);
   return baseline + (value - baseline) * factor;
+}
+/** 比较首尾值给出趋势标签。 */
+function trend(from, to, eps = 0.05) {
+  if (to - from > eps) return 'rising';
+  if (from - to > eps) return 'falling';
+  return 'flat';
 }
 
 // ============================================================
@@ -176,6 +253,28 @@ export async function writeState(userId, state) {
     );
   if (error) throw error;
   return s;
+}
+
+/** 往状态历史表追加一条快照 (带可选事件标签)。 */
+export async function appendStateHistory(userId, state, event = null) {
+  const s = clampState(state);
+  const { error } = await supabase
+    .from('affective_state_history')
+    .insert({ user_id: userId, mood: s.mood, relationship: s.relationship, event });
+  if (error) throw error;
+}
+
+/** 读状态历史 (默认按时间升序, 最早在前, 便于直接喂 summarizeTrajectory)。 */
+export async function readStateHistory(userId, opts = {}) {
+  let q = supabase
+    .from('affective_state_history')
+    .select('mood, relationship, event, created_at')
+    .eq('user_id', userId);
+  if (opts.since) q = q.gte('created_at', new Date(opts.since).toISOString());
+  q = q.order('created_at', { ascending: false }).limit(opts.limit ?? 50);
+  const { data, error } = await q;
+  if (error) throw error;
+  return (data ?? []).reverse(); // 反转成升序
 }
 
 /** 读 → 按距上次更新的时长向基线回落 → 落库。供"无对话时"的定时调用。 */
@@ -207,7 +306,14 @@ export async function updateFromTurn(userId, turns, opts = {}) {
 
   const after = applyDeltas(decayed, deltas);
   await writeState(userId, after);
-  return { before: cur, after, deltas };
+
+  // 状态有显著变化才记一条历史快照 (轨迹给关系叙事/情感锚审计用)。
+  let snapshot = false;
+  if (opts.history !== false && stateDelta(cur, after) >= PARAMS.state.snapshotMinDelta) {
+    await appendStateHistory(userId, after, labelStateEvent(cur, after)).catch(() => {});
+    snapshot = true;
+  }
+  return { before: cur, after, deltas, snapshot };
 }
 
 /**

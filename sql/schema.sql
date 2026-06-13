@@ -75,6 +75,18 @@ create table if not exists affective_state (
   updated_at   timestamptz not null default now()
 );
 
+-- 状态历史 (feature/state-history): affective_state 只存"当下", 这张表存"轨迹"。
+-- 关系叙事(M4)与情感锚审计要看演变 —— 状态有显著变化时追加一条快照 (见 src/state/affect.js)。
+create table if not exists affective_state_history (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      text not null,
+  mood         jsonb not null,
+  relationship jsonb not null,
+  event        text,                                  -- 触发这次快照的简述: 吵架/和好/变亲密...
+  created_at   timestamptz not null default now()
+);
+create index if not exists affective_history_idx on affective_state_history (user_id, created_at desc);
+
 -- ------------------------------------------------------------
 --  M5 · 预期记忆 (见 docs/DEVELOPMENT.md M5, 招牌④)
 --  面向未来: "你上次说今天面试, 怎么样了?" —— 她主动在未来某刻/某线索把事捞回来。

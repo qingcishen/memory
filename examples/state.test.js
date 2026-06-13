@@ -10,6 +10,10 @@ import {
   applyDeltas,
   inferHeuristicDeltas,
   moodLabel,
+  stateDelta,
+  labelStateEvent,
+  summarizeTrajectory,
+  formatTrajectory,
 } from '../src/state/affect.js';
 import { PARAMS } from '../src/params.js';
 
@@ -99,6 +103,38 @@ console.log('decayState (无输入时 mood 向基线回落)');
   ok('closeness 不随时间衰减 (黏着)', longAfter.relationship.closeness === excited.relationship.closeness);
   ok('repair_debt 不随时间消失 (只和好才清)', longAfter.relationship.repair_debt === excited.relationship.repair_debt);
   ok('tension 随时间缓和但比 mood 慢', longAfter.relationship.tension < excited.relationship.tension);
+}
+
+console.log('stateDelta / labelStateEvent (历史快照触发与事件标签)');
+{
+  const base = defaultState();
+  ok('相同状态 delta=0', stateDelta(base, base) === 0);
+  const fought = applyDeltas(base, inferHeuristicDeltas([{ role: 'user', content: '我很生气, 太失望了' }]));
+  ok('吵架后 delta 明显 > 0', stateDelta(base, fought) > 0.3);
+  ok('吵架被标为"吵架"', labelStateEvent(base, fought) === '吵架');
+  const reconciled = applyDeltas(fought, inferHeuristicDeltas([{ role: 'user', content: '对不起, 我错了, 和好吧' }]));
+  ok('和好被标为"和好"', labelStateEvent(fought, reconciled) === '和好');
+  ok('微小变化无事件标签', labelStateEvent(base, applyDeltas(base, { mood: { valence: 0.01 } })) === null);
+}
+
+console.log('summarizeTrajectory / formatTrajectory (关系走向)');
+{
+  ok('空历史 points=0', summarizeTrajectory([]).points === 0);
+  const history = [
+    { mood: { valence: 0, arousal: 0.3 }, relationship: { closeness: 0.4, tension: 0.1, repair_debt: 0, trust: 0.4 }, created_at: '2026-01-01' },
+    { mood: { valence: -0.5, arousal: 0.8 }, relationship: { closeness: 0.4, tension: 0.7, repair_debt: 0.6, trust: 0.4 }, created_at: '2026-02-01' },
+    { mood: { valence: 0.3, arousal: 0.3 }, relationship: { closeness: 0.6, tension: 0.2, repair_debt: 0.0, trust: 0.6 }, created_at: '2026-03-01' },
+  ];
+  const s = summarizeTrajectory(history);
+  ok('统计到 3 个点', s.points === 3);
+  ok('亲密度上升趋势', s.closenessTrend === 'rising');
+  ok('信任上升趋势', s.trustTrend === 'rising');
+  ok('捕捉到紧张峰值', s.peakTension >= 0.7);
+  ok('数到 1 次和好 (repair_debt 大幅回落)', s.repairs === 1);
+  const txt = formatTrajectory(s);
+  ok('轨迹文本提到越来越亲近', txt.includes('亲近'));
+  ok('轨迹文本提到争执', txt.includes('争执'));
+  ok('空轨迹 → 空串', formatTrajectory(summarizeTrajectory([])) === '');
 }
 
 console.log(`\nM1 全部 ${passed} 条断言通过 ✅`);

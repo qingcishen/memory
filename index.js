@@ -32,10 +32,16 @@ export {
   applyDeltas,
   inferHeuristicDeltas,
   moodLabel,
+  stateDelta,
+  labelStateEvent,
+  summarizeTrajectory,
+  formatTrajectory,
   readState,
   writeState,
   updateFromTurn,
   decayToBaseline,
+  appendStateHistory,
+  readStateHistory,
 } from './src/state/affect.js';
 export {
   rankCandidates,
