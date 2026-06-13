@@ -7,7 +7,7 @@ import {
   formatSupersededTrailForPrompt,
 } from './retrieve.js';
 import { runReflection, findForgettable } from './reflect.js';
-import { readState, updateFromTurn, decayToBaseline, moodLabel } from './state/affect.js';
+import { readState, updateFromTurn, decayToBaseline, moodLabel, readStateHistory } from './state/affect.js';
 import { engineRecall } from './engine/index.js';
 import { reconsolidateOnRecall, reconsolidateRecent } from './memory/reconsolidate.js';
 import { seedPersona, personaBlock } from './persona.js';
@@ -75,6 +75,11 @@ export class Memory {
   /** 当前心情的可读标签 (开心 / 平静 / 低落 / 受伤·闹脾气) */
   async mood() {
     return moodLabel(await readState(this.userId));
+  }
+
+  /** 读关系状态的历史轨迹 (升序); 关系叙事与情感锚审计的依据。 */
+  async stateHistory(opts = {}) {
+    return readStateHistory(this.userId, opts);
   }
 
   /** 定时 (如每隔几小时) 调用: 心情随时间向基线回落, 没有对话也"消气" */

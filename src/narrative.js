@@ -10,6 +10,7 @@
 
 import { supabase, llm, LLM_MODEL, PARAMS } from './config.js';
 import { embed } from './embeddings.js';
+import { readStateHistory, summarizeTrajectory, formatTrajectory } from './state/affect.js';
 
 // ---- 纯逻辑 ----
 
@@ -28,12 +29,16 @@ export function pickDyadBackdrop(mems, n = 1) {
     .slice(0, Math.max(0, n));
 }
 
-/** 把 dyad 记忆 + 状态拼成给 LLM 合成"我们的故事"的输入文本 (可单测格式)。 */
-export function composeNarrativeInput(dyadMems, state) {
+/**
+ * 把 dyad 记忆 + 当前状态 + (可选)历史轨迹拼成给 LLM 合成"我们的故事"的输入文本 (可单测格式)。
+ * @param trajectory summarizeTrajectory(history) 的结果, 给则附一行关系走向。
+ */
+export function composeNarrativeInput(dyadMems, state, trajectory = null) {
   const events = (dyadMems ?? []).map((m) => `- ${m.fact_core || m.content}${m.narrative ? ` (${m.narrative})` : ''}`);
   const rel = state?.relationship ?? {};
   const stateLine = `当前关系: 亲密度 ${fmt(rel.closeness)}, 紧张 ${fmt(rel.tension)}, 信任 ${fmt(rel.trust)}, 待和好 ${fmt(rel.repair_debt)}`;
-  return `${stateLine}\n共同经历:\n${events.join('\n') || '(还没有共同经历)'}`;
+  const trendLine = trajectory ? formatTrajectory(trajectory) : '';
+  return [stateLine, trendLine, `共同经历:\n${events.join('\n') || '(还没有共同经历)'}`].filter(Boolean).join('\n');
 }
 
 // ---- IO ----
@@ -74,13 +79,17 @@ export async function synthesizeNarrative(userId, state, opts = {}) {
 基于共同经历与当前关系状态, 写一段 2-4 句、温度合适、第一人称复数("我们")的关系叙事。
 忠于事实, 不要编造没发生的事。严格输出 JSON: {"story":"...","importance":1-10}。`;
 
+  // 拉一段状态历史, 让叙事看得到关系是怎么走过来的 (feature/state-history)。
+  const history = await readStateHistory(userId, { limit: opts.historyLimit ?? 50 }).catch(() => []);
+  const trajectory = history.length ? summarizeTrajectory(history) : null;
+
   const res = await llm.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0.6,
     response_format: { type: 'json_object' },
     messages: [
       { role: 'system', content: sys },
-      { role: 'user', content: composeNarrativeInput(mems, state) },
+      { role: 'user', content: composeNarrativeInput(mems, state, trajectory) },
     ],
   });
 
