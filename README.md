@@ -67,6 +67,10 @@ await mem.forgettable(0.05, { purge: true });
 
 完整一轮见 `examples/demo.js`;查看某用户的记忆画像:`npm run inspect <userId>`。
 
+## 项目规则
+
+开发新功能、修 bug 或做较大文档改动时,不要直接改 `main`。分支命名、提交、测试和文档同步规则见 [docs/PROJECT_RULES.md](docs/PROJECT_RULES.md)。
+
 ## 调参
 
 所有"性格"参数在 `src/params.js`:
