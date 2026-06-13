@@ -1,0 +1,44 @@
+{
+  "name": "cyber-memory",
+  "version": "0.1.0",
+  "description": "A human-like memory system for AI companions: selective recall, emotional state, reconsolidation, relationship memories, prospective memory, and multimodal memory.",
+  "type": "module",
+  "main": "index.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/qingcishen/memory.git"
+  },
+  "keywords": [
+    "ai-memory",
+    "companion-ai",
+    "memory-system",
+    "rag",
+    "pgvector",
+    "reconsolidation",
+    "prospective-memory",
+    "multimodal-memory"
+  ],
+  "bugs": {
+    "url": "https://github.com/qingcishen/memory/issues"
+  },
+  "homepage": "https://github.com/qingcishen/memory#readme",
+  "scripts": {
+    "demo": "node examples/demo.js",
+    "test:logic": "node examples/logic.test.js",
+    "test:ontology": "node examples/ontology.test.js",
+    "test:state": "node examples/state.test.js",
+    "test:engine": "node examples/engine.test.js",
+    "test:reconsolidate": "node examples/reconsolidate.test.js",
+    "test:relationship": "node examples/relationship.test.js",
+    "test:prospective": "node examples/prospective.test.js",
+    "test:modal": "node examples/modal.test.js",
+    "test:dedup": "node examples/dedup.test.js",
+    "inspect": "node examples/inspect.js",
+    "test": "node examples/logic.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js"
+  },
+  "dependencies": {
+    "@supabase/supabase-js": "^2.45.0",
+    "dotenv": "^16.4.5",
+    "openai": "^4.56.0"
+  }
+}

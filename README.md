@@ -1,0 +1,149 @@
+# Cyber Memory
+
+给 AI 伴侣用的"类人"记忆系统。不是把对话一股脑塞进向量库,而是模拟人的记忆方式:**有选择地记、会遗忘、被反复提起会强化、偏好改变会留下痕迹、定期把碎片归纳成印象**。
+
+架构参考斯坦福 Generative Agents 的记忆模型,针对伴侣场景做了改动(情绪保护衰减、矛盾不覆盖而是 supersede)。
+
+## 它解决什么
+
+普通做法(嵌入每条消息 → 检索 top-k)对女友产品是坏的:"嗯""在吗"也被记住、你生日和闲聊权重一样、她什么都记得死死的反而恐怖。本系统让记忆**像人**:
+
+- **提取而非堆积** — 只记持久的事实/事件/偏好,忽略寒暄
+- **重要性评分** — 生日 ≠ 今天天气
+- **衰减 + 强化** — 会淡忘,但常被提起的记得牢;情绪强的忘得慢
+- **加权检索** — similarity + recency + importance,不是只看相似度
+- **矛盾处理** — "喜欢香菜"取代"讨厌香菜"时旧记忆不删,她能说"你不是以前挺讨厌的吗"
+- **反思** — 定期把碎片聚成高层印象("最近压力大,在备考")
+
+## 安装
+
+```bash
+npm install
+cp .env.example .env   # 填入 Supabase / LLM / Embedding 凭证
+```
+
+在 Supabase SQL Editor 执行 `sql/schema.sql`(建表 + pgvector + 检索函数)。
+
+LLM 用 OpenAI 兼容接口,DeepSeek 直接可用;Embedding 默认 OpenAI `text-embedding-3-small`(1536 维)。换 embedding 模型记得同步改 schema 里的 `vector(维度)`。
+
+## 用法
+
+```js
+import { Memory } from 'cyber-memory';
+
+const mem = new Memory({ userId: 'u_123', subjectName: '诗雅' });
+
+// 回复前: 检索相关记忆, 拼成可注入 system prompt 的串
+const memoryBlock = await mem.recallAsPrompt(userMessage);
+// → "你记得关于诗雅的事:\n- 诗雅讨厌香菜\n- 诗雅在日本备考"
+
+// 用 [人格] + [memoryBlock] + [对话历史] 调你的 LLM 生成回复 ...
+
+// 回复后: 更新情绪/关系状态(M1) + 提取存储 + 顺手排预期记忆(M5)
+await mem.observe([
+  { role: 'user', content: userMessage },
+  { role: 'assistant', content: reply },
+]);
+
+// 她当下的心情(影响想起什么) / 主动想起该问的事
+const mood = await mem.mood();                 // 开心 / 平静 / 低落 / 受伤·闹脾气
+const due = await mem.checkProspective({ query: userMessage }); // "上次面试怎么样了?"
+
+// 显式"翻旧账": 普通 recall 只取当前事实;需要"你以前不是..."时再捞旧版本链
+const historyBlock = await mem.recallHistoryAsPrompt('香菜');
+// → "以前: 诗雅讨厌香菜; 后来更新为: 诗雅现在喜欢香菜"
+
+// 多模态: 看图 / 听语音 (缺凭证自动降级, 不崩)
+await mem.seeImage({ url: imgUrl });
+await mem.hearVoice({ transcript: '我没事', prosody: { tone: 'crying' } }); // 语气进 affect
+
+// 定时: 心情回落 / 和好后软化旧怨(M3) / 合成"我们的故事"(M4) / 反思 / 遗忘
+await mem.settle();                 // 没对话时心情向基线回落
+await mem.reconsolidate();          // 按当下状态重构旧记忆 (永不改 fact_core)
+await mem.story();                  // 关系叙事
+await mem.reflect();
+await mem.forgettable(0.05, { purge: true });
+```
+
+完整一轮见 `examples/demo.js`;查看某用户的记忆画像:`npm run inspect <userId>`。
+
+## 调参
+
+所有"性格"参数在 `src/params.js`:
+
+| 参数 | 作用 | 调高的效果 |
+|---|---|---|
+| `baseDecay` | 基础衰减率 (越接近 1 越不忘) | 记性更好 |
+| `emotionProtect` | 情绪对衰减的保护 | 情绪强的事记得更久 |
+| `wSimilarity/wRecency/wImportance` | 检索三项权重 | 偏向相关/新近/重要 |
+| `reinforceK` | 命中强化强度 | 常聊的话题越来越突出 |
+| `topK` | 注入几条记忆 | context 更丰富但更贵 |
+| `minImportance` | 提取门槛 | 调高则只记大事 |
+| `state.halfLifeHours` | 各状态向基线回落的半衰期 | 调大则心情/积怨散得慢 |
+| `state.maxStepPerTurn` | 单轮对状态的最大推动 | 调高则一句话更能左右情绪 |
+| `engine.wMood` | 心情门控权重 (=0 关闭, 退化标准激活) | 调高则她越闹脾气越爱翻旧账 |
+| `engine.wSpread` / `graphHops` | 联想扩散权重 / 跳数 | 调高则一条勾起一串相关记忆 |
+| `reconsolidation.affectClamp` | 单次重构最大漂移 (硬上限) | 调高则旧事情绪变得更快 (慎调) |
+| `relationship_memory.alwaysIncludeDyad` | recall 无条件带几条共同记忆 | 调高则更"记得我们" |
+| `prospective.cueThreshold` | 语境触发预期记忆的相似度门槛 | 调低则更主动提起旧事 |
+
+## 数据流
+
+```
+对话轮
+  │
+  ├─[observe]→ 状态机更新(M1): 回落基线 + 启发式/LLM 增量 → affective_state
+  │          → extract(LLM 评分) → embed → store
+  │                                          └→ 矛盾检测 → 旧记忆 superseded_by 新记忆
+  │
+回复前
+  └─[recall]→ 读状态(M1) → match_memories(pgvector 拉候选)
+                → 自研引擎(M2): ACT-R base-level + 语境相似 + 联想扩散
+                                 + 心情门控(她的情绪偏置想起什么) + 里程碑 − 过期降权
+                → 域隔离(只取 user/dyad) + 无条件补 dyad 关系底色(M4)
+                → 重构染色(M3, 想起即被当下情绪轻染) → reinforce(access_log++)
+
+每晚 / 定时
+  └─[settle]→ 心情随时间向基线回落
+  └─[reconsolidate]→ 按当下状态软化/回暖旧记忆 (有界, 永不改 fact_core)
+  └─[story]→ dyad 记忆 + 状态 → LLM 合成"我们的故事" → 存回
+  └─[reflect]→ 拉最近记忆 → LLM 归纳高层印象 → 存回(type=reflection)
+  └─[forgettable]→ memoryStrength < 阈值 → 可选清理
+```
+
+## 模块
+
+| 文件 | 职责 |
+|---|---|
+| `src/params.js` | 可调参数(纯数据) |
+| `src/config.js` | Supabase / LLM / Embedding 客户端 |
+| `src/embeddings.js` | 文本 → 向量 |
+| `src/extract.js` | 从对话提取记忆 + 重要性评分 |
+| `src/store.js` | 落库 + 矛盾处理(supersede) |
+| `src/decay.js` | 衰减 / recency / 强度 / 重排(纯逻辑) |
+| `src/retrieve.js` | 加权检索 + 命中强化 + 显式翻旧账(superseded 链) + 注入格式化 |
+| `src/reflect.js` | 反思总结 + 遗忘 |
+| `src/dedup.js` | 去重指纹 (M7, 纯逻辑): 反复说同一件事 → 强化而非新增 |
+| `src/state/affect.js` | 关系-情感状态机 (M1): 心情/关系状态, 随时间回落 + 随对话更新 |
+| `src/engine/` | 自研激活引擎 (M2): `activation`(ACT-R+心情门控) / `vector-index` / `graph`(扩散) / `index`(门面) |
+| `src/memory/reconsolidate.js` | 重构性记忆 (M3): 想起时按当下情绪重写情感层, 永不改 fact_core |
+| `src/persona.js` / `src/narrative.js` | self 人格域隔离 / dyad 共同记忆 + 关系叙事 (M4) |
+| `src/memory/prospective.js` | 预期记忆 (M5): 识别未来意图 → 到点/语境主动提起 |
+| `src/modal/` | 多模态 (M6): `image`(vision caption) / `audio`(ASR + 语气→affect) |
+| `src/memory.js` | 门面类 `Memory` |
+
+## 测试
+
+全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 167 断言)。
+
+```bash
+npm test             # 全部 (M0~M7)
+npm run test:engine        # M2 心情门控: 开心 vs 受伤 recall 集合显著不同 + 万级 <20ms
+npm run test:reconsolidate # M3 灵魂: 和好后旧怨回暖, 但 fact_core 一字未变
+```
+
+> **红线 (CI 必过)**:任何机制下 `fact_core` 永不改变。重构相关测试把这条不变式固化在 `ontology.assertFactCorePreserved`,越权篡改立即抛错。
+
+## 建议落地顺序
+
+别一次全上。先跑通 `extract + 向量检索`(纯相似度,把 rerank 权重设成只看 similarity),验证"她记得事";再开 `衰减/强化`,她就开始像人;最后补 `矛盾处理 + reflect`。前两步一个周末能搞定。
