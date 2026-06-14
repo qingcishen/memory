@@ -1,25 +1,74 @@
 // Life · 生命/身体状态维度。
 //
-// L1 先只承接原 emotion.energy: energy = M1 affective_state.mood.arousal。
-// 后续 L2~L4 可在这个维度里继续扩展 satiety/health/作息/活动, 编排器侧不需要再改。
+// L2 扩展为 energy/satiety/health + 作息。读取失败时降级到默认身体状态,
+// 避免状态层影响主对话链路可用性。
 
-import { readState, decayState } from './affect.js';
+import { supabase } from '../config.js';
 
 const HOUR = 1000 * 60 * 60;
 const FIELD_RANGE = {
   energy: [0, 1],
+  satiety: [0, 1],
+  health: [0, 1],
 };
+
+export function defaultLifeState() {
+  return {
+    energy: 0.6,
+    satiety: 0.6,
+    health: 1.0,
+    current_activity: null,
+    last_slept_at: null,
+    sick_until: null,
+  };
+}
 
 /** 裁剪到合法范围, 缺字段补中值。 */
 export function clampLife(state = {}) {
+  const d = defaultLifeState();
   return {
-    energy: clampField('energy', state.energy),
+    energy: clampField('energy', state.energy ?? d.energy),
+    satiety: clampField('satiety', state.satiety ?? d.satiety),
+    health: clampField('health', state.health ?? d.health),
+    current_activity: textOrNull(state.current_activity ?? d.current_activity),
+    last_slept_at: textOrNull(state.last_slept_at ?? d.last_slept_at),
+    sick_until: textOrNull(state.sick_until ?? d.sick_until),
+    updated_at: textOrNull(state.updated_at),
   };
 }
 
 /** M1 状态 -> life 维度。L1 只把 mood.arousal 迁到这里。 */
 export function moodToLife(state = {}) {
   return clampLife({ energy: state?.mood?.arousal });
+}
+
+export async function readLifeState(userId) {
+  if (!userId) return { ...defaultLifeState(), updated_at: null };
+  const { data, error } = await supabase
+    .from('life_state')
+    .select('energy, satiety, health, current_activity, last_slept_at, sick_until, updated_at')
+    .eq('user_id', userId)
+    .maybeSingle();
+  if (error || !data) return { ...defaultLifeState(), updated_at: null };
+  return clampLife(data);
+}
+
+export async function writeLifeState(userId, state) {
+  if (!userId) throw new Error('writeLifeState 需要 userId');
+  const s = clampLife(state);
+  const row = {
+    user_id: userId,
+    energy: s.energy,
+    satiety: s.satiety,
+    health: s.health,
+    current_activity: s.current_activity,
+    last_slept_at: s.last_slept_at,
+    sick_until: s.sick_until,
+    updated_at: new Date().toISOString(),
+  };
+  const { data, error } = await supabase.from('life_state').upsert(row, { onConflict: 'user_id' }).select().single();
+  if (error) throw error;
+  return clampLife(data ?? row);
 }
 
 /** 把精力状态翻译成表现指引, 注入 system; 别让她直接报数值。 */
@@ -42,16 +91,15 @@ export function lifeSamplingHints(state) {
 
 /** 状态层内部维度门面。 */
 export class LifeDimension {
-  constructor({ userId, read = readState, now = () => Date.now() } = {}) {
+  constructor({ userId, read = readLifeState, write = writeLifeState, now = () => Date.now() } = {}) {
     this.userId = userId;
     this.read = read;
+    this.write = write;
     this.now = now;
   }
 
   async current() {
-    const state = this.userId ? await this.read(this.userId) : {};
-    const hours = state.updated_at ? Math.max(0, (this.now() - new Date(state.updated_at).getTime()) / HOUR) : 0;
-    return moodToLife(decayState(state, hours));
+    return this.userId ? this.read(this.userId) : clampLife(defaultLifeState());
   }
 
   async evolve() {}
@@ -78,6 +126,10 @@ function num(value, fallback = 0) {
 
 function clamp(value, lo, hi) {
   return Math.min(hi, Math.max(lo, value));
+}
+
+function textOrNull(value) {
+  return value == null ? null : String(value);
 }
 
 function round(value, digits) {
