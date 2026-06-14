@@ -136,6 +136,16 @@ export function stateDelta(before, after) {
   return sum;
 }
 
+/**
+ * 本轮"心情位移"幅度 (|Δvalence|+|Δarousal|), 只看 mood、不看 relationship。
+ * 用作"这一轮是否发生了要紧的事"的信号, 见 emotion-design.md §8 (情绪 → 记忆重要性)。
+ */
+export function moodShiftMagnitude(before, after) {
+  const a = clampState(before);
+  const b = clampState(after);
+  return Math.abs(b.mood.valence - a.mood.valence) + Math.abs(b.mood.arousal - a.mood.arousal);
+}
+
 /** 给"从 before 到 after 这次变化"贴一个事件标签 (吵架/和好/变亲密…), 取动得最猛的方向。 */
 export function labelStateEvent(before, after) {
   const a = clampState(before);

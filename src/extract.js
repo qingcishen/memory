@@ -51,3 +51,17 @@ export async function extractMemories(turns, subjectName = '用户') {
     .map((m) => normalizeMemory(m))
     .filter((m) => m.fact_core && m.importance >= PARAMS.minImportance);
 }
+
+/**
+ * 情绪 → 记忆重要性 (emotion-design.md §8): 本轮心情位移越大, 说明发生的事越"要紧",
+ * 给这一轮提取出的记忆 importance 一点加成(按 PARAMS.moodShiftImportanceBoost, 夹在 1-10 内)。
+ * @param memories extractMemories 的结果
+ * @param moodShift moodShiftMagnitude(before, after) 的值
+ */
+export function applyMoodShiftBoost(memories, moodShift = 0) {
+  const { threshold, maxShift, maxBoost } = PARAMS.moodShiftImportanceBoost;
+  if (memories.length === 0 || !(moodShift > threshold)) return memories;
+  const ratio = Math.min(1, (moodShift - threshold) / (maxShift - threshold));
+  const boost = maxBoost * ratio;
+  return memories.map((m) => ({ ...m, importance: Math.min(10, m.importance + boost) }));
+}

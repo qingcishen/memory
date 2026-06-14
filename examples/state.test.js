@@ -11,10 +11,12 @@ import {
   inferHeuristicDeltas,
   moodLabel,
   stateDelta,
+  moodShiftMagnitude,
   labelStateEvent,
   summarizeTrajectory,
   formatTrajectory,
 } from '../src/state/affect.js';
+import { applyMoodShiftBoost } from '../src/extract.js';
 import { PARAMS } from '../src/params.js';
 
 let passed = 0;
@@ -115,6 +117,24 @@ console.log('stateDelta / labelStateEvent (历史快照触发与事件标签)');
   const reconciled = applyDeltas(fought, inferHeuristicDeltas([{ role: 'user', content: '对不起, 我错了, 和好吧' }]));
   ok('和好被标为"和好"', labelStateEvent(fought, reconciled) === '和好');
   ok('微小变化无事件标签', labelStateEvent(base, applyDeltas(base, { mood: { valence: 0.01 } })) === null);
+}
+
+console.log('moodShiftMagnitude / applyMoodShiftBoost (情绪 → 记忆重要性, emotion-design.md §8)');
+{
+  const base = defaultState();
+  ok('相同状态 moodShift=0', moodShiftMagnitude(base, base) === 0);
+
+  const fought = applyDeltas(base, inferHeuristicDeltas([{ role: 'user', content: '我很生气, 太失望了' }]));
+  const shift = moodShiftMagnitude(base, fought);
+  ok('吵架后 moodShift 达到单轮上限 (两个 mood 字段都被推满)', Math.abs(shift - 0.6) < 1e-9);
+
+  const mems = [{ fact_core: '诗雅很生气', importance: 5 }];
+  ok('心情位移在阈值以下时 importance 不变', applyMoodShiftBoost(mems, 0)[0].importance === 5);
+  ok('心情位移达到满额时 importance 加满额', applyMoodShiftBoost(mems, shift)[0].importance === 7);
+  ok('心情位移在阈值与满额之间按比例加成', Math.abs(applyMoodShiftBoost(mems, 0.375)[0].importance - 6) < 1e-9);
+
+  const maxed = applyMoodShiftBoost([{ fact_core: 'x', importance: 9.5 }], shift);
+  ok('importance 加成后仍夹在 10 以内', maxed[0].importance === 10);
 }
 
 console.log('summarizeTrajectory / formatTrajectory (关系走向)');

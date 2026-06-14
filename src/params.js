@@ -44,6 +44,15 @@ export const PARAMS = {
     snapshotMinDelta: 0.08,
   },
 
+  // ---- 情绪 → 记忆重要性 (emotion-design.md §8) ----
+  // 本轮心情位移 (|Δvalence|+|Δarousal|) 越大, 说明发生的事越"要紧",
+  // 给这一轮提取出的记忆 importance 一点加成, 让"情绪强的事记得更牢"。
+  moodShiftImportanceBoost: {
+    threshold: 0.15, // 位移超过它才算"有事发生" (单字段 maxStepPerTurn 的一半)
+    maxShift: 0.6, // 位移达到/超过它给满额加成 (= 2 * maxStepPerTurn, 两个字段都拉满)
+    maxBoost: 2, // 满额时 importance (1-10 量表) 最多加多少
+  },
+
   // ---- Emotion · 短时情绪展示层 (编排器 toPrompt/samplingHints) ----
   // valence/energy 直接来自 M1 affective_state.mood (来源/衰减/更新见 state.* 参数);
   // warmth 在亲密度基线 (relationship.closeness) 上叠加当下心情/紧张的短时调整。

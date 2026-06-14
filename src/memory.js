@@ -1,4 +1,4 @@
-import { extractMemories } from './extract.js';
+import { extractMemories, applyMoodShiftBoost } from './extract.js';
 import { storeMemories } from './store.js';
 import {
   retrieveMemories,
@@ -7,7 +7,7 @@ import {
   formatSupersededTrailForPrompt,
 } from './retrieve.js';
 import { runReflection, findForgettable } from './reflect.js';
-import { readState, updateFromTurn, decayToBaseline, moodLabel, readStateHistory } from './state/affect.js';
+import { readState, updateFromTurn, decayToBaseline, moodLabel, moodShiftMagnitude, readStateHistory } from './state/affect.js';
 import { engineRecall } from './engine/index.js';
 import { reconsolidateOnRecall, reconsolidateRecent } from './memory/reconsolidate.js';
 import { seedPersona, personaBlock } from './persona.js';
@@ -37,8 +37,10 @@ export class Memory {
    * @returns { state, stored } —— 本轮后的状态与新存的记忆
    */
   async observe(turns, opts = {}) {
-    const { after } = await updateFromTurn(this.userId, turns, opts).catch(() => ({ after: null }));
-    const extracted = await extractMemories(turns, this.subjectName);
+    const { before, after } = await updateFromTurn(this.userId, turns, opts).catch(() => ({ before: null, after: null }));
+    let extracted = await extractMemories(turns, this.subjectName);
+    // 情绪 → 记忆重要性 (emotion-design.md §8): 这一轮心情位移大, 说明发生了要紧的事。
+    if (before && after) extracted = applyMoodShiftBoost(extracted, moodShiftMagnitude(before, after));
     const stored = extracted.length === 0 ? [] : await storeMemories(this.userId, extracted);
     // M5: 顺手识别"未来意图"("我明天面试") 并排一条预期记忆。
     const scheduled =
