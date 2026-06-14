@@ -69,6 +69,67 @@ await mem.forgettable(0.05, { purge: true });
 
 完整一轮见 `examples/demo.js`;查看某用户的记忆画像:`npm run inspect <userId>`。
 
+## 编排器(Orchestrator)
+
+`Memory` 只是记忆门面;"这一轮怎么把人格 + 关系 + 情绪 + 记忆 + 内心独白拼成一次 LLM 调用"由 `Orchestrator` 在每轮对话现场组装,回复返回后再后台触发状态更新。
+
+```js
+import { Orchestrator } from 'cyber-memory';
+
+const bot = new Orchestrator({ userId: 'u_123', subjectName: '诗雅', companionName: '可可' });
+
+const reply = await bot.reply(userMessage);
+// 同步路径: persona/relationship/emotion/memory 的 toPrompt 拼成 system + 短期历史 + 当前消息 → 生成回复
+// 回复返回后, emotion.update / memory.observe / relationship.bump 已在后台 fire-and-forget 触发
+```
+
+依赖可注入,测试时传 mock 即可验证拼接顺序与 afterReply 触发,不连库、不调 LLM:
+
+```js
+new Orchestrator({ userId, deps: { memory, emotion, relationship, persona, llm, historyStore } });
+```
+
+短期历史默认存在实例内;生产环境可注入 `historyStore` 做持久化/多实例共享:
+
+```js
+const historyStore = {
+  load: async ({ userId, limit }) => loadRecentTurns(userId, limit),
+  append: async ({ userId, turns }) => saveTurns(userId, turns),
+};
+```
+
+主动消息不走 `reply()` 热路径,由外部定时器/事件判断后调用同一套组装链路:
+
+```js
+const proactive = await bot.proactiveTick({
+  reason: '很久没聊天',
+  shouldSend: quietHoursPassed,
+});
+```
+
+需要安静时间、冷却间隔、每日上限时,用 `ProactiveScheduler` 包一层。生产环境建议用
+`SupabaseRateLimitStore` 把限流状态跨进程持久化:
+
+```js
+import { ProactiveScheduler, SupabaseRateLimitStore } from 'cyber-memory';
+
+const scheduler = new ProactiveScheduler({
+  orchestrator: bot,
+  stateStore: new SupabaseRateLimitStore(),
+  policy: {
+    quietHours: { start: 23, end: 8 },
+    minIntervalMinutes: 180,
+    maxPerDay: 3,
+    timezoneOffsetMinutes: 8 * 60,
+  },
+  getDueItems: () => mem.checkProspective(),
+  markFired: (ids) => mem.dismissProspective(ids),
+  deliver: ({ message }) => sendToUser(message),
+});
+
+await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
+```
+
 ## 项目规则
 
 开发新功能、修 bug 或做较大文档改动时,不要直接改 `main`。分支命名、提交、测试和文档同步规则见 [docs/PROJECT_RULES.md](docs/PROJECT_RULES.md)。
@@ -138,10 +199,11 @@ await mem.forgettable(0.05, { purge: true });
 | `src/memory/prospective.js` | 预期记忆 (M5): 识别未来意图 → 到点/语境主动提起 |
 | `src/modal/` | 多模态 (M6): `image`(vision caption) / `audio`(ASR + 语气→affect) |
 | `src/memory.js` | 门面类 `Memory` |
+| `src/orchestrator/` | 编排器: `Orchestrator` 门面 + 把 Memory/persona/affect 适配成 memory/emotion/relationship/persona 四个 `toPrompt` 接口, `assemble` 纯本地拼接 prompt |
 
 ## 测试
 
-全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 181 断言)。
+全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 306 断言)。
 
 ```bash
 npm test             # 全部 (M0~M7)

@@ -25,6 +25,7 @@
   "scripts": {
     "demo": "node examples/demo.js",
     "test:logic": "node examples/logic.test.js",
+    "test:emotion": "node examples/emotion.test.js",
     "test:ontology": "node examples/ontology.test.js",
     "test:state": "node examples/state.test.js",
     "test:engine": "node examples/engine.test.js",
@@ -33,8 +34,10 @@
     "test:prospective": "node examples/prospective.test.js",
     "test:modal": "node examples/modal.test.js",
     "test:dedup": "node examples/dedup.test.js",
+    "test:orchestrator": "node examples/orchestrator.test.js",
+    "test:scheduler": "node examples/scheduler.test.js",
     "inspect": "node examples/inspect.js",
-    "test": "node examples/logic.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js"
+    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

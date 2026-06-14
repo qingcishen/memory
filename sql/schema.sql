@@ -95,6 +95,23 @@ create table if not exists affective_state_history (
 create index if not exists affective_history_idx on affective_state_history (user_id, created_at desc);
 
 -- ------------------------------------------------------------
+--  Emotion · 双层短时情绪 (baseline + transient)
+--  一个用户一行: baseline 是角色底色, valence/energy/warmth 是当前短时偏移后的可观测状态。
+--  读取时应用半衰期回归基线; 写入见 src/emotion.js。
+-- ------------------------------------------------------------
+create table if not exists emotion (
+  user_id           text primary key,
+  baseline_valence real not null default 0.15,
+  baseline_energy  real not null default 0.5,
+  baseline_warmth  real not null default 0.5,
+  half_life_hours  real not null default 6,
+  valence          real not null default 0.15,
+  energy           real not null default 0.5,
+  warmth           real not null default 0.5,
+  updated_at       timestamptz not null default now()
+);
+
+-- ------------------------------------------------------------
 --  M5 · 预期记忆 (见 docs/DEVELOPMENT.md M5, 招牌④)
 --  面向未来: "你上次说今天面试, 怎么样了?" —— 她主动在未来某刻/某线索把事捞回来。
 --  time 型: 到 trigger_at 触发; cue 型: 语境向量与 cue_embedding 相近时触发。
@@ -110,6 +127,14 @@ create table if not exists prospective (
   created_at    timestamptz not null default now()
 );
 create index if not exists prospective_pending_idx on prospective (user_id, status) where status = 'pending';
+
+-- 主动消息限流状态: 跨进程共享 quiet hours / cooldown / max-per-day 的发送轨迹。
+-- state 形如 {"sentAt":["2026-06-14T12:00:00.000Z"],"policy":{...}}。
+create table if not exists proactive_rate_limits (
+  user_id    text primary key,
+  state      jsonb not null default '{"sentAt":[]}'::jsonb,
+  updated_at timestamptz not null default now()
+);
 
 -- ------------------------------------------------------------
 --  向量检索函数: 只返回未被取代的记忆, 按余弦相似度排序取 top N。

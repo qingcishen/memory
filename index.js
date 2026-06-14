@@ -44,6 +44,20 @@ export {
   readStateHistory,
 } from './src/state/affect.js';
 export {
+  Emotion,
+  defaultEmotion,
+  clampEmotion,
+  decayEmotion,
+  decayEmotionByHours,
+  applyEmotionDeltas,
+  inferEmotionDeltasHeuristic,
+  judgeEmotionDeltas,
+  toEmotionPrompt,
+  emotionSamplingHints,
+  readEmotion,
+  writeEmotion,
+} from './src/emotion.js';
+export {
   rankCandidates,
   engineRecall,
   scoreActivation,
@@ -59,6 +73,9 @@ export {
   reconsolidateOnRecall,
   reconsolidateRecent,
   persistReconsolidation,
+  anchorTarget,
+  clampToOrigin,
+  driftFromOrigin,
 } from './src/memory/reconsolidate.js';
 export { filterBySubject, formatPersonaBlock, seedPersona, personaBlock } from './src/persona.js';
 export { pickDyadBackdrop, composeNarrativeInput, dyadBackdrop, synthesizeNarrative } from './src/narrative.js';
@@ -82,3 +99,25 @@ export {
   ingestAudio,
 } from './src/modal/index.js';
 export { normalizeForHash, dedupHash, findDuplicate } from './src/dedup.js';
+export {
+  Orchestrator,
+  MemoryAdapter,
+  EmotionAdapter,
+  RelationshipAdapter,
+  PersonaAdapter,
+  DefaultLLM,
+  assemble,
+  buildSystemPrompt,
+  buildMonologueContext,
+  formatEmotionPrompt,
+  formatRelationshipPrompt,
+  DEFAULT_PROACTIVE_POLICY,
+  ProactiveScheduler,
+  MemoryRateLimitStore,
+  SupabaseRateLimitStore,
+  canSendProactive,
+  defaultRateLimitState,
+  isQuietHour,
+  markProactiveSent,
+  normalizeRateLimitState,
+} from './src/orchestrator/index.js';

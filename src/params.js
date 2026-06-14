@@ -44,6 +44,22 @@ export const PARAMS = {
     snapshotMinDelta: 0.08,
   },
 
+  // ---- Emotion · 短时情绪子系统 (编排器 current/update/toPrompt/samplingHints) ----
+  emotion: {
+    baseline: {
+      valence: 0.15,
+      energy: 0.5,
+      warmth: 0.5,
+    },
+    halfLifeHours: {
+      valence: 6,
+      energy: 4,
+      warmth: 6,
+    },
+    damping: 0.4,
+    maxStepPerTurn: 0.25,
+  },
+
   // ---- M2 自研激活引擎 + 心情门控检索 ----
   engine: {
     forgetRate: 0.5, // ACT-R base-level 衰减指数 d: 越大越快忘 (新近/频次)
