@@ -33,18 +33,20 @@ export class Memory {
 
   /**
    * 对话之后调用: 更新情绪/关系状态 (M1) + 提取记忆并落库 (含矛盾处理)。
-   * 状态更新先做, 因为它从整段对话取信号, 不依赖提取结果。
+   * 状态更新、记忆提取 (LLM)、预期记忆排程 (M5) 互不依赖, 并发执行并各自失败隔离;
+   * 落库 (含矛盾处理) 依赖提取结果与心情位移加成, 留在并发之后。
    * @returns { state, stored } —— 本轮后的状态与新存的记忆
    */
   async observe(turns, opts = {}) {
-    const { before, after } = await updateFromTurn(this.userId, turns, opts).catch(() => ({ before: null, after: null }));
-    let extracted = await extractMemories(turns, this.subjectName);
+    const [{ before, after }, extracted, scheduled] = await Promise.all([
+      updateFromTurn(this.userId, turns, opts).catch(() => ({ before: null, after: null })),
+      extractMemories(turns, this.subjectName).catch(() => []),
+      // M5: 顺手识别"未来意图"("我明天面试") 并排一条预期记忆。
+      opts.prospective === false ? null : scheduleFromTurns(this.userId, turns, opts.now, this.subjectName).catch(() => null),
+    ]);
     // 情绪 → 记忆重要性 (emotion-design.md §8): 这一轮心情位移大, 说明发生了要紧的事。
-    if (before && after) extracted = applyMoodShiftBoost(extracted, moodShiftMagnitude(before, after));
-    const stored = extracted.length === 0 ? [] : await storeMemories(this.userId, extracted);
-    // M5: 顺手识别"未来意图"("我明天面试") 并排一条预期记忆。
-    const scheduled =
-      opts.prospective === false ? null : await scheduleFromTurns(this.userId, turns, opts.now, this.subjectName).catch(() => null);
+    const boosted = before && after ? applyMoodShiftBoost(extracted, moodShiftMagnitude(before, after)) : extracted;
+    const stored = boosted.length === 0 ? [] : await storeMemories(this.userId, boosted);
     return { state: after, stored, scheduled };
   }
 
