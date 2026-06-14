@@ -1,6 +1,7 @@
 // M7 · 去重。同一件事被反复说 ("我生日 12-15" 说三次) 不该存三条,
 // 而应识别为同一条并【强化】它 (access_log 追加、access_count++) —— 等于"又被提起一次"。
-// 纯逻辑 (规范化 + 哈希 + 判重), 落库侧由 store.js 调用。
+// 纯逻辑 (规范化 + 哈希 + 判重 + 近邻判重), 落库侧由 store.js 调用。
+import { PARAMS } from './params.js';
 
 /**
  * 把文本规范化成判重用的指纹串: 去首尾/折叠空白、去常见标点、统一大小写。
@@ -30,4 +31,21 @@ export function dedupHash(text) {
 export function findDuplicate(hash, existing = []) {
   if (!hash) return null;
   return existing.find((m) => m.dedup_hash === hash) ?? null;
+}
+
+/**
+ * 向量相似度高到这个程度, 基本可以认为是"同一件事的不同说法"
+ * (如"讨厌香菜"/"不爱吃香菜"), 应强化旧记忆而非新增一条。
+ * 阈值明显高于矛盾判断的相似度门槛: 同话题但立场相反 (讨厌/喜欢) 相似度通常达不到这么高。
+ */
+export function isNearDuplicate(similarity, threshold = PARAMS.dedup.nearDuplicateThreshold) {
+  return typeof similarity === 'number' && similarity >= threshold;
+}
+
+/**
+ * 在候选 (如 match_memories 按相似度降序的结果) 里找第一条够"近义"的当作重复 (近邻判重)。
+ * @returns 命中的候选, 或 null
+ */
+export function findNearDuplicate(candidates = [], threshold = PARAMS.dedup.nearDuplicateThreshold) {
+  return candidates.find((c) => isNearDuplicate(c.similarity, threshold)) ?? null;
 }

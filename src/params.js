@@ -103,6 +103,14 @@ export const PARAMS = {
     defaultHour: 20, // 只给了"明天"没给具体时刻时, 默认排在当天 20:00 (晚上闲聊时段)
   },
 
+  // ---- M7 近义去重 (embedding 近邻判重) ----
+  // dedup_hash 只挡"规范化后完全相同"的重复; 这里再加一层向量近邻判重, 把
+  // "讨厌香菜"/"不爱吃香菜"这类同义不同写法也认成同一条 (强化旧记忆而非新增)。
+  // 阈值要明显高于矛盾判断的相似度门槛 —— 同话题但立场相反 (讨厌/喜欢) 通常达不到这么高。
+  dedup: {
+    nearDuplicateThreshold: 0.96,
+  },
+
   // ---- 编排器 ----
   orchestrator: {
     // persona 段缓存多久后在下一次 init() 时重新加载。长期运行的实例 (如 ProactiveScheduler

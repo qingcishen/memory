@@ -1,6 +1,6 @@
 import { supabase, llm, LLM_MODEL } from './config.js';
 import { embed, embedMany } from './embeddings.js';
-import { dedupHash } from './dedup.js';
+import { dedupHash, findNearDuplicate } from './dedup.js';
 
 const CONTRADICT_THRESHOLD = 0.82; // 相似度高于此才送 LLM 判断是否矛盾
 
@@ -36,6 +36,19 @@ export async function storeMemories(userId, memories) {
     const m = fresh[i];
     const embedding = embeddings[i];
 
+    // M7 近义去重: 向量上几乎重合的旧记忆 = 同一件事换了个说法 (如"讨厌香菜"/"不爱吃香菜"),
+    // 强化旧记忆而不是新增一条。dedup_hash 只挡完全相同的文本, 挡不住这种情况。
+    const { data: candidates } = await supabase.rpc('match_memories', {
+      p_user_id: userId,
+      query_embedding: embedding,
+      match_count: 6,
+    });
+    const nearDup = findNearDuplicate(candidates ?? []);
+    if (nearDup) {
+      await reinforceExisting([nearDup]);
+      continue;
+    }
+
     // 1) 插入新记忆 (两层本体)
     const { data, error } = await supabase
       .from('memories')
@@ -66,8 +79,8 @@ export async function storeMemories(userId, memories) {
     if (error) throw error;
     inserted.push(data);
 
-    // 2) 找语义相近的旧记忆, 判断是否被取代
-    await supersedeContradictions(userId, data, embedding);
+    // 2) 找语义相近的旧记忆, 判断是否被取代 (复用刚才查到的候选, 不再多查一次)
+    await supersedeContradictions(data, candidates ?? []);
   }
   return inserted;
 }
@@ -101,18 +114,9 @@ async function reinforceExisting(mems) {
   );
 }
 
-async function supersedeContradictions(userId, newMem, embedding) {
-  // 取相似 top 5 (排除自己), 只看未被取代的
-  const { data: candidates, error } = await supabase.rpc('match_memories', {
-    p_user_id: userId,
-    query_embedding: embedding,
-    match_count: 6,
-  });
-  if (error || !candidates) return;
-
-  const close = candidates.filter(
-    (c) => c.id !== newMem.id && c.similarity >= CONTRADICT_THRESHOLD
-  );
+async function supersedeContradictions(newMem, candidates) {
+  // candidates 是插入前查到的相似列表 (此时 newMem 尚不在库里, 不会出现自身)。
+  const close = candidates.filter((c) => c.id !== newMem.id && c.similarity >= CONTRADICT_THRESHOLD);
   if (close.length === 0) return;
 
   // 交给 LLM 判断哪些旧记忆与新记忆冲突 (而非只是同话题)

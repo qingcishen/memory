@@ -155,6 +155,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `relationship_memory.alwaysIncludeDyad` | recall 无条件带几条共同记忆 | 调高则更"记得我们" |
 | `prospective.cueThreshold` | 语境触发预期记忆的相似度门槛 | 调低则更主动提起旧事 |
 | `orchestrator.personaRefreshMs` | persona 段缓存多久后重新加载 | 调低则长期运行实例更快感知到 self 记忆更新, 但 IO 更频繁 |
+| `dedup.nearDuplicateThreshold` | 近义去重: 向量相似度高于它视为"同一件事换了说法" | 调低则更容易把相似表述合并强化, 但误把"喜欢/讨厌"反义当重复的风险变大 |
 
 ## 数据流
 
@@ -205,7 +206,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 
 ## 测试
 
-全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 333 断言)。
+全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 340 断言)。
 
 ```bash
 npm test             # 全部 (M0~M7)
