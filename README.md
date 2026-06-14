@@ -197,7 +197,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `src/config.js` | Supabase / LLM / Embedding 客户端 |
 | `src/embeddings.js` | 文本 → 向量 |
 | `src/extract.js` | 从对话提取记忆 + 重要性评分 |
-| `src/store.js` | 落库 + 矛盾处理(supersede) |
+| `src/store.js` | 落库 + 矛盾处理(supersede) + 并发写入冲突处理(唯一约束 + 乐观重试) |
 | `src/decay.js` | 衰减 / recency / 强度 / 重排(纯逻辑) |
 | `src/retrieve.js` | 加权检索 + 命中强化 + 显式翻旧账(superseded 链) + 注入格式化 |
 | `src/reflect.js` | 反思总结 + 遗忘 |
@@ -216,7 +216,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 
 ## 测试
 
-全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 410 断言)。
+全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 419 断言)。
 
 ```bash
 npm test             # 全部 (M0~M7)

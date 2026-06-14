@@ -37,10 +37,11 @@
     "test:dedup": "node examples/dedup.test.js",
     "test:safety": "node examples/safety.test.js",
     "test:confidence": "node examples/confidence.test.js",
+    "test:store": "node examples/store.test.js",
     "test:orchestrator": "node examples/orchestrator.test.js",
     "test:scheduler": "node examples/scheduler.test.js",
     "inspect": "node examples/inspect.js",
-    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/state-layer.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/safety.test.js && node examples/confidence.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js"
+    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/state-layer.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/safety.test.js && node examples/confidence.test.js && node examples/store.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

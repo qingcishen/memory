@@ -59,7 +59,12 @@ alter table memories add column if not exists media_ref       text;             
 
 -- M7 去重: 规范化指纹。同一件事被反复说不再存多条, 而是命中后强化 (见 src/dedup.js)。
 alter table memories add column if not exists dedup_hash      text;
-create index if not exists memories_dedup_idx on memories (user_id, dedup_hash) where superseded_by is null;
+
+-- #10 工程债 (事务与并发写入): 唯一约束防止两个并发 observe() 对同一指纹重复插入。
+-- 后到的 insert 抛 23505, src/store.js 捕获后转去强化先到的那条 (乐观重试)。
+-- 老库执行: drop index if exists memories_dedup_idx; 再建下面这条即可平滑升级。
+drop index if exists memories_dedup_idx;
+create unique index if not exists memories_dedup_unique_idx on memories (user_id, dedup_hash) where dedup_hash is not null and superseded_by is null;
 
 create index if not exists memories_subject_idx on memories (user_id, subject_kind) where superseded_by is null;
 

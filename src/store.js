@@ -76,7 +76,17 @@ export async function storeMemories(userId, memories) {
       })
       .select()
       .single();
-    if (error) throw error;
+    if (error) {
+      // #10 并发写入: 两个并发 observe() 都没在 fetchByHashes 里看到对方 (都还没提交),
+      // 都判定 fresh —— 后提交的撞上 memories_dedup_unique_idx 抛 23505。
+      // 退化为强化先提交的那条 (乐观重试), 而不是抛错丢掉这一轮提取。
+      const conflict = resolveInsertConflict(error, m.dedup_hash, await fetchByHashes(userId, [m.dedup_hash]));
+      if (conflict.retry) {
+        await reinforceExisting([conflict.reinforce]);
+        continue;
+      }
+      throw error;
+    }
     inserted.push(data);
 
     // 2) 找语义相近的旧记忆, 判断是否被取代 (复用刚才查到的候选, 不再多查一次)
@@ -124,11 +134,32 @@ async function supersedeContradictions(newMem, candidates) {
   const supersededIds = judged.filter((j) => j.contradicts).map((j) => j.id);
 
   if (supersededIds.length > 0) {
+    // #10 并发写入: 只在仍未被取代时落子。两个并发新记忆都判定要取代同一条旧记忆时,
+    // 先到的更新生效, 后到的影响 0 行而不是覆盖 superseded_by —— 取代链不会被乱序覆写。
     await supabase
       .from('memories')
       .update({ superseded_by: newMem.id })
-      .in('id', supersededIds);
+      .in('id', supersededIds)
+      .is('superseded_by', null);
   }
+}
+
+/** Postgres 唯一约束冲突 (23505) —— 并发 observe 同时插入了同一指纹的记忆。 */
+export function isUniqueViolation(error) {
+  return error?.code === '23505';
+}
+
+/**
+ * #10 工程债 (事务与并发写入): insert 撞上 memories_dedup_unique_idx 时如何处理。
+ * existingByHash 是冲突后重新 fetchByHashes 拿到的现存记忆映射 (hash → 记忆)。
+ * 返回 { retry: true, reinforce } 表示转去强化抢先插入的那条;
+ * 返回 { retry: false } 表示这不是可恢复的冲突, 应照常抛出原始错误。
+ */
+export function resolveInsertConflict(error, dedupHash, existingByHash) {
+  if (!isUniqueViolation(error) || !dedupHash) return { retry: false };
+  const existing = existingByHash.get(dedupHash);
+  if (!existing) return { retry: false };
+  return { retry: true, reinforce: existing };
 }
 
 async function judgeContradictions(newContent, oldMems) {
