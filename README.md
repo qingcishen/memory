@@ -71,7 +71,7 @@ await mem.forgettable(0.05, { purge: true });
 
 ## 编排器(Orchestrator)
 
-`Memory` 只是记忆门面;"这一轮怎么把人格 + 关系 + 情绪 + 记忆 + 内心独白拼成一次 LLM 调用"由 `Orchestrator` 在每轮对话现场组装,回复返回后再后台触发状态更新。
+`Memory` 只是记忆门面;"这一轮怎么把人格 + 关系 + 状态层 + 记忆 + 内心独白拼成一次 LLM 调用"由 `Orchestrator` 在每轮对话现场组装,回复返回后再后台触发状态更新。
 
 ```js
 import { Orchestrator } from 'cyber-memory';
@@ -79,14 +79,14 @@ import { Orchestrator } from 'cyber-memory';
 const bot = new Orchestrator({ userId: 'u_123', subjectName: '诗雅', companionName: '可可' });
 
 const reply = await bot.reply(userMessage);
-// 同步路径: persona/relationship/emotion/memory 的 toPrompt 拼成 system + 短期历史 + 当前消息 → 生成回复
-// 回复返回后, emotion.update / memory.observe / relationship.bump 已在后台 fire-and-forget 触发
+// 同步路径: persona/relationship/stateLayer/memory 的 toPrompt 拼成 system + 短期历史 + 当前消息 → 生成回复
+// 回复返回后, stateLayer.evolve / memory.observe / relationship.bump 已在后台 fire-and-forget 触发
 ```
 
 依赖可注入,测试时传 mock 即可验证拼接顺序与 afterReply 触发,不连库、不调 LLM:
 
 ```js
-new Orchestrator({ userId, deps: { memory, emotion, relationship, persona, llm, historyStore } });
+new Orchestrator({ userId, deps: { memory, stateLayer, relationship, persona, llm, historyStore } });
 ```
 
 短期历史默认存在实例内;生产环境可注入 `historyStore` 做持久化/多实例共享:
@@ -194,20 +194,22 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `src/reflect.js` | 反思总结 + 遗忘 |
 | `src/dedup.js` | 去重指纹 (M7, 纯逻辑): 反复说同一件事 → 强化而非新增 |
 | `src/state/affect.js` | 关系-情感状态机 (M1): 心情/关系状态, 随时间回落 + 随对话更新; 显著变化写入历史轨迹 |
+| `src/state/life.js` / `src/state/stateLayer.js` | 统一状态层 (L1): emotion `{valence,warmth}` + life `{energy}`, 并由 life 维度提供回复采样提示 |
 | `src/engine/` | 自研激活引擎 (M2): `activation`(ACT-R+心情门控) / `vector-index` / `graph`(扩散) / `index`(门面) |
 | `src/memory/reconsolidate.js` | 重构性记忆 (M3): 想起时按当下情绪重写情感层, 永不改 fact_core |
 | `src/persona.js` / `src/narrative.js` | self 人格域隔离 / dyad 共同记忆 + 关系叙事 (M4) |
 | `src/memory/prospective.js` | 预期记忆 (M5): 识别未来意图 → 到点/语境主动提起 |
 | `src/modal/` | 多模态 (M6): `image`(vision caption) / `audio`(ASR + 语气→affect) |
 | `src/memory.js` | 门面类 `Memory` |
-| `src/orchestrator/` | 编排器: `Orchestrator` 门面 + 把 Memory/persona/affect 适配成 memory/emotion/relationship/persona 四个 `toPrompt` 接口, `assemble` 纯本地拼接 prompt |
+| `src/orchestrator/` | 编排器: `Orchestrator` 门面 + 把 Memory/persona/stateLayer/relationship 适配成统一 `toPrompt` 接口, `assemble` 纯本地拼接 prompt |
 
 ## 测试
 
-全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 309 断言)。
+全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 333 断言)。
 
 ```bash
 npm test             # 全部 (M0~M7)
+npm run test:state-layer   # L1 状态层: emotion/life 快照 + life 采样提示
 npm run test:engine        # M2 心情门控: 开心 vs 受伤 recall 集合显著不同 + 万级 <20ms
 npm run test:reconsolidate # M3 灵魂: 和好后旧怨回暖, 但 fact_core 一字未变
 ```
