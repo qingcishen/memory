@@ -71,6 +71,27 @@ export async function writeLifeState(userId, state) {
   return clampLife(data ?? row);
 }
 
+export function circadianEnergyBaseline(hourOfDay) {
+  const h = ((Number(hourOfDay) % 24) + 24) % 24;
+  if (h < 5) return 0.22;
+  if (h < 8) return lerp(0.35, 0.62, (h - 5) / 3);
+  if (h < 12) return lerp(0.65, 0.82, (h - 8) / 4);
+  if (h < 18) return 0.78;
+  if (h < 22) return lerp(0.72, 0.52, (h - 18) / 4);
+  return 0.38;
+}
+
+export function decayLife(state = {}, hours = 0, now = Date.now()) {
+  const s = clampLife(state);
+  const elapsed = Math.max(0, Number(hours) || 0);
+  const hour = new Date(now).getHours();
+  const baseline = circadianEnergyBaseline(hour);
+  const satiety = clamp(s.satiety - elapsed * 0.08, 0.08, 1);
+  const energyTowardBaseline = decayToward(s.energy, baseline, elapsed, 3);
+  const energy = clamp(energyTowardBaseline * (0.65 + s.health * 0.35), 0, 1);
+  return clampLife({ ...s, energy, satiety, health: s.health });
+}
+
 /** 把精力状态翻译成表现指引, 注入 system; 别让她直接报数值。 */
 export function toLifePrompt(state) {
   if (!state) return '';
@@ -126,6 +147,16 @@ function num(value, fallback = 0) {
 
 function clamp(value, lo, hi) {
   return Math.min(hi, Math.max(lo, value));
+}
+
+function decayToward(value, baseline, hours, halfLife) {
+  if (!(hours > 0)) return value;
+  const factor = Math.pow(0.5, hours / halfLife);
+  return baseline + (value - baseline) * factor;
+}
+
+function lerp(from, to, t) {
+  return from + (to - from) * clamp(t, 0, 1);
 }
 
 function textOrNull(value) {
