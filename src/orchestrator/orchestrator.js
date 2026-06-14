@@ -8,6 +8,7 @@
 import { MemoryAdapter, EmotionAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
 import { DefaultLLM } from './llm.js';
 import { assemble, buildMonologueContext } from './assemble.js';
+import { PARAMS } from '../params.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
@@ -21,7 +22,12 @@ export class Orchestrator {
     this.userId = userId;
     this.subjectName = subjectName;
     this.companionName = companionName;
-    this.options = { useMonologue: true, historyTurns: DEFAULT_HISTORY_TURNS, ...options };
+    this.options = {
+      useMonologue: true,
+      historyTurns: DEFAULT_HISTORY_TURNS,
+      personaRefreshMs: PARAMS.orchestrator.personaRefreshMs,
+      ...options,
+    };
 
     this.memory = deps.memory ?? new MemoryAdapter({ userId, subjectName });
     this.emotion = deps.emotion ?? new EmotionAdapter(userId);
@@ -31,15 +37,20 @@ export class Orchestrator {
     this.historyStore = deps.historyStore ?? null;
 
     this.history = [];
-    this._personaLoaded = false;
+    this._personaLoadedAt = 0;
     this._historyLoaded = false;
   }
 
-  /** 加载并缓存人格段 (IO); reply() 会自动调用一次, 也可提前手动 await。 */
+  /**
+   * 加载/刷新人格段 (IO); reply() 会自动调用。
+   * 首次总会加载; 之后每隔 personaRefreshMs 重新加载一次, 让长期运行的实例
+   * (如 ProactiveScheduler 反复复用同一个 Orchestrator) 能感知到 self 记忆的更新。
+   */
   async init() {
-    if (!this._personaLoaded) {
+    const now = Date.now();
+    if (!this._personaLoadedAt || now - this._personaLoadedAt >= this.options.personaRefreshMs) {
       if (typeof this.persona.load === 'function') await this.persona.load().catch(() => {});
-      this._personaLoaded = true;
+      this._personaLoadedAt = now;
     }
     if (!this._historyLoaded) {
       await this.loadHistory().catch(() => {});
