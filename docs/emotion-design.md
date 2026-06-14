@@ -1,6 +1,8 @@
 ## 情绪系统设计方案 · Emotion
 
 > AI 伴侣(可可)的情绪子系统。本文描述情绪的表示、存储、更新、衰减,以及它如何反过来影响回复。接口与《编排器设计方案》对齐:`current` / `update` / `toPrompt`。
+>
+> **后续计划(v2)**:[开发设计方案](companion-roadmap.md) 与 [外貌与生命状态系统设计](appearance-life-design.md) 提出把本文档的情绪子系统并入统一的 `StateLayer`,并把 `energy` 迁到新的 `life` 维度——情绪维度届时只保留 `valence` + `warmth`。本文档当前仍按 `valence/energy/warmth` 三维描述现有实现(`src/emotion.js`),迁移尚未落地。
 
 ---
 
