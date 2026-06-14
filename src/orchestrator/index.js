@@ -1,7 +1,7 @@
 export { Orchestrator } from './orchestrator.js';
 export {
   MemoryAdapter,
-  EmotionAdapter,
+  StateLayerAdapter,
   RelationshipAdapter,
   PersonaAdapter,
   formatRelationshipPrompt,

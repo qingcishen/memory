@@ -1,15 +1,13 @@
 // 编排器 · 子系统适配层。
 //
-// 把 cyber-memory 现有的 Memory / persona / state(affect) 门面包成编排器要的统一接口
-// (memory / emotion / relationship / persona, 见编排器设计方案 §3)。
+// 把 cyber-memory 现有的 Memory / persona / state 门面包成编排器要的统一接口
+// (memory / stateLayer / relationship / persona, 见 companion-roadmap §3)。
 // 编排器只认这里的方法签名, 不直接 import 下面这些底层模块。
 
 import { Memory } from '../memory.js';
 import { personaBlock } from '../persona.js';
-import { readState, decayState, clampState } from '../state/affect.js';
-import { moodToEmotion, toEmotionPrompt, emotionSamplingHints } from '../emotion.js';
-
-const HOUR = 1000 * 60 * 60;
+import { readState, clampState } from '../state/affect.js';
+import { StateLayer } from '../state/stateLayer.js';
 
 // ============================================================
 //  纯逻辑: state -> 自然语言 (供 toPrompt 使用, 可离线单测)
@@ -43,37 +41,34 @@ export class MemoryAdapter {
   }
 
   /**
-   * 提取记忆 + 更新情绪/关系状态(M1) 都在这一步完成, 见 EmotionAdapter/RelationshipAdapter 的注释。
+   * 提取记忆 + 更新状态层底座(M1) 都在这一步完成, 见 StateLayerAdapter/RelationshipAdapter 的注释。
    * useLLM: true —— 让 M1 的状态机用 LLM 增量(而不仅是启发式), 这一次推断同时产出
-   * mood(情绪) 和 relationship(关系) 的增量, EmotionAdapter/RelationshipAdapter 都读这一份结果。
+   * mood(情绪/life 精力) 和 relationship(关系) 的增量, 状态层/关系适配器都读这一份结果。
    */
   async observe(turns, opts = {}) {
     await this._mem.observe(turns, { useLLM: true, ...opts });
   }
 }
 
-/** 情绪门面适配: 读 M1 的 affective_state, 映射成短时情绪并提供表现指引与采样提示。 */
-export class EmotionAdapter {
+/** 状态层门面适配: 包统一 StateLayer, 编排器不再直接接 emotion。 */
+export class StateLayerAdapter {
   constructor(userId) {
-    this.userId = userId;
+    this.stateLayer = new StateLayer({ userId });
   }
 
-  /** 读 M1 状态, 按距上次更新的时长回落, 再映射成 {valence, energy, warmth}。 */
-  async current() {
-    const state = await readState(this.userId);
-    const hours = state.updated_at ? Math.max(0, (Date.now() - new Date(state.updated_at).getTime()) / HOUR) : 0;
-    return moodToEmotion(decayState(state, hours));
+  async snapshot() {
+    return this.stateLayer.snapshot();
   }
 
-  /** 心情/关系的增量更新已经在 memory.observe({ useLLM: true }) 里随 M1 状态机完成, 这里不重复写。 */
-  async update() {}
+  /** 状态增量已经在 memory.observe({ useLLM: true }) 里随 M1 状态机完成, 这里不重复写。 */
+  async evolve() {}
 
-  toPrompt(state) {
-    return toEmotionPrompt(state);
+  toPrompt(snapshot) {
+    return this.stateLayer.toPrompt(snapshot);
   }
 
-  samplingHints(state) {
-    return emotionSamplingHints(state);
+  samplingHints(snapshot) {
+    return this.stateLayer.samplingHints(snapshot);
   }
 }
 
@@ -87,7 +82,7 @@ export class RelationshipAdapter {
     return readState(this.userId);
   }
 
-  /** 原因同 EmotionAdapter.update: relationship 的增量已随 memory.observe({ useLLM: true }) 完成, 这里不重复写。 */
+  /** 原因同 StateLayerAdapter.evolve: relationship 的增量已随 memory.observe({ useLLM: true }) 完成, 这里不重复写。 */
   async bump() {}
 
   toPrompt(state) {

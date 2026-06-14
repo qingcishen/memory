@@ -2,10 +2,10 @@
 //
 // reply() = 同步路径: 并行加载状态/记忆 -> (可选)内心独白 -> 组装 prompt -> 生成回复。
 // proactiveTick() = 后台主动性入口: 定时器/事件触发 -> 复用同一套 prompt 组装生成主动开场。
-// afterReply() = 后台路径: emotion.update / memory.observe / relationship.bump, allSettled, 不阻塞回复。
+// afterReply() = 后台路径: stateLayer.evolve / memory.observe / relationship.bump, allSettled, 不阻塞回复。
 // 详见编排器设计方案 §5。
 
-import { MemoryAdapter, EmotionAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
+import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
 import { DefaultLLM } from './llm.js';
 import { assemble, buildMonologueContext } from './assemble.js';
 import { PARAMS } from '../params.js';
@@ -14,7 +14,7 @@ const DEFAULT_HISTORY_TURNS = 6;
 
 export class Orchestrator {
   /**
-   * @param deps 可注入 { memory, emotion, relationship, persona, llm, historyStore }, 默认用真实适配器。
+   * @param deps 可注入 { memory, stateLayer, relationship, persona, llm, historyStore }, 默认用真实适配器。
    * @param options { useMonologue=true, historyTurns=6 }
    */
   constructor({ userId, subjectName = '对方', companionName = '她', deps = {}, options = {} }) {
@@ -30,7 +30,7 @@ export class Orchestrator {
     };
 
     this.memory = deps.memory ?? new MemoryAdapter({ userId, subjectName });
-    this.emotion = deps.emotion ?? new EmotionAdapter(userId);
+    this.stateLayer = deps.stateLayer ?? new StateLayerAdapter(userId);
     this.relationship = deps.relationship ?? new RelationshipAdapter(userId);
     this.persona = deps.persona ?? new PersonaAdapter({ userId, subjectName: companionName });
     this.llm = deps.llm ?? new DefaultLLM();
@@ -97,8 +97,8 @@ export class Orchestrator {
   async reply(userMessage) {
     await this.init();
 
-    const [emotionState, relState, memoryBlock] = await Promise.all([
-      this.emotion.current().catch(() => null),
+    const [stateSnapshot, relState, memoryBlock] = await Promise.all([
+      this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(userMessage).catch(() => ''),
     ]);
@@ -106,7 +106,7 @@ export class Orchestrator {
     const promptParts = {
       personaPrompt: this.persona.toPrompt() ?? '',
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
-      emotionPrompt: this.emotion.toPrompt(emotionState) ?? '',
+      statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
       memoryBlock: memoryBlock ?? '',
     };
 
@@ -125,7 +125,7 @@ export class Orchestrator {
     });
 
     const samplingHints =
-      typeof this.emotion.samplingHints === 'function' && emotionState ? this.emotion.samplingHints(emotionState) : {};
+      typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
     const reply = await this.llm.generateReply(messages, samplingHints);
 
     this.recordHistory([
@@ -154,8 +154,8 @@ export class Orchestrator {
     if (!shouldSend) return null;
 
     const seed = ctx.query ?? ctx.memoryQuery ?? ctx.reason ?? '想主动找对方聊一句';
-    const [emotionState, relState, memoryBlock] = await Promise.all([
-      this.emotion.current().catch(() => null),
+    const [stateSnapshot, relState, memoryBlock] = await Promise.all([
+      this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(seed).catch(() => ''),
     ]);
@@ -163,7 +163,7 @@ export class Orchestrator {
     const promptParts = {
       personaPrompt: this.persona.toPrompt() ?? '',
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
-      emotionPrompt: this.emotion.toPrompt(emotionState) ?? '',
+      statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
       memoryBlock: memoryBlock ?? '',
     };
 
@@ -182,7 +182,7 @@ export class Orchestrator {
     });
 
     const samplingHints =
-      typeof this.emotion.samplingHints === 'function' && emotionState ? this.emotion.samplingHints(emotionState) : {};
+      typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
     const proactive = await this.llm.generateReply(messages, samplingHints);
 
     if (ctx.recordHistory !== false) this.recordHistory([{ role: 'assistant', content: proactive }]);
@@ -196,7 +196,7 @@ export class Orchestrator {
       { role: 'assistant', content: reply },
     ];
     return Promise.allSettled([
-      this.emotion.update(userMessage, reply),
+      this.stateLayer.evolve(turns),
       this.memory.observe(turns),
       this.relationship.bump(),
     ]).then((results) => {

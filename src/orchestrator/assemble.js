@@ -7,11 +7,12 @@
 export function buildSystemPrompt({
   personaPrompt = '',
   relationshipPrompt = '',
+  statePrompt = '',
   emotionPrompt = '',
   memoryBlock = '',
   monologue = '',
 } = {}) {
-  const sections = [personaPrompt, relationshipPrompt, emotionPrompt, memoryBlock];
+  const sections = [personaPrompt, relationshipPrompt, statePrompt || emotionPrompt, memoryBlock];
   if (monologue && monologue.trim()) sections.push(`(你此刻的想法, 别直接说出来): ${monologue.trim()}`);
   return sections.filter((s) => s && s.trim()).join('\n\n');
 }
@@ -39,10 +40,11 @@ export function buildMonologueContext({
   situation,
   personaPrompt = '',
   relationshipPrompt = '',
+  statePrompt = '',
   emotionPrompt = '',
   memoryBlock = '',
 } = {}) {
-  const parts = [personaPrompt, relationshipPrompt, emotionPrompt, memoryBlock].filter((s) => s && s.trim());
+  const parts = [personaPrompt, relationshipPrompt, statePrompt || emotionPrompt, memoryBlock].filter((s) => s && s.trim());
   parts.push(situation != null ? situation : `对方刚说: "${userMessage}"`);
   parts.push('写一句她此刻心里冒出来的真实想法 (不会说出口), 一两句话, 不要加引号或标签。');
   return parts.join('\n\n');
