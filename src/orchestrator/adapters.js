@@ -52,8 +52,8 @@ export class MemoryAdapter {
 
 /** 状态层门面适配: 包统一 StateLayer, 编排器不再直接接 emotion。 */
 export class StateLayerAdapter {
-  constructor(userId) {
-    this.stateLayer = new StateLayer({ userId });
+  constructor(userId, stateLayer = new StateLayer({ userId })) {
+    this.stateLayer = stateLayer;
   }
 
   async snapshot() {
@@ -61,7 +61,9 @@ export class StateLayerAdapter {
   }
 
   /** 状态增量已经在 memory.observe({ useLLM: true }) 里随 M1 状态机完成, 这里不重复写。 */
-  async evolve() {}
+  async evolve(turns) {
+    return this.stateLayer.evolve(turns);
+  }
 
   toPrompt(snapshot) {
     return this.stateLayer.toPrompt(snapshot);

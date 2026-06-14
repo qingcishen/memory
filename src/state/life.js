@@ -133,7 +133,11 @@ export class LifeDimension {
     return decayLife(state, hours, this.now());
   }
 
-  async evolve() {}
+  async evolve() {
+    if (!this.userId) return undefined;
+    const current = await this.current();
+    return this.write(this.userId, current);
+  }
 
   toPrompt(state) {
     return toLifePrompt(state);

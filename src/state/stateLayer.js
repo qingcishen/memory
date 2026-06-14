@@ -12,11 +12,11 @@ import { LifeDimension, toLifePrompt, lifeSamplingHints } from './life.js';
 const HOUR = 1000 * 60 * 60;
 
 export class StateLayer {
-  constructor({ userId, read = readState, life = new LifeDimension({ userId }), now = () => Date.now() } = {}) {
+  constructor({ userId, read = readState, life = null, now = () => Date.now() } = {}) {
     this.userId = userId;
     this.read = read;
-    this.life = life;
     this.now = now;
+    this.life = life ?? new LifeDimension({ userId, now });
   }
 
   async snapshot() {
@@ -43,5 +43,7 @@ export class StateLayer {
     return lifeSamplingHints(snapshot?.life);
   }
 
-  async evolve() {}
+  async evolve(turns) {
+    await this.life.evolve(turns);
+  }
 }
