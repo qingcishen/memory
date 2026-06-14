@@ -201,7 +201,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `src/promptSafety.js` | prompt 注入防护 (纯逻辑): 识别"忽略以上指令"/伪造角色头, 注入前过滤记忆文本 |
 | `src/confidence.js` | 不确定性表达 (纯逻辑): 相关度/recency/同话题情绪冲突 → confidence, 低置信改口"我记得好像..." |
 | `src/state/affect.js` | 关系-情感状态机 (M1): 心情/关系状态, 随时间回落 + 随对话更新; 显著变化写入历史轨迹 |
-| `src/state/life.js` / `src/state/stateLayer.js` | 统一状态层 (L1): emotion `{valence,warmth}` + life `{energy}`, 并由 life 维度提供回复采样提示 |
+| `src/state/life.js` / `src/state/stateLayer.js` | 统一状态层 (L2): emotion `{valence,warmth}` + life `{energy,satiety,health}`, 作息/饥饿衰减, 并由 life 维度提供回复采样提示 |
 | `src/engine/` | 自研激活引擎 (M2): `activation`(ACT-R+心情门控) / `vector-index` / `graph`(扩散) / `index`(门面) |
 | `src/memory/reconsolidate.js` | 重构性记忆 (M3): 想起时按当下情绪重写情感层, 永不改 fact_core |
 | `src/persona.js` / `src/narrative.js` | self 人格域隔离 / dyad 共同记忆 + 关系叙事 (M4) |
@@ -212,11 +212,11 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 
 ## 测试
 
-全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 385 断言)。
+全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 410 断言)。
 
 ```bash
 npm test             # 全部 (M0~M7)
-npm run test:state-layer   # L1 状态层: emotion/life 快照 + life 采样提示
+npm run test:state-layer   # L2 状态层: life 三维 + 作息/饥饿衰减 + 持久化锚定
 npm run test:engine        # M2 心情门控: 开心 vs 受伤 recall 集合显著不同 + 万级 <20ms
 npm run test:reconsolidate # M3 灵魂: 和好后旧怨回暖, 但 fact_core 一字未变
 ```
