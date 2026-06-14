@@ -127,8 +127,12 @@ export function formatForPrompt(mems, subjectName = '对方') {
   if (!mems || mems.length === 0) return '';
   // 注入时优先用 narrative(她当下的解读), 没有才退回 fact_core/content
   // sanitizeForPrompt: 记忆文本来自用户输入/LLM 提取, 不可信, 过滤可疑的 prompt 注入话术
+  // _lowConfidence (#4 不确定性表达): 相关度低/很久没强化/同话题情绪冲突 → "我记得好像..."
   const lines = mems
-    .map((m) => `- ${sanitizeForPrompt(m.narrative || m.fact_core || m.content)}`)
+    .map((m) => {
+      const text = sanitizeForPrompt(m.narrative || m.fact_core || m.content);
+      return m._lowConfidence ? `- 我记得好像${text}` : `- ${text}`;
+    })
     .join('\n');
   return `你记得关于${subjectName}的事:\n${lines}`;
 }

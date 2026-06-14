@@ -14,6 +14,7 @@ import { seedPersona, personaBlock } from './persona.js';
 import { dyadBackdrop, synthesizeNarrative } from './narrative.js';
 import { scheduleFromTurns, dueProspectives, markFired } from './memory/prospective.js';
 import { ingestImage, ingestAudio } from './modal/index.js';
+import { attachConfidence } from './confidence.js';
 import { PARAMS } from './config.js';
 
 /**
@@ -56,19 +57,25 @@ export class Memory {
    * 传 { engine: false } 退回旧的纯相似度+recency 重排路径 (双轨对照用)。
    */
   async recall(query, opts = {}) {
-    if (opts.engine === false) return retrieveMemories(this.userId, query, opts);
-    const state = await readState(this.userId).catch(() => null);
-    let hits = await engineRecall(this.userId, query, state, opts);
-    // M3: 想起即被当下情绪轻微染色 (落库异步, 返回染色后的值供本轮注入)。
-    if (state && opts.reconsolidate !== false) hits = await reconsolidateOnRecall(hits, state);
-    // M4: 无条件带上最重要的"我们共同记忆"作关系底色 (去重后补在末尾)。
-    const n = opts.includeDyad ?? PARAMS.relationship_memory.alwaysIncludeDyad;
-    if (n > 0) {
-      const have = new Set(hits.map((m) => m.id));
-      const backdrop = (await dyadBackdrop(this.userId, n).catch(() => [])).filter((m) => !have.has(m.id));
-      hits = [...hits, ...backdrop];
+    let hits;
+    if (opts.engine === false) {
+      hits = await retrieveMemories(this.userId, query, opts);
+    } else {
+      const state = await readState(this.userId).catch(() => null);
+      hits = await engineRecall(this.userId, query, state, opts);
+      // M3: 想起即被当下情绪轻微染色 (落库异步, 返回染色后的值供本轮注入)。
+      if (state && opts.reconsolidate !== false) hits = await reconsolidateOnRecall(hits, state);
+      // M4: 无条件带上最重要的"我们共同记忆"作关系底色 (去重后补在末尾)。
+      const n = opts.includeDyad ?? PARAMS.relationship_memory.alwaysIncludeDyad;
+      if (n > 0) {
+        const have = new Set(hits.map((m) => m.id));
+        const backdrop = (await dyadBackdrop(this.userId, n).catch(() => [])).filter((m) => !have.has(m.id));
+        hits = [...hits, ...backdrop];
+      }
     }
-    return hits;
+    // P1 不确定性表达 (#4): 相关度低/很久没强化/同话题情绪冲突 → _lowConfidence,
+    // toPrompt 据此把"我记得 XXX"换成"我记得好像 XXX"。
+    return attachConfidence(hits);
   }
 
   /** 读她当前的心情 + 你俩关系状态 (M2 门控检索 / M3 重构会用) */

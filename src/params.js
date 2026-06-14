@@ -103,6 +103,22 @@ export const PARAMS = {
     defaultHour: 20, // 只给了"明天"没给具体时刻时, 默认排在当天 20:00 (晚上闲聊时段)
   },
 
+  // ---- P1 不确定性表达 (confidence) ----
+  // 召回结果不该都是"我记得 XXX"的确定口吻: 相关度低、很久没被想起/强化,
+  // 或与同批召回的另一条记忆同话题但情绪截然相反 (冲突), 都该说"我记得好像..."。
+  confidence: {
+    weights: {
+      similarity: 0.5, // 与当前 query 的相关度
+      strength: 0.5, // recency/强化 (decay.recencyScore), 缺数据按 1 (不主动判定不确定)
+    },
+    conflictPenalty: 0.4, // 命中冲突时从加权和里扣掉这么多
+    lowThreshold: 0.45, // 低于它 → "我记得好像..."
+    conflict: {
+      similarityThreshold: 0.85, // 判定"同一话题": embedding 余弦相似度门槛 (低于去重的 0.96)
+      valenceGap: 0.5, // affect_valence 至少差这么多且符号相反才算"立场冲突"
+    },
+  },
+
   // ---- 主动遗忘 (forget-by-request) ----
   // "忘记我刚才说的那件事" 这类显式请求: 按 query 向量召回候选, 相似度达到这个门槛
   // 才认为"就是在说这件事", 纳入删除范围 (低于矛盾判断的 0.82, 因为口语化复述与

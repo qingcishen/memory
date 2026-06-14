@@ -37,7 +37,8 @@ const mem = new Memory({ userId: 'u_123', subjectName: '诗雅' });
 
 // 回复前: 检索相关记忆, 拼成可注入 system prompt 的串
 const memoryBlock = await mem.recallAsPrompt(userMessage);
-// → "你记得关于诗雅的事:\n- 诗雅讨厌香菜\n- 诗雅在日本备考"
+// → "你记得关于诗雅的事:\n- 诗雅讨厌香菜\n- 我记得好像诗雅小时候学过钢琴"
+// 相关度低/很久没强化/同话题情绪冲突的记忆会带上"我记得好像..."而非确定口吻 (recall() 结果上的 _lowConfidence)
 
 // 用 [人格] + [memoryBlock] + [对话历史] 调你的 LLM 生成回复 ...
 
@@ -157,6 +158,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `prospective.cueThreshold` | 语境触发预期记忆的相似度门槛 | 调低则更主动提起旧事 |
 | `orchestrator.personaRefreshMs` | persona 段缓存多久后重新加载 | 调低则长期运行实例更快感知到 self 记忆更新, 但 IO 更频繁 |
 | `dedup.nearDuplicateThreshold` | 近义去重: 向量相似度高于它视为"同一件事换了说法" | 调低则更容易把相似表述合并强化, 但误把"喜欢/讨厌"反义当重复的风险变大 |
+| `confidence.lowThreshold` | 不确定性表达: confidence 低于它时改口"我记得好像..." | 调高则更多记忆带上不确定语气, 显得更"人"但也更含糊 |
 | `forget.similarityThreshold` | 主动遗忘: query 召回候选相似度高于它才纳入删除范围 | 调低则"忘记那件事"更容易扩大误删范围 |
 
 ## 数据流
@@ -197,6 +199,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `src/reflect.js` | 反思总结 + 遗忘 |
 | `src/dedup.js` | 去重指纹 (M7, 纯逻辑): 反复说同一件事 → 强化而非新增 |
 | `src/promptSafety.js` | prompt 注入防护 (纯逻辑): 识别"忽略以上指令"/伪造角色头, 注入前过滤记忆文本 |
+| `src/confidence.js` | 不确定性表达 (纯逻辑): 相关度/recency/同话题情绪冲突 → confidence, 低置信改口"我记得好像..." |
 | `src/state/affect.js` | 关系-情感状态机 (M1): 心情/关系状态, 随时间回落 + 随对话更新; 显著变化写入历史轨迹 |
 | `src/state/life.js` / `src/state/stateLayer.js` | 统一状态层 (L1): emotion `{valence,warmth}` + life `{energy}`, 并由 life 维度提供回复采样提示 |
 | `src/engine/` | 自研激活引擎 (M2): `activation`(ACT-R+心情门控) / `vector-index` / `graph`(扩散) / `index`(门面) |
@@ -209,7 +212,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 
 ## 测试
 
-全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 365 断言)。
+全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 385 断言)。
 
 ```bash
 npm test             # 全部 (M0~M7)
