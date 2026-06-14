@@ -139,12 +139,13 @@ export async function reconsolidateOnRecall(hits, state, opts = {}) {
  * 情绪显著变化的记忆额外让 LLM 重写 narrative。
  * 典型用法: 和好后调一次, 把高 tension 的旧怨整体软化。
  */
-export async function reconsolidateRecent(userId, state, opts = {}) {
+export async function reconsolidateRecent(userId, companionId = 'default', state, opts = {}) {
   const lookback = opts.recent ?? 60;
   const { data: mems, error } = await supabase
     .from('memories')
     .select('id, fact_core, content, narrative, affect_valence, affect_intensity, affect_origin_valence, affect_origin_intensity, fact_locked, reconsolidation_count, type')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .is('superseded_by', null)
     .eq('fact_locked', false)
     .order('created_at', { ascending: false })

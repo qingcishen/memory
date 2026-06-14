@@ -49,9 +49,9 @@ console.log('buildAudioMemory (语音 → audio 记忆, 语气进 affect)');
 
 console.log('降级: 缺凭证且无文本时返回 []、不抛');
 {
-  const img = await ingestImage('u_test', {}); // 无 url 无 caption
+  const img = await ingestImage('u_test', 'default', {}); // 无 url 无 caption
   ok('ingestImage 无输入 → []', Array.isArray(img) && img.length === 0);
-  const aud = await ingestAudio('u_test', {}); // 无 file 无 transcript
+  const aud = await ingestAudio('u_test', 'default', {}); // 无 file 无 transcript
   ok('ingestAudio 无输入 → []', Array.isArray(aud) && aud.length === 0);
 }
 

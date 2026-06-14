@@ -96,27 +96,29 @@ export class SupabaseRateLimitStore {
     this.table = table;
   }
 
-  async load({ userId } = {}) {
+  async load({ userId, companionId = 'default' } = {}) {
     if (!userId) return defaultRateLimitState();
     const { data, error } = await this.client
       .from(this.table)
       .select('state')
       .eq('user_id', userId)
+      .eq('companion_id', companionId)
       .maybeSingle();
     if (error || !data) return defaultRateLimitState();
     return normalizeRateLimitState(data.state ?? {});
   }
 
-  async save(state, { userId } = {}) {
+  async save(state, { userId, companionId = 'default' } = {}) {
     if (!userId) throw new Error('SupabaseRateLimitStore.save 需要 userId');
     const normalized = normalizeRateLimitState(state);
     const { error } = await this.client.from(this.table).upsert(
       {
         user_id: userId,
+        companion_id: companionId,
         state: normalized,
         updated_at: new Date().toISOString(),
       },
-      { onConflict: 'user_id' }
+      { onConflict: 'user_id,companion_id' }
     );
     if (error) throw error;
     return normalized;
@@ -148,11 +150,13 @@ export class ProactiveScheduler {
 
   async tick(ctx = {}) {
     const now = ctx.now ?? this.clock();
-    const state = normalizeRateLimitState(await this.stateStore.load({ userId: this.orchestrator.userId }).catch(() => defaultRateLimitState()));
+    const userId = this.orchestrator.userId;
+    const companionId = this.orchestrator.companionId ?? 'default';
+    const state = normalizeRateLimitState(await this.stateStore.load({ userId, companionId }).catch(() => defaultRateLimitState()));
     const allowed = canSendProactive(state, now, { ...this.policy, ...(ctx.policy ?? {}) });
     if (!allowed.ok) return { sent: false, reason: allowed.reason, nextAt: allowed.nextAt };
 
-    const dueItems = await this.getDueItems({ userId: this.orchestrator.userId, now, ctx }).catch(() => []);
+    const dueItems = await this.getDueItems({ userId, companionId, now, ctx }).catch(() => []);
     const reason = ctx.reason ?? formatDueReason(dueItems) ?? this.defaultReason;
     const message = await this.orchestrator.proactiveTick({
       ...ctx,
@@ -161,9 +165,9 @@ export class ProactiveScheduler {
     });
     if (!message) return { sent: false, reason: 'orchestrator_skipped' };
 
-    await this.deliver({ userId: this.orchestrator.userId, message, reason, dueItems, now });
+    await this.deliver({ userId, companionId, message, reason, dueItems, now });
     const nextState = markProactiveSent(state, now, { ...this.policy, ...(ctx.policy ?? {}) });
-    await this.stateStore.save(nextState, { userId: this.orchestrator.userId });
+    await this.stateStore.save(nextState, { userId, companionId });
 
     const firedIds = dueItems.map((item) => item?.id).filter(Boolean);
     if (firedIds.length > 0) await this.markFired(firedIds).catch(() => {});

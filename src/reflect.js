@@ -6,13 +6,14 @@ import { memoryStrength } from './decay.js';
  * 反思: 把最近的零散记忆聚成更高层的总结 (如"诗雅最近压力大, 在备考"),
  * 作为高重要性的 reflection 记忆存回。让伴侣形成"整体印象"而非一堆碎片。
  */
-export async function runReflection(userId, opts = {}) {
+export async function runReflection(userId, companionId = 'default', opts = {}) {
   const lookback = opts.recent ?? 40;
 
   const { data: mems, error } = await supabase
     .from('memories')
     .select('id, content, type, importance, emotion, created_at')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .is('superseded_by', null)
     .neq('type', 'reflection')
     .order('created_at', { ascending: false })
@@ -51,6 +52,7 @@ export async function runReflection(userId, opts = {}) {
       .from('memories')
       .insert({
         user_id: userId,
+        companion_id: companionId,
         type: 'reflection',
         content,
         embedding,
@@ -68,11 +70,12 @@ export async function runReflection(userId, opts = {}) {
  * 找出"几乎被遗忘"的记忆 (强度低于阈值)。默认不删除, 返回供决定。
  * 想自动清理可传 { purge: true }。
  */
-export async function findForgettable(userId, threshold = 0.05, opts = {}) {
+export async function findForgettable(userId, companionId = 'default', threshold = 0.05, opts = {}) {
   const { data: mems, error } = await supabase
     .from('memories')
     .select('*')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .is('superseded_by', null);
   if (error) throw error;
 
@@ -106,10 +109,11 @@ export function selectForgettable(candidates = [], opts = {}) {
  * 按 query 向量召回候选, 挑出 selectForgettable 命中的几条直接删除 (不可恢复)。
  * @returns 被删除的记忆列表 (可能为空)
  */
-export async function forgetByQuery(userId, query, opts = {}) {
+export async function forgetByQuery(userId, companionId = 'default', query, opts = {}) {
   const queryEmbedding = await embed(query);
   const { data: candidates, error } = await supabase.rpc('match_memories', {
     p_user_id: userId,
+    p_companion_id: companionId,
     query_embedding: queryEmbedding,
     match_count: opts.pool ?? PARAMS.candidatePool,
   });

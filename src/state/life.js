@@ -4,6 +4,8 @@
 // 避免状态层影响主对话链路可用性。
 
 import { supabase } from '../config.js';
+import { currentActivity } from './activity.js';
+import { maybeFallSick, detectCare, applyCare, isSick } from './health.js';
 
 const HOUR = 1000 * 60 * 60;
 const FIELD_RANGE = {
@@ -42,22 +44,24 @@ export function moodToLife(state = {}) {
   return clampLife({ energy: state?.mood?.arousal });
 }
 
-export async function readLifeState(userId) {
+export async function readLifeState(userId, companionId = 'default') {
   if (!userId) return { ...defaultLifeState(), updated_at: null };
   const { data, error } = await supabase
     .from('life_state')
     .select('energy, satiety, health, current_activity, last_slept_at, sick_until, updated_at')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .maybeSingle();
   if (error || !data) return { ...defaultLifeState(), updated_at: null };
   return clampLife(data);
 }
 
-export async function writeLifeState(userId, state) {
+export async function writeLifeState(userId, companionId = 'default', state) {
   if (!userId) throw new Error('writeLifeState 需要 userId');
   const s = clampLife(state);
   const row = {
     user_id: userId,
+    companion_id: companionId,
     energy: s.energy,
     satiety: s.satiety,
     health: s.health,
@@ -66,7 +70,7 @@ export async function writeLifeState(userId, state) {
     sick_until: s.sick_until,
     updated_at: new Date().toISOString(),
   };
-  const { data, error } = await supabase.from('life_state').upsert(row, { onConflict: 'user_id' }).select().single();
+  const { data, error } = await supabase.from('life_state').upsert(row, { onConflict: 'user_id,companion_id' }).select().single();
   if (error) throw error;
   return clampLife(data ?? row);
 }
@@ -93,7 +97,7 @@ export function decayLife(state = {}, hours = 0, now = Date.now()) {
 }
 
 /** 把精力状态翻译成表现指引, 注入 system; 别让她直接报数值。 */
-export function toLifePrompt(state) {
+export function toLifePrompt(state, now = Date.now()) {
   if (!state) return '';
   const s = clampLife(state);
   const energy = s.energy > 0.7 ? '很有兴致' : s.energy < 0.3 ? '有些没精神' : '状态一般';
@@ -102,7 +106,14 @@ export function toLifePrompt(state) {
   const parts = [`你现在${energy}`];
   if (satiety) parts.push(satiety);
   if (health) parts.push(health);
-  return `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的身体状态。`;
+  let line = `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的身体状态。`;
+  // L4: 生病态(sick_until 未到)措辞升级, 盖过普通的"状态一般"。
+  if (isSick(s, now)) {
+    line = '你现在生病了, 有点难受、没力气, 说话也提不起劲、容易撒娇想被照顾。让它自然影响语气和话量, 别报数值。';
+  }
+  // L3: 自然带上"此刻在做什么"(她有自己的一天, 可顺口提一句), 别报数值。
+  if (s.current_activity) line += `\n你这会儿${s.current_activity}, 聊起来可以自然带一句你在忙的事, 但别硬凑。`;
+  return line;
 }
 
 /** life.energy -> 采样参数。低 energy 时短、平、温度低; 高 energy 时长、活、温度高。 */
@@ -120,27 +131,82 @@ export function lifeSamplingHints(state) {
 
 /** 状态层内部维度门面。 */
 export class LifeDimension {
-  constructor({ userId, read = readLifeState, write = writeLifeState, now = () => Date.now() } = {}) {
+  constructor({
+    userId,
+    companionId = 'default',
+    read = readLifeState,
+    write = writeLifeState,
+    now = () => Date.now(),
+    activityFn = currentActivity, // L3: 可注入, 测试时换成确定函数
+    rng = Math.random, // L4: 可注入, 测试时换成固定值
+  } = {}) {
     this.userId = userId;
+    this.companionId = companionId;
     this.read = read;
     this.write = write;
     this.now = now;
+    this.activityFn = activityFn;
+    this.rng = rng;
   }
 
   async current() {
-    const state = this.userId ? await this.read(this.userId) : clampLife(defaultLifeState());
+    const state = this.userId ? await this.read(this.userId, this.companionId) : clampLife(defaultLifeState());
     const hours = state.updated_at ? Math.max(0, (this.now() - new Date(state.updated_at).getTime()) / HOUR) : 0;
-    return decayLife(state, hours, this.now());
+    const decayed = decayLife(state, hours, this.now());
+    // L3: 派生此刻在做什么 (只读, 不写库; 生病时 activityFn 会覆盖为休息)
+    const activity = this.activityFn(this.now(), {
+      userId: this.userId,
+      companionId: this.companionId,
+      sickUntil: decayed.sick_until,
+    });
+    return { ...decayed, current_activity: activity };
   }
 
-  async evolve() {
+  /**
+   * L4: 演变 life, 并把"生病/被照顾"对【情绪/关系】的影响作为耦合增量回传
+   * (由 src/memory.js 统一并进 affect 状态机落库, 避免双写竞态)。
+   * @returns { moodDelta, relationshipDelta, careEvent } —— 无事件时各为 null
+   */
+  async evolve(turns = []) {
+    if (!this.userId) return { moodDelta: null, relationshipDelta: null, careEvent: null };
+    const now = this.now();
+    let state = await this.current();
+    let moodDelta = null;
+    let relationshipDelta = null;
+    let careEvent = null;
+
+    // 自动发病(熬夜抬概率)
+    const fell = maybeFallSick(state, now, this.rng);
+    if (fell.sick) {
+      state = fell.state;
+      moodDelta = mergeMood(moodDelta, fell.moodDelta);
+    }
+    // 病中被关心 → 加速康复 + 暖意/亲密增量 + careEvent
+    const care = detectCare(turns);
+    if (care.cared && isSick(state, now)) {
+      const applied = applyCare(state, now, care.hits);
+      if (applied.applied) {
+        state = applied.state;
+        moodDelta = mergeMood(moodDelta, applied.moodDelta);
+        relationshipDelta = applied.relationshipDelta;
+        careEvent = applied.careEvent;
+      }
+    }
+    // 重新派生活动(生病/康复会改变), 固化进库
+    state = { ...state, current_activity: this.activityFn(now, { userId: this.userId, companionId: this.companionId, sickUntil: state.sick_until }) };
+    await this.write(this.userId, this.companionId, state);
+    return { moodDelta, relationshipDelta, careEvent };
+  }
+
+  /** L3: 定时推进 —— 把派生的活动/衰减固化进库 (无对话时也让"她的一天"在走)。 */
+  async tickActivity() {
     if (!this.userId) return undefined;
     const current = await this.current();
-    return this.write(this.userId, current);
+    return this.write(this.userId, this.companionId, current);
   }
 
   toPrompt(state) {
-    return toLifePrompt(state);
+    return toLifePrompt(state, this.now());
   }
 
   samplingHints(state) {
@@ -149,6 +215,18 @@ export class LifeDimension {
 }
 
 // ---- helpers (纯) ----
+/** L4: 合并两个 moodDelta ({mood:{valence,arousal}}); 任一为空返回另一个。 */
+function mergeMood(a, b) {
+  if (!a) return b;
+  if (!b) return a;
+  return {
+    mood: {
+      valence: (a.mood?.valence ?? 0) + (b.mood?.valence ?? 0),
+      arousal: (a.mood?.arousal ?? 0) + (b.mood?.arousal ?? 0),
+    },
+  };
+}
+
 function clampField(field, value) {
   const [lo, hi] = FIELD_RANGE[field];
   return clamp(num(value, (lo + hi) / 2), lo, hi);

@@ -34,6 +34,7 @@ export {
   moodLabel,
   stateDelta,
   labelStateEvent,
+  detectTensionTarget,
   summarizeTrajectory,
   formatTrajectory,
   readState,
@@ -48,8 +49,23 @@ export {
   clampEmotion,
   moodToEmotion,
   toEmotionPrompt,
-  emotionSamplingHints,
 } from './src/emotion.js';
+// L3 生活模拟 (作息活动)
+export { currentActivity, isSleeping, ACTIVITY_TEMPLATES } from './src/state/activity.js';
+// L4 健康/生病闭环
+export { isSick, maybeFallSick, detectCare, applyCare } from './src/state/health.js';
+// A1 外貌/自拍 (骨架, 出图为仓库外基建)
+export {
+  MockImageProvider,
+  HttpImageProvider,
+  defaultImageProvider,
+  shouldSendSelfie,
+  canSendSelfie,
+  buildSelfiePrompt,
+  Selfie,
+  readAppearanceAssets,
+  insertAppearanceAsset,
+} from './src/appearance/index.js';
 export {
   rankCandidates,
   engineRecall,
@@ -59,7 +75,7 @@ export {
   spreadActivation,
   attachSpread,
 } from './src/engine/index.js';
-export { baseLevel, moodCongruence, milestone, temporalPenalty } from './src/engine/activation.js';
+export { baseLevel, moodCongruence, directedMoodCongruence, milestone, temporalPenalty } from './src/engine/activation.js';
 export {
   reconsolidate,
   shouldRewriteNarrative,
@@ -71,6 +87,16 @@ export {
   driftFromOrigin,
 } from './src/memory/reconsolidate.js';
 export { filterBySubject, formatPersonaBlock, seedPersona, personaBlock } from './src/persona.js';
+export {
+  CompanionConfigSchema,
+  normalizeCompanionConfig,
+  safeCompanionConfig,
+  rowToConfig,
+  configToRow,
+  upsertCompanion,
+  getCompanion,
+  listCompanions,
+} from './src/companion.js';
 export { pickDyadBackdrop, composeNarrativeInput, dyadBackdrop, synthesizeNarrative } from './src/narrative.js';
 export {
   relativeTriggerAt,
@@ -95,7 +121,7 @@ export { normalizeForHash, dedupHash, findDuplicate } from './src/dedup.js';
 export {
   Orchestrator,
   MemoryAdapter,
-  EmotionAdapter,
+  StateLayerAdapter,
   RelationshipAdapter,
   PersonaAdapter,
   DefaultLLM,

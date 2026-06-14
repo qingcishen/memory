@@ -42,6 +42,8 @@ export const PARAMS = {
     maxStepPerTurn: 0.3,
     // 状态变化的总幅度超过它才往历史表追加一条快照 (避免把每次微小回落都记下来)
     snapshotMinDelta: 0.08,
+    // #5 情绪指向性: tension 衰减回这个值以下时, 视为"这桩紧张消了", 清空 tension_target/tension_topic。
+    tensionTargetClearBelow: 0.08,
   },
 
   // ---- 情绪 → 记忆重要性 (emotion-design.md §8) ----
@@ -60,6 +62,9 @@ export const PARAMS = {
     warmthValenceWeight: 0.3, // 心情好时, 在亲密度基线上额外加多少"温度"
     warmthTensionWeight: 0.4, // 紧张时, 从亲密度基线扣多少"温度"
     warmthRepairDebtWeight: 0.3, // 还欠着没和好时, 额外扣多少"温度"
+    // #5 情绪指向性: tension 指向"外部话题"(为考试焦虑) 而非"用户"时, 只用这个比例的力度拉冷对你的温度。
+    // = 1 时退化为旧行为(不区分指向); 越小越体现"她为别的事烦, 但对你还是温柔的"。
+    externalTensionWarmthFactor: 0.25,
   },
 
   // ---- M2 自研激活引擎 + 心情门控检索 ----
@@ -75,6 +80,9 @@ export const PARAMS = {
     graphDecay: 0.5, // 每跳衰减
     graphK: 6, // 相似图里每个节点连几个近邻
     graphThreshold: 0.6, // 建边的最低余弦相似度
+    // #5 定向心情门控: 她负面情绪指向某外部话题时, 负面记忆的点亮乘上"与话题的语义相关度"。
+    tensionGateMin: 0.4, // tension 高于它才启用定向门控 (低紧张不值得专门定向)
+    directedGateFloor: 0.2, // 与话题完全不相关的负面记忆仍保留这个比例的点亮 (不彻底归零)
   },
 
   // ---- M3 重构性记忆 (项目灵魂; 红线: 永不动 fact_core) ----
@@ -138,6 +146,34 @@ export const PARAMS = {
   // 阈值要明显高于矛盾判断的相似度门槛 —— 同话题但立场相反 (讨厌/喜欢) 通常达不到这么高。
   dedup: {
     nearDuplicateThreshold: 0.96,
+  },
+
+  // ---- L4 健康/生病 (appearance-life-design.md 第三部分 §5) ----
+  // 生病是强情感钩子: 低频自动发病(熬夜抬概率), 表现成行为(虚弱/话少/想被照顾),
+  // 你的关心能加速恢复并加关系分, 整段经历进 dyad 共同记忆。
+  health: {
+    baseDailySickProb: 0.02, // 基础日发病概率(很低, 偶尔病)
+    sleepDeprivationHours: 20, // 距上次睡觉超过它视为熬夜
+    staleupMultiplier: 3, // 熬夜时发病概率的倍率
+    sickDurationHours: 36, // 一次病程基准时长
+    sickDurationJitterHours: 12, // 病程随机抖动(±)
+    onsetHealthDrop: 0.4, // 发病瞬间 health 的下跌
+    onsetValenceDrop: 0.25, // 发病带来的心情下跌(耦合进 affect)
+    onsetArousalDrop: 0.15, // 发病带来的唤起下降(蔫)
+    careRecoverHours: 8, // 一次"被关心"提前多少病程
+    careHealthGain: 0.15, // 一次"被关心" health 的回升
+    careValenceGain: 0.2, // 被照顾的暖意(耦合进 affect)
+    careClosenessGain: 0.06, // 被照顾拉近的亲密
+    careTrustGain: 0.04, // 被照顾增加的信任
+  },
+
+  // ---- A1 外貌/自拍 (appearance-life-design.md 第二部分; 出图为仓库外基建, 这里只搭骨架) ----
+  appearance: {
+    minClosenessForSelfie: 0.6, // 关系到这个亲密度才会"主动"发自拍 (被明确要求则放行)
+    selfie: {
+      minIntervalMinutes: 720, // 自拍冷却比闲聊更克制 (12h)
+      maxPerDay: 2, // 每天最多主动发几张
+    },
   },
 
   // ---- 编排器 ----

@@ -80,14 +80,15 @@ console.log('LifeDimension.current/evolve (注入 read/write 模拟持久化)');
   let row = null;
   const now = () => localTime(14);
   const read = async () => row ?? { ...defaultLifeState(), updated_at: null };
-  const write = async (userId, state) => {
+  const write = async (userId, companionId, state) => {
     row = { ...state, updated_at: new Date(now()).toISOString() };
     return row;
   };
-  const life = new LifeDimension({ userId: 'u_life', read, write, now });
+  // 注入确定的 activityFn (返回 null) 让 current() 不掺入 L3 活动, rng (恒 1) 让 L4 永不随机发病, 保持断言稳定。
+  const life = new LifeDimension({ userId: 'u_life', read, write, now, activityFn: () => null, rng: () => 1 });
 
   ok('新用户读到默认三维', JSON.stringify(await life.current()) === JSON.stringify(clampLife(defaultLifeState())));
-  await write('u_life', { energy: 0.9, satiety: 0.8, health: 1 });
+  await write('u_life', 'default', { energy: 0.9, satiety: 0.8, health: 1 });
   const roundTrip = await life.current();
   ok('写入后能读回三维值', roundTrip.energy === 0.9 && roundTrip.satiety === 0.8 && roundTrip.health === 1);
 

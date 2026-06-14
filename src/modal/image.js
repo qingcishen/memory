@@ -96,14 +96,14 @@ export async function captionImage(imageUrl, opts = {}) {
  * @param opts { url, caption?, affect?, mediaRef?, mediaEmbedding?, subjectName?, ... }
  * @returns 存入的记忆数组 (失败/无 caption 时返回 [], 不抛)
  */
-export async function ingestImage(userId, opts = {}) {
+export async function ingestImage(userId, companionId = 'default', opts = {}) {
   let caption = opts.caption;
   if (!caption && opts.url) caption = await captionImage(opts.url).catch(() => null);
   if (!caption) return []; // 降级: 没有 caption 就不记, 不崩
 
   const mem = buildImageMemory({ ...opts, caption, mediaRef: opts.mediaRef ?? opts.url });
   if (!mem) return [];
-  return storeMemories(userId, [mem]);
+  return storeMemories(userId, companionId, [mem]);
 }
 
 /**
@@ -113,11 +113,12 @@ export async function ingestImage(userId, opts = {}) {
  * 进程内 brute-force 余弦 (同 M2 VectorIndex 思路): 单用户量级下足够快, 也省一次 SQL 函数。
  * @returns 排序后的记忆数组 (含 _mediaSimilarity); 命中会被强化 (last_accessed/access_count)
  */
-export async function recallMedia(userId, queryEmbedding, opts = {}) {
+export async function recallMedia(userId, companionId = 'default', queryEmbedding, opts = {}) {
   const { data, error } = await supabase
     .from('memories')
     .select('id, type, content, fact_core, narrative, subject_kind, modality, media_ref, media_embedding, importance, emotion, created_at, last_accessed, access_count, access_log')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .is('superseded_by', null)
     .not('media_embedding', 'is', null);
   if (error) throw error;

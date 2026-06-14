@@ -13,6 +13,7 @@ import {
   stateDelta,
   moodShiftMagnitude,
   labelStateEvent,
+  detectTensionTarget,
   summarizeTrajectory,
   formatTrajectory,
 } from '../src/state/affect.js';
@@ -155,6 +156,40 @@ console.log('summarizeTrajectory / formatTrajectory (关系走向)');
   ok('轨迹文本提到越来越亲近', txt.includes('亲近'));
   ok('轨迹文本提到争执', txt.includes('争执'));
   ok('空轨迹 → 空串', formatTrajectory(summarizeTrajectory([])) === '');
+}
+
+console.log('#5 情绪指向性 (tension 冲着谁/为了什么)');
+{
+  // 默认指向 user, 保持旧语义
+  ok('defaultState: tension_target 默认 user', defaultState().relationship.tension_target === 'user');
+  ok('defaultState: tension_topic 默认 null', defaultState().relationship.tension_topic === null);
+
+  // detectTensionTarget 纯逻辑
+  ok('冲着用户: "你怎么又这样" → user', detectTensionTarget('你怎么又这样, 烦死了').target === 'user');
+  const ext = detectTensionTarget('明天要考试了, 压力好大快崩溃');
+  ok('为外部事焦虑 → external', ext.target === 'external');
+  ok('external 抓出话题 (考试)', ext.topic === '考试');
+  ok('没明显线索默认 user', detectTensionTarget('今天天气不错').target === 'user');
+
+  // applyDeltas: tension 上升时采纳指向; clampState 校验非法 target
+  const fightExt = applyDeltas(defaultState(), {
+    relationship: { tension: 0.3, tension_target: 'external', tension_topic: '工作' },
+  });
+  ok('applyDeltas: tension 升 → 采纳 external 指向', fightExt.relationship.tension_target === 'external');
+  ok('applyDeltas: 采纳话题', fightExt.relationship.tension_topic === '工作');
+  const noTension = applyDeltas(defaultState(), {
+    relationship: { closeness: 0.1, tension_target: 'external', tension_topic: '考试' },
+  });
+  ok('applyDeltas: tension 没升则不采纳新指向', noTension.relationship.tension_target === 'user');
+  ok('clampState: 非法 target 回退 user', clampState({ relationship: { tension_target: 'xyz' } }).relationship.tension_target === 'user');
+
+  // decayState: tension 缓和回基线下后, 清空指向
+  const cleared = decayState(
+    { mood: { valence: 0 }, relationship: { tension: 0.02, tension_target: 'external', tension_topic: '考试' } },
+    0
+  );
+  ok('decayState: tension 低于阈值 → target 回 user', cleared.relationship.tension_target === 'user');
+  ok('decayState: tension 低于阈值 → topic 清空', cleared.relationship.tension_topic === null);
 }
 
 console.log(`\nM1 全部 ${passed} 条断言通过 ✅`);

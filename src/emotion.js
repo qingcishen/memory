@@ -34,11 +34,17 @@ export function defaultEmotion() {
  */
 export function moodToEmotion(state) {
   const s = clampState(state);
-  const { warmthValenceWeight, warmthTensionWeight, warmthRepairDebtWeight } = PARAMS.emotion;
+  const { warmthValenceWeight, warmthTensionWeight, warmthRepairDebtWeight, externalTensionWarmthFactor } = PARAMS.emotion;
+  // #5 情绪指向性: 紧张冲着"外部话题"(为考试焦虑) 时, 只用一小部分力度拉冷对你的温度 ——
+  // 她为别的事烦, 但对你还是温柔的; 冲着用户时照旧全额拉冷。
+  const tensionWeight =
+    s.relationship.tension_target === 'external'
+      ? warmthTensionWeight * externalTensionWarmthFactor
+      : warmthTensionWeight;
   const warmth =
     s.relationship.closeness +
     s.mood.valence * warmthValenceWeight -
-    s.relationship.tension * warmthTensionWeight -
+    s.relationship.tension * tensionWeight -
     s.relationship.repair_debt * warmthRepairDebtWeight;
   return clampEmotion({ valence: s.mood.valence, warmth });
 }

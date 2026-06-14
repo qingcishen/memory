@@ -8,6 +8,7 @@ import {
   scoreActivation,
   baseLevel,
   moodCongruence,
+  directedMoodCongruence,
   milestone,
   temporalPenalty,
 } from '../src/engine/activation.js';
@@ -136,6 +137,29 @@ console.log('性能: 万级记忆 recall < 20ms');
   const ranked = scoreActivation(cand, { mood: { valence: -0.5 } }, { now });
   const dt = performance.now() - t0;
   ok(`10k 条 query+激活耗时 ${dt.toFixed(1)}ms < 20ms`, dt < 20 && ranked.length === 30);
+}
+
+console.log('#5 定向心情门控 (directedMoodCongruence)');
+{
+  // 话题向量 = [1,0]; 两条负面记忆: 一条与话题同向(考试相关), 一条正交(与你吵架相关)
+  const topicVec = [1, 0];
+  const negOnTopic = { affect_valence: -0.8, affect_intensity: 0.8, embedding: [1, 0] };
+  const negOffTopic = { affect_valence: -0.8, affect_intensity: 0.8, embedding: [0, 1] };
+
+  // 她负面 + 指向外部话题 "考试"
+  const stExternal = { mood: { valence: -0.6 }, relationship: { tension: 0.6, tension_target: 'external', tension_topic: '考试' } };
+  const onT = directedMoodCongruence(negOnTopic, stExternal, { topicEmbedding: topicVec });
+  const offT = directedMoodCongruence(negOffTopic, stExternal, { topicEmbedding: topicVec });
+  ok('定向门控: 话题相关的负面记忆点亮 > 不相关的', onT > offT);
+  ok('定向门控: 不相关的负面记忆被压低但不归零', offT < onT && Math.abs(offT) > 0);
+
+  // 指向用户时退化为全局门控 (两条记忆点亮一致, 与 moodCongruence 相同)
+  const stUser = { mood: { valence: -0.6 }, relationship: { tension: 0.6, tension_target: 'user' } };
+  const u1 = directedMoodCongruence(negOnTopic, stUser, { topicEmbedding: topicVec });
+  ok('指向用户: 退化为全局 moodCongruence', Math.abs(u1 - moodCongruence(negOnTopic, stUser)) < 1e-9);
+  // 无话题向量也退化为全局
+  const noVec = directedMoodCongruence(negOnTopic, stExternal, {});
+  ok('无话题向量: 退化为全局 moodCongruence', Math.abs(noVec - moodCongruence(negOnTopic, stExternal)) < 1e-9);
 }
 
 console.log(`\nM2 全部 ${passed} 条断言通过 ✅`);

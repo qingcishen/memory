@@ -68,4 +68,17 @@ console.log('toEmotionPrompt');
   ok('情绪 prompt 不再描述 energy', !highPrompt.includes('兴致') && !highPrompt.includes('精神') && !highPrompt.includes('状态一般'));
 }
 
+console.log('#5 情绪指向性: 紧张冲着外部话题时, 别把对用户的 warmth 拉冷');
+{
+  const base = { mood: { valence: 0, arousal: 0.3 }, relationship: { closeness: 0.7, tension: 0.6 } };
+  const towardUser = moodToEmotion({ ...base, relationship: { ...base.relationship, tension_target: 'user' } });
+  const towardExternal = moodToEmotion({
+    ...base,
+    relationship: { ...base.relationship, tension_target: 'external', tension_topic: '考试' },
+  });
+  ok('紧张冲着用户: warmth 被明显拉低', towardUser.warmth < 0.6);
+  ok('紧张冲着外部: warmth 比冲着用户高', towardExternal.warmth > towardUser.warmth);
+  ok('外部紧张时 warmth 接近亲密度基线', Math.abs(towardExternal.warmth - 0.7) < 0.12);
+}
+
 console.log(`\nEmotion 全部 ${passed} 条断言通过`);

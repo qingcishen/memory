@@ -8,12 +8,13 @@ import { sanitizeForPrompt } from './promptSafety.js';
  * 1) 向量库拉 candidatePool 条 -> 2) similarity+recency+importance 重排
  * -> 3) 取 topK -> 4) 强化命中的记忆 (刷新 last_accessed, access_count+1)
  */
-export async function retrieveMemories(userId, query, opts = {}) {
+export async function retrieveMemories(userId, companionId = 'default', query, opts = {}) {
   const topK = opts.topK ?? PARAMS.topK;
 
   const queryEmbedding = await embed(query);
   const { data: candidates, error } = await supabase.rpc('match_memories', {
     p_user_id: userId,
+    p_companion_id: companionId,
     query_embedding: queryEmbedding,
     match_count: opts.pool ?? PARAMS.candidatePool,
   });
@@ -32,10 +33,11 @@ export async function retrieveMemories(userId, query, opts = {}) {
  * 用途: 回复层想表达"你以前不是..."、"这件事后来变了"时调用。
  * 这样既兑现"旧偏好留痕", 又不让过期事实污染日常回答。
  */
-export async function retrieveSupersededTrail(userId, query, opts = {}) {
+export async function retrieveSupersededTrail(userId, companionId = 'default', query, opts = {}) {
   const queryEmbedding = await embed(query);
   const { data: active, error } = await supabase.rpc('match_memories', {
     p_user_id: userId,
+    p_companion_id: companionId,
     query_embedding: queryEmbedding,
     match_count: opts.pool ?? PARAMS.candidatePool,
   });
@@ -88,6 +90,10 @@ function findAnchor(mem, map, anchorIds) {
   return null;
 }
 
+// 多角色不变量: 一条记忆的 superseded_by 永远指向【同 (user_id, companion_id)】的记忆
+// —— supersede 链只在 storeMemories#supersedeContradictions 里建立, candidates 来自已按
+// (user_id, companion_id) 过滤的 match_memories。因此这里沿 superseded_by 反查不带 scope 过滤
+// 也不会跨角色泄漏 (seedIds 已是 scope 化的 anchors)。
 async function fetchSupersededBy(seedIds, maxDepth) {
   const found = [];
   let frontier = seedIds;

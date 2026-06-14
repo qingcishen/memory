@@ -8,20 +8,27 @@
 import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
 import { DefaultLLM } from './llm.js';
 import { assemble, buildMonologueContext } from './assemble.js';
+import { getCompanion } from '../companion.js';
 import { PARAMS } from '../params.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
 export class Orchestrator {
   /**
+   * @param companionId 多角色隔离键 (默认 'default'); 同一 userId 下不同 companionId 数据互不可见。
+   * @param companionName 显示名/称呼; 不显式传时由 companions 表里的 CompanionConfig.name 覆盖。
+   * @param config 可选: 预加载好的 CompanionConfig; 不传则 init() 时按 (userId, companionId) 从 companions 表拉。
    * @param deps 可注入 { memory, stateLayer, relationship, persona, llm, historyStore }, 默认用真实适配器。
    * @param options { useMonologue=true, historyTurns=6 }
    */
-  constructor({ userId, subjectName = '对方', companionName = '她', deps = {}, options = {} }) {
+  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', config = null, deps = {}, options = {} }) {
     if (!userId) throw new Error('Orchestrator 需要 userId');
     this.userId = userId;
+    this.companionId = companionId;
     this.subjectName = subjectName;
     this.companionName = companionName;
+    this._companionNameExplicit = companionName !== '她'; // 显式传过就别被 config.name 覆盖
+    this._config = config;
     this.options = {
       useMonologue: true,
       historyTurns: DEFAULT_HISTORY_TURNS,
@@ -29,16 +36,20 @@ export class Orchestrator {
       ...options,
     };
 
-    this.memory = deps.memory ?? new MemoryAdapter({ userId, subjectName });
-    this.stateLayer = deps.stateLayer ?? new StateLayerAdapter(userId);
-    this.relationship = deps.relationship ?? new RelationshipAdapter(userId);
-    this.persona = deps.persona ?? new PersonaAdapter({ userId, subjectName: companionName });
+    // 先建状态层, 再把它内部的 LifeDimension 注入记忆适配器 —— 让 memory.observe 与状态层
+    // 共用同一个 life 实例 (L4: 生病/被照顾由 memory.observe 统一演变, 避免双写 life_state)。
+    this.stateLayer = deps.stateLayer ?? new StateLayerAdapter(userId, companionId);
+    const sharedLife = this.stateLayer?.stateLayer?.life ?? null;
+    this.memory = deps.memory ?? new MemoryAdapter({ userId, companionId, subjectName, life: sharedLife });
+    this.relationship = deps.relationship ?? new RelationshipAdapter(userId, companionId);
+    this.persona = deps.persona ?? new PersonaAdapter({ userId, companionId, subjectName: companionName });
     this.llm = deps.llm ?? new DefaultLLM();
     this.historyStore = deps.historyStore ?? null;
 
     this.history = [];
     this._personaLoadedAt = 0;
     this._historyLoaded = false;
+    this._configLoaded = false;
   }
 
   /**
@@ -48,6 +59,25 @@ export class Orchestrator {
    */
   async init() {
     const now = Date.now();
+    // 多角色: 首次 init 时加载 CompanionConfig (名字/外貌/说话风格/性格)。
+    // 没显式传 companionName 时用 config.name 作称呼; 外貌等补充随 persona 段注入 (方案 A)。
+    if (!this._configLoaded) {
+      // 只在 persona 适配器支持 setExtra (= 真实 PersonaAdapter) 时才去 companions 表拉配置;
+      // 全 mock 的编排器测试不带 setExtra, 因此保持离线、零 DB 调用。显式传入的 config 始终生效。
+      if (!this._config && typeof this.persona?.setExtra === 'function') {
+        this._config = await getCompanion(this.userId, this.companionId).catch(() => null);
+      }
+      if (this._config) {
+        if (!this._companionNameExplicit && this._config.name) {
+          this.companionName = this._config.name;
+          if (this.persona) this.persona.subjectName = this.companionName;
+        }
+        if (this.persona && typeof this.persona.setExtra === 'function') {
+          this.persona.setExtra(buildPersonaExtra(this._config));
+        }
+      }
+      this._configLoaded = true;
+    }
     if (!this._personaLoadedAt || now - this._personaLoadedAt >= this.options.personaRefreshMs) {
       if (typeof this.persona.load === 'function') await this.persona.load().catch(() => {});
       this._personaLoadedAt = now;
@@ -167,14 +197,17 @@ export class Orchestrator {
       memoryBlock: memoryBlock ?? '',
     };
 
+    // L3: 没显式给触发原因时, 用她此刻的生活活动作主动开场的由头 (忙完想起你 / 做某事分享)。
+    const effCtx = { ...ctx, reason: ctx.reason ?? activityReason(stateSnapshot?.life) };
+
     let monologue = '';
     if (ctx.useMonologue ?? this.options.useMonologue) {
-      const situation = buildProactiveSituation(ctx);
+      const situation = buildProactiveSituation(effCtx);
       monologue = await this.llm.think(buildMonologueContext({ situation, ...promptParts })).catch(() => '');
     }
 
     const messages = assemble({
-      userMessage: buildProactiveInstruction(ctx),
+      userMessage: buildProactiveInstruction(effCtx),
       history: this.history,
       historyTurns: this.options.historyTurns,
       ...promptParts,
@@ -206,6 +239,20 @@ export class Orchestrator {
   }
 }
 
+/**
+ * 把 CompanionConfig 的静态人设 (外貌/说话风格/性格) 拼成一段补充, 随 persona 段注入 system prompt。
+ * 外貌只注入文本描述, 不触发任何图像生成 (见 docs/companion-roadmap.md A1/A2)。
+ */
+function buildPersonaExtra(config) {
+  if (!config) return '';
+  const parts = [];
+  if (config.appearance) parts.push(`外貌: ${config.appearance}`);
+  if (config.speechStyle) parts.push(`说话风格: ${config.speechStyle}`);
+  if (config.personality) parts.push(`性格: ${config.personality}`);
+  if (Array.isArray(config.traits) && config.traits.length) parts.push(`特点: ${config.traits.join('、')}`);
+  return parts.join('\n');
+}
+
 function normalizeHistory(turns = []) {
   return (turns ?? [])
     .filter((t) => t && (t.role === 'user' || t.role === 'assistant') && t.content != null)
@@ -216,6 +263,13 @@ function buildProactiveInstruction(ctx = {}) {
   const reason = ctx.reason ? `触发原因: ${ctx.reason}\n` : '';
   const style = ctx.style ? `风格要求: ${ctx.style}\n` : '';
   return `${reason}${style}现在不是用户刚发来消息, 而是你想主动找对方说一句话。生成一条自然、简短、不打扰人的主动开场, 不要解释你在执行任务。`;
+}
+
+/** L3: 把她此刻的生活活动转成一句主动开场的由头。无活动则返回 undefined (退回默认 reason)。 */
+function activityReason(life) {
+  const act = life?.current_activity;
+  if (!act || /睡着|睡了|生病/.test(act)) return undefined; // 睡着/生病不主动找你
+  return `刚才${act}, 忽然想起你`;
 }
 
 /** 内心独白用的情境描述: 同样的"主动找对方"这件事, 但不是给生成模型的指令, 是说给"她自己"听的当下情境。 */
