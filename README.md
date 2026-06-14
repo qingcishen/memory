@@ -65,6 +65,7 @@ await mem.reconsolidate();          // 按当下状态重构旧记忆 (永不改
 await mem.story();                  // 关系叙事
 await mem.reflect();
 await mem.forgettable(0.05, { purge: true });
+await mem.forget('刚才说的那件事');  // 主动遗忘: 相似度够高且非 fact_locked 才真删
 ```
 
 完整一轮见 `examples/demo.js`;查看某用户的记忆画像:`npm run inspect <userId>`。
@@ -156,6 +157,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `prospective.cueThreshold` | 语境触发预期记忆的相似度门槛 | 调低则更主动提起旧事 |
 | `orchestrator.personaRefreshMs` | persona 段缓存多久后重新加载 | 调低则长期运行实例更快感知到 self 记忆更新, 但 IO 更频繁 |
 | `dedup.nearDuplicateThreshold` | 近义去重: 向量相似度高于它视为"同一件事换了说法" | 调低则更容易把相似表述合并强化, 但误把"喜欢/讨厌"反义当重复的风险变大 |
+| `forget.similarityThreshold` | 主动遗忘: query 召回候选相似度高于它才纳入删除范围 | 调低则"忘记那件事"更容易扩大误删范围 |
 
 ## 数据流
 
@@ -194,6 +196,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `src/retrieve.js` | 加权检索 + 命中强化 + 显式翻旧账(superseded 链) + 注入格式化 |
 | `src/reflect.js` | 反思总结 + 遗忘 |
 | `src/dedup.js` | 去重指纹 (M7, 纯逻辑): 反复说同一件事 → 强化而非新增 |
+| `src/promptSafety.js` | prompt 注入防护 (纯逻辑): 识别"忽略以上指令"/伪造角色头, 注入前过滤记忆文本 |
 | `src/state/affect.js` | 关系-情感状态机 (M1): 心情/关系状态, 随时间回落 + 随对话更新; 显著变化写入历史轨迹 |
 | `src/state/life.js` / `src/state/stateLayer.js` | 统一状态层 (L1): emotion `{valence,warmth}` + life `{energy}`, 并由 life 维度提供回复采样提示 |
 | `src/engine/` | 自研激活引擎 (M2): `activation`(ACT-R+心情门控) / `vector-index` / `graph`(扩散) / `index`(门面) |
@@ -206,7 +209,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 
 ## 测试
 
-全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 340 断言)。
+全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 365 断言)。
 
 ```bash
 npm test             # 全部 (M0~M7)

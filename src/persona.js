@@ -9,6 +9,7 @@
 import { supabase, PARAMS } from './config.js';
 import { embedMany } from './embeddings.js';
 import { normalizeMemory } from './ontology.js';
+import { sanitizeForPrompt } from './promptSafety.js';
 
 // ---- 纯逻辑 ----
 
@@ -22,7 +23,8 @@ export function filterBySubject(mems, subjects) {
 /** 把 self 记忆拼成可注入人格 prompt 的"她是谁"段落。 */
 export function formatPersonaBlock(selfMems, subjectName = '她') {
   if (!selfMems || selfMems.length === 0) return '';
-  const lines = selfMems.map((m) => `- ${m.narrative || m.fact_core || m.content}`).join('\n');
+  // sanitizeForPrompt: self 记忆同样来自用户输入/LLM 提取, 过滤可疑的 prompt 注入话术
+  const lines = selfMems.map((m) => `- ${sanitizeForPrompt(m.narrative || m.fact_core || m.content)}`).join('\n');
   return `${subjectName}是这样一个人:\n${lines}`;
 }
 

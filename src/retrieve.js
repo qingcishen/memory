@@ -1,6 +1,7 @@
 import { supabase, PARAMS } from './config.js';
 import { embed } from './embeddings.js';
 import { rerank } from './decay.js';
+import { sanitizeForPrompt } from './promptSafety.js';
 
 /**
  * 按当前 query 检索最相关的记忆。
@@ -125,8 +126,9 @@ async function reinforce(mems) {
 export function formatForPrompt(mems, subjectName = '对方') {
   if (!mems || mems.length === 0) return '';
   // 注入时优先用 narrative(她当下的解读), 没有才退回 fact_core/content
+  // sanitizeForPrompt: 记忆文本来自用户输入/LLM 提取, 不可信, 过滤可疑的 prompt 注入话术
   const lines = mems
-    .map((m) => `- ${m.narrative || m.fact_core || m.content}`)
+    .map((m) => `- ${sanitizeForPrompt(m.narrative || m.fact_core || m.content)}`)
     .join('\n');
   return `你记得关于${subjectName}的事:\n${lines}`;
 }
@@ -135,8 +137,8 @@ export function formatForPrompt(mems, subjectName = '对方') {
 export function formatSupersededTrailForPrompt(rows, subjectName = '对方') {
   if (!rows || rows.length === 0) return '';
   const lines = rows.map(({ old, replacedBy }) => {
-    const before = old.narrative || old.fact_core || old.content;
-    const after = replacedBy.narrative || replacedBy.fact_core || replacedBy.content;
+    const before = sanitizeForPrompt(old.narrative || old.fact_core || old.content);
+    const after = sanitizeForPrompt(replacedBy.narrative || replacedBy.fact_core || replacedBy.content);
     return `- 以前: ${before}; 后来更新为: ${after}`;
   });
   return `你记得${subjectName}以前说法/偏好的变化:\n${lines.join('\n')}`;

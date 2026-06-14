@@ -6,7 +6,7 @@ import {
   formatForPrompt,
   formatSupersededTrailForPrompt,
 } from './retrieve.js';
-import { runReflection, findForgettable } from './reflect.js';
+import { runReflection, findForgettable, forgetByQuery } from './reflect.js';
 import { readState, updateFromTurn, decayToBaseline, moodLabel, moodShiftMagnitude, readStateHistory } from './state/affect.js';
 import { engineRecall } from './engine/index.js';
 import { reconsolidateOnRecall, reconsolidateRecent } from './memory/reconsolidate.js';
@@ -171,5 +171,15 @@ export class Memory {
   /** 找出几乎被遗忘的记忆; 传 { purge: true } 可清理 */
   async forgettable(threshold = 0.05, opts = {}) {
     return findForgettable(this.userId, threshold, opts);
+  }
+
+  /**
+   * 主动遗忘 (P2 工程债 #9): "忘记我刚才说的那件事" 这类显式请求。
+   * 按 query 召回相关记忆, 相似度达到 PARAMS.forget.similarityThreshold 的直接删除。
+   * fact_locked 的硬事实默认不删; 传 { includeLocked: true } 放开。
+   * @returns 被删除的记忆列表 (可能为空)
+   */
+  async forget(query, opts = {}) {
+    return forgetByQuery(this.userId, query, opts);
   }
 }

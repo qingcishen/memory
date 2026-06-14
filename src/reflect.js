@@ -1,4 +1,4 @@
-import { supabase, llm, LLM_MODEL } from './config.js';
+import { supabase, llm, LLM_MODEL, PARAMS } from './config.js';
 import { embed } from './embeddings.js';
 import { memoryStrength } from './decay.js';
 
@@ -86,6 +86,43 @@ export async function findForgettable(userId, threshold = 0.05, opts = {}) {
       .in('id', weak.map((m) => m.id));
   }
   return weak;
+}
+
+/**
+ * 主动遗忘 (P2 工程债 #9): 纯逻辑。从相似度候选 (如 match_memories 结果) 里
+ * 选出"够相关、可以认定为在说这件事"的一批 —— 相似度需达到 threshold。
+ * fact_locked (生日/名字/承诺等硬事实) 默认不进遗忘范围, 即使用户随口提到也不误删;
+ * 传 { includeLocked: true } 可放开 (用户明确要求时)。
+ */
+export function selectForgettable(candidates = [], opts = {}) {
+  const threshold = opts.threshold ?? PARAMS.forget.similarityThreshold;
+  return (candidates ?? []).filter(
+    (c) => (c.similarity ?? 0) >= threshold && (opts.includeLocked || !c.fact_locked)
+  );
+}
+
+/**
+ * 主动遗忘 API: "忘记我刚才说的那件事" 这类显式请求。
+ * 按 query 向量召回候选, 挑出 selectForgettable 命中的几条直接删除 (不可恢复)。
+ * @returns 被删除的记忆列表 (可能为空)
+ */
+export async function forgetByQuery(userId, query, opts = {}) {
+  const queryEmbedding = await embed(query);
+  const { data: candidates, error } = await supabase.rpc('match_memories', {
+    p_user_id: userId,
+    query_embedding: queryEmbedding,
+    match_count: opts.pool ?? PARAMS.candidatePool,
+  });
+  if (error) throw error;
+
+  const targets = selectForgettable(candidates ?? [], opts);
+  if (targets.length === 0) return [];
+
+  await supabase
+    .from('memories')
+    .delete()
+    .in('id', targets.map((m) => m.id));
+  return targets;
 }
 
 function clampNum(v, lo, hi, dflt) {
