@@ -64,6 +64,10 @@ console.log('buildMonologueContext (拼内心独白输入)');
 
   const ctxEmpty = buildMonologueContext({ userMessage: '在干嘛' });
   ok('子系统段落全空时仍有原话+指令两段', ctxEmpty.split('\n\n').length === 2);
+
+  const ctxSituation = buildMonologueContext({ situation: '你想主动找对方说点什么', personaPrompt: 'A' });
+  ok('situation 模式不加"对方刚说"前缀', !ctxSituation.includes('对方刚说'));
+  ok('situation 内容原样拼入', ctxSituation.includes('你想主动找对方说点什么'));
 }
 
 console.log('formatRelationshipPrompt (关系状态 -> 自然语言, 容忍空状态)');
@@ -284,6 +288,8 @@ console.log('Orchestrator.proactiveTick (主动性入口复用组装链路)');
   ok('主动消息返回 generateReply 的结果', msg === '嗯嗯, 我记得呀!');
   ok('主动消息会检索记忆', deps.memory.recallCalls.length === 1);
   ok('主动消息默认也会生成内心独白', deps.llm.thinkCalls.length === 1);
+  ok('主动独白输入不把主动开场指令当成"对方刚说"', !deps.llm.thinkCalls[0].includes('对方刚说'));
+  ok('主动独白输入描述的是"自己想主动找对方"的情境', deps.llm.thinkCalls[0].includes('你自己想主动找对方说点什么'));
   const { messages, opts } = deps.llm.generateCalls[0];
   ok('主动 prompt 最后一条是内部主动开场指令', messages.at(-1).role === 'user' && messages.at(-1).content.includes('主动找对方'));
   ok('主动 prompt 带入 reason/style', messages.at(-1).content.includes('很久没聊天') && messages.at(-1).content.includes('轻一点'));

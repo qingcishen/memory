@@ -29,16 +29,21 @@ export function assemble({ userMessage, history = [], historyTurns = 6, ...promp
   return messages;
 }
 
-/** 拼内心独白用的输入: 人格/关系/情绪/记忆段 + 用户这句话 + 指令。 */
+/**
+ * 拼内心独白用的输入: 人格/关系/情绪/记忆段 + 当下情境 + 指令。
+ * - 回复路径传 userMessage: 框成"对方刚说: ..."。
+ * - 主动性路径传 situation (一段情境描述, 不是对方说的话, 不加"对方刚说"前缀)。
+ */
 export function buildMonologueContext({
   userMessage,
+  situation,
   personaPrompt = '',
   relationshipPrompt = '',
   emotionPrompt = '',
   memoryBlock = '',
 } = {}) {
   const parts = [personaPrompt, relationshipPrompt, emotionPrompt, memoryBlock].filter((s) => s && s.trim());
-  parts.push(`对方刚说: "${userMessage}"`);
+  parts.push(situation != null ? situation : `对方刚说: "${userMessage}"`);
   parts.push('写一句她此刻心里冒出来的真实想法 (不会说出口), 一两句话, 不要加引号或标签。');
   return parts.join('\n\n');
 }

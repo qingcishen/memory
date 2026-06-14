@@ -158,8 +158,8 @@ export class Orchestrator {
 
     let monologue = '';
     if (ctx.useMonologue ?? this.options.useMonologue) {
-      const thoughtInput = buildProactiveInstruction(ctx);
-      monologue = await this.llm.think(buildMonologueContext({ userMessage: thoughtInput, ...promptParts })).catch(() => '');
+      const situation = buildProactiveSituation(ctx);
+      monologue = await this.llm.think(buildMonologueContext({ situation, ...promptParts })).catch(() => '');
     }
 
     const messages = assemble({
@@ -205,4 +205,10 @@ function buildProactiveInstruction(ctx = {}) {
   const reason = ctx.reason ? `触发原因: ${ctx.reason}\n` : '';
   const style = ctx.style ? `风格要求: ${ctx.style}\n` : '';
   return `${reason}${style}现在不是用户刚发来消息, 而是你想主动找对方说一句话。生成一条自然、简短、不打扰人的主动开场, 不要解释你在执行任务。`;
+}
+
+/** 内心独白用的情境描述: 同样的"主动找对方"这件事, 但不是给生成模型的指令, 是说给"她自己"听的当下情境。 */
+function buildProactiveSituation(ctx = {}) {
+  const reason = ctx.reason ? ` (${ctx.reason})` : '';
+  return `这一刻不是对方发消息过来, 是你自己想主动找对方说点什么${reason}。`;
 }
