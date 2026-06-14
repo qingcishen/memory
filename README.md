@@ -90,6 +90,7 @@ await mem.forgettable(0.05, { purge: true });
 | `engine.wMood` | 心情门控权重 (=0 关闭, 退化标准激活) | 调高则她越闹脾气越爱翻旧账 |
 | `engine.wSpread` / `graphHops` | 联想扩散权重 / 跳数 | 调高则一条勾起一串相关记忆 |
 | `reconsolidation.affectClamp` | 单次重构最大漂移 (硬上限) | 调高则旧事情绪变得更快 (慎调) |
+| `reconsolidation.maxDriftFromOrigin` | 情感离诞生时的硬上限 | 调低则旧记忆更"忠于本色", 不易被心情洗 |
 | `relationship_memory.alwaysIncludeDyad` | recall 无条件带几条共同记忆 | 调高则更"记得我们" |
 | `prospective.cueThreshold` | 语境触发预期记忆的相似度门槛 | 调低则更主动提起旧事 |
 

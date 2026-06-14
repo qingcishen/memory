@@ -47,6 +47,9 @@ export async function storeMemories(userId, memories) {
         narrative: m.narrative ?? null,
         affect_valence: m.affect_valence ?? 0,
         affect_intensity: m.affect_intensity ?? m.emotion ?? 0,
+        // 原始情感锚 = 诞生时的情感, 写入后不可变 (重构靠它回弹)
+        affect_origin_valence: m.affect_valence ?? 0,
+        affect_origin_intensity: m.affect_intensity ?? m.emotion ?? 0,
         subject_kind: m.subject_kind ?? 'user',
         fact_locked: m.fact_locked ?? false,
         // M6 多模态字段 (纯文本记忆为默认值)

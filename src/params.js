@@ -66,6 +66,9 @@ export const PARAMS = {
     nightlyRate: 0.12, // 反思时的较大靠拢步长 (和好后批量软化旧怨)
     affectClamp: 0.15, // 任何单次重构的最大漂移 (硬上限, 防失真累积)
     significantMoodDelta: 0.4, // 情绪变化超过它才值得让 LLM 重写 narrative
+    // 原始情感锚回弹 (feature/affect-origin-anchor):
+    originPull: 0.25, // 每次靠拢当下心情时, 目标被原始锚往回拉的比例 (0=不拉, 1=锁死在原始)
+    maxDriftFromOrigin: 0.4, // 情感离诞生时的硬上限 —— 反复 recall 也洗不出这个范围
   },
 
   // ---- M4 共同记忆 / persona / 关系叙事 ----

@@ -38,8 +38,15 @@ alter table memories add column if not exists fact_locked          boolean not n
 alter table memories add column if not exists reconsolidation_count int     not null default 0;
 alter table memories add column if not exists access_log           jsonb   not null default '[]'::jsonb; -- 历次唤起时间戳, 给 base-level 用
 
--- 迁移期: 老数据 content 即事实核
+-- 原始情感锚 (feature/affect-origin-anchor): 记忆诞生时的情感, 写入后【不可变】(像 fact_core)。
+-- 重构每次靠拢当下心情时也被它往回拉, 且漂移有硬上限 —— 长期负面心情也洗不黑一条本来温暖的记忆。
+alter table memories add column if not exists affect_origin_valence   real;  -- 诞生时 valence, 不可变锚
+alter table memories add column if not exists affect_origin_intensity real;  -- 诞生时 intensity, 不可变锚
+
+-- 迁移期: 老数据 content 即事实核; 原始锚以当前情感回填 (best-effort)
 update memories set fact_core = content where fact_core is null;
+update memories set affect_origin_valence = affect_valence where affect_origin_valence is null;
+update memories set affect_origin_intensity = affect_intensity where affect_origin_intensity is null;
 
 -- ------------------------------------------------------------
 --  M6 · 多模态 (见 docs/DEVELOPMENT.md M6): 图片 + 语音。
@@ -129,6 +136,8 @@ returns table (
   last_accessed    timestamptz,
   access_count     int,
   access_log       jsonb,
+  affect_origin_valence   real,   -- 原始情感锚, 给 recall 命中时的重构回弹用
+  affect_origin_intensity real,
   embedding        vector(1536),  -- M2 自研引擎要靠它在进程内做联想扩散
   similarity       real
 )
@@ -140,6 +149,7 @@ as $$
     m.subject_kind, m.fact_locked,
     m.importance, m.emotion,
     m.created_at, m.last_accessed, m.access_count, m.access_log,
+    m.affect_origin_valence, m.affect_origin_intensity,
     m.embedding,
     1 - (m.embedding <=> query_embedding) as similarity
   from memories m
