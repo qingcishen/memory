@@ -6,24 +6,14 @@
 
 import { Memory } from '../memory.js';
 import { personaBlock } from '../persona.js';
-import { readState, moodLabel, clampState } from '../state/affect.js';
-import { Emotion } from '../emotion.js';
+import { readState, decayState, clampState } from '../state/affect.js';
+import { moodToEmotion, toEmotionPrompt, emotionSamplingHints } from '../emotion.js';
+
+const HOUR = 1000 * 60 * 60;
 
 // ============================================================
 //  纯逻辑: state -> 自然语言 (供 toPrompt 使用, 可离线单测)
 // ============================================================
-
-/** 把当下心情状态翻译成可注入 system 的一句话; 空状态返回空串。 */
-export function formatEmotionPrompt(state) {
-  if (!state) return '';
-  const { mood, relationship } = clampState(state);
-  const label = moodLabel(state);
-  const parts = [`你现在心情${label}`];
-  if (relationship.repair_debt > 0.4) parts.push('心里还憋着一点没说开的事');
-  if (mood.arousal > 0.6) parts.push('情绪比较激动');
-  else if (mood.arousal < 0.15 && label === '平静') parts.push('状态比较慵懒');
-  return `${parts.join(', ')}。`;
-}
 
 /** 把关系状态翻译成影响称呼/边界/主动度的一句话; 空状态返回空串。 */
 export function formatRelationshipPrompt(state) {
@@ -52,33 +42,38 @@ export class MemoryAdapter {
     return this._mem.recallAsPrompt(query, opts);
   }
 
-  /** 提取记忆 + 更新情绪/关系状态(M1) 都在这一步完成, 见 EmotionAdapter/RelationshipAdapter 的注释。 */
-  async observe(turns) {
-    await this._mem.observe(turns);
+  /**
+   * 提取记忆 + 更新情绪/关系状态(M1) 都在这一步完成, 见 EmotionAdapter/RelationshipAdapter 的注释。
+   * useLLM: true —— 让 M1 的状态机用 LLM 增量(而不仅是启发式), 这一次推断同时产出
+   * mood(情绪) 和 relationship(关系) 的增量, EmotionAdapter/RelationshipAdapter 都读这一份结果。
+   */
+  async observe(turns, opts = {}) {
+    await this._mem.observe(turns, { useLLM: true, ...opts });
   }
 }
 
-/** 情绪门面适配: 读写 dedicated emotion 表, 提供表现指引与采样提示。 */
+/** 情绪门面适配: 读 M1 的 affective_state, 映射成短时情绪并提供表现指引与采样提示。 */
 export class EmotionAdapter {
   constructor(userId) {
     this.userId = userId;
-    this._emotion = new Emotion({ userId });
   }
 
+  /** 读 M1 状态, 按距上次更新的时长回落, 再映射成 {valence, energy, warmth}。 */
   async current() {
-    return this._emotion.current();
+    const state = await readState(this.userId);
+    const hours = state.updated_at ? Math.max(0, (Date.now() - new Date(state.updated_at).getTime()) / HOUR) : 0;
+    return moodToEmotion(decayState(state, hours));
   }
 
-  async update(userMessage, reply, opts = {}) {
-    return this._emotion.update(userMessage, reply, opts);
-  }
+  /** 心情/关系的增量更新已经在 memory.observe({ useLLM: true }) 里随 M1 状态机完成, 这里不重复写。 */
+  async update() {}
 
   toPrompt(state) {
-    return this._emotion.toPrompt(state);
+    return toEmotionPrompt(state);
   }
 
   samplingHints(state) {
-    return this._emotion.samplingHints(state);
+    return emotionSamplingHints(state);
   }
 }
 
@@ -92,7 +87,7 @@ export class RelationshipAdapter {
     return readState(this.userId);
   }
 
-  /** 原因同 EmotionAdapter.update: closeness 的更新已随 memory.observe 完成, 这里不重复写。 */
+  /** 原因同 EmotionAdapter.update: relationship 的增量已随 memory.observe({ useLLM: true }) 完成, 这里不重复写。 */
   async bump() {}
 
   toPrompt(state) {

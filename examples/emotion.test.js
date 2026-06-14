@@ -1,14 +1,16 @@
-// Emotion 纯逻辑测试: 双层情绪 + 衰减 + 阻尼 + prompt/sampling。
+// Emotion 纯逻辑测试: M1 状态 -> {valence, energy, warmth} 映射 + prompt/sampling。
+//
+// 心情(valence/arousal)的衰减/更新已由 M1 (src/state/affect.js) 统一维护并测试
+// (见 examples/state.test.js); 这里只测【映射 + 表现层】, 不重复测衰减/增量。
 import assert from 'node:assert';
 import {
   defaultEmotion,
   clampEmotion,
-  decayEmotionByHours,
-  applyEmotionDeltas,
-  inferEmotionDeltasHeuristic,
+  moodToEmotion,
   toEmotionPrompt,
   emotionSamplingHints,
 } from '../src/emotion.js';
+import { defaultState } from '../src/state/affect.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -17,66 +19,61 @@ const ok = (name, cond) => {
   passed++;
 };
 
-console.log('defaultEmotion / clampEmotion');
+console.log('clampEmotion (裁剪到合法范围, 缺字段补中值)');
 {
-  const d = defaultEmotion();
-  ok('默认 baseline valence=0.15', d.baseline.valence === 0.15);
-  ok('默认 energy=0.5', d.energy === 0.5);
-  const c = clampEmotion({ valence: 9, energy: -1, warmth: 2, baseline: { valence: -9 } });
+  const c = clampEmotion({ valence: 9, energy: -1, warmth: 2 });
   ok('valence 裁剪到 1', c.valence === 1);
   ok('energy 裁剪到 0', c.energy === 0);
   ok('warmth 裁剪到 1', c.warmth === 1);
-  ok('baseline 同样裁剪', c.baseline.valence === -1);
+  const empty = clampEmotion({});
+  ok('缺字段补中值 (valence)', empty.valence === 0);
+  ok('缺字段补中值 (energy)', empty.energy === 0.5);
 }
 
-console.log('decayEmotionByHours (回归基线而不是归零)');
+console.log('defaultEmotion (= moodToEmotion(defaultState()))');
 {
-  const s = clampEmotion({
-    baseline: { valence: 0.15, energy: 0.5, warmth: 0.5 },
-    halfLifeHours: { valence: 6, energy: 4, warmth: 6 },
-    valence: 0.75,
-    energy: 0.9,
-    warmth: 0.2,
-  });
-  const atHalf = decayEmotionByHours(s, 6);
-  ok('valence 半衰期后偏移减半', Math.abs(atHalf.valence - 0.45) < 1e-9);
-  ok('energy 按自己的半衰期更快回落', atHalf.energy < 0.7);
-  const longAfter = decayEmotionByHours(s, 1000);
-  ok('久置后 valence 回到 baseline 附近', Math.abs(longAfter.valence - 0.15) < 0.01);
-  ok('久置后 warmth 回到 baseline 附近', Math.abs(longAfter.warmth - 0.5) < 0.01);
+  const d = defaultEmotion();
+  const fromDefaultState = moodToEmotion(defaultState());
+  ok('与 moodToEmotion(defaultState()) 一致', JSON.stringify(d) === JSON.stringify(fromDefaultState));
+  ok('valence 取 M1 mood 基线 (0)', d.valence === 0);
+  ok('energy 取 M1 mood 基线 (arousal=0.3)', d.energy === 0.3);
+  ok('warmth 取亲密度基线 (closeness=0.5)', Math.abs(d.warmth - 0.5) < 1e-9);
 }
 
-console.log('applyEmotionDeltas (阻尼 + 单轮上限)');
+console.log('moodToEmotion (valence/energy 直接来自 mood, warmth 随亲密度+心情/紧张调整)');
 {
-  const base = defaultEmotion();
-  const next = applyEmotionDeltas(base, { valence: 10, energy: 10, warmth: -10 }, { damping: 0.4, maxStepPerTurn: 0.25 });
-  ok('valence 单轮最多推动 0.1', Math.abs(next.valence - (base.valence + 0.1)) < 1e-9);
-  ok('energy 单轮最多推动 0.1', Math.abs(next.energy - (base.energy + 0.1)) < 1e-9);
-  ok('warmth 单轮最多下降 0.1', Math.abs(next.warmth - (base.warmth - 0.1)) < 1e-9);
-}
+  const happy = moodToEmotion({ mood: { valence: 0.8, arousal: 0.6 }, relationship: { closeness: 0.5 } });
+  ok('valence 直接对应 mood.valence', happy.valence === 0.8);
+  ok('energy 直接对应 mood.arousal', happy.energy === 0.6);
+  ok('心情好时 warmth 在亲密度基线上升高', happy.warmth > 0.5);
 
-console.log('inferEmotionDeltasHeuristic');
-{
-  const warm = inferEmotionDeltasHeuristic('我好想你, 喜欢你', '我也在');
-  ok('温情话语提升 valence', warm.valence > 0);
-  ok('温情话语提升 warmth', warm.warmth > 0);
-  const fight = inferEmotionDeltasHeuristic('你太让我失望了, 别理我', '我在听');
-  ok('冲突话语降低 valence', fight.valence < 0);
-  ok('冲突话语降低 warmth', fight.warmth < 0);
+  const tense = moodToEmotion({ mood: { valence: 0, arousal: 0.3 }, relationship: { closeness: 0.6, tension: 0.8, repair_debt: 0.5 } });
+  ok('紧张/欠和好时 warmth 跌到亲密度基线以下', tense.warmth < 0.6);
+  ok('即使关系熟(closeness高), 吵架这一刻也会"变冷"', tense.warmth < 0.35);
+
+  const intimate = moodToEmotion({ mood: { valence: 1, arousal: 0.3 }, relationship: { closeness: 0.8 } });
+  ok('高亲密 + 好心情 -> warmth 可以很高', intimate.warmth > 0.72);
 }
 
 console.log('toEmotionPrompt / emotionSamplingHints');
 {
+  ok('空状态返回空串', toEmotionPrompt(null) === '');
+
   const low = clampEmotion({ valence: -0.4, energy: 0.2, warmth: 0.3 });
   const prompt = toEmotionPrompt(low);
   ok('低落 prompt 提醒少一点但不明说数值', prompt.includes('有点低落') && prompt.includes('别明说'));
+  ok('低 warmth -> 对对方稍微收着', prompt.includes('收着'));
   const hints = emotionSamplingHints(low);
   ok('低 energy 缩短 maxTokens', hints.maxTokens === 220);
   ok('temperature 随 energy 较低', hints.temperature < 0.85);
 
-  const high = emotionSamplingHints(clampEmotion({ energy: 0.9 }));
-  ok('高 energy 提高 temperature', high.temperature > hints.temperature);
-  ok('高 energy 放宽 maxTokens', high.maxTokens === 650);
+  const high = clampEmotion({ valence: 0.6, energy: 0.9, warmth: 0.8 });
+  const highPrompt = toEmotionPrompt(high);
+  ok('开心+高唤起 prompt', highPrompt.includes('心情不错') && highPrompt.includes('很有兴致'));
+  ok('高 warmth -> 语气更柔软亲近', highPrompt.includes('柔软亲近'));
+  const highHints = emotionSamplingHints(high);
+  ok('高 energy 提高 temperature', highHints.temperature > hints.temperature);
+  ok('高 energy 放宽 maxTokens', highHints.maxTokens === 650);
 }
 
 console.log(`\nEmotion 全部 ${passed} 条断言通过`);

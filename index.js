@@ -44,18 +44,11 @@ export {
   readStateHistory,
 } from './src/state/affect.js';
 export {
-  Emotion,
   defaultEmotion,
   clampEmotion,
-  decayEmotion,
-  decayEmotionByHours,
-  applyEmotionDeltas,
-  inferEmotionDeltasHeuristic,
-  judgeEmotionDeltas,
+  moodToEmotion,
   toEmotionPrompt,
   emotionSamplingHints,
-  readEmotion,
-  writeEmotion,
 } from './src/emotion.js';
 export {
   rankCandidates,
@@ -109,7 +102,6 @@ export {
   assemble,
   buildSystemPrompt,
   buildMonologueContext,
-  formatEmotionPrompt,
   formatRelationshipPrompt,
   DEFAULT_PROACTIVE_POLICY,
   ProactiveScheduler,

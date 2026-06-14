@@ -4,6 +4,21 @@
 
 ---
 
+### 0. 实现说明: 与 M1 状态机合并 (未走第 3/5 节的独立表+独立 LLM 方案)
+
+落地时发现 M1 (`affective_state.mood = {valence, arousal}`) 已经是一套"基线 + 半衰期回落 + 启发式/LLM 增量"的状态机,而且 M2 心情门控、M3 重构都依赖它。如果再起一张 `emotion` 表、每轮单独跑一次 `judge` LLM,会出现**两套"心情"各算各的、互不通气**——编排器嘴上说的心情和记忆系统实际门控用的心情可能不是一回事,还多打一次 LLM。
+
+因此最终实现把本文档的"双层情绪"按下面方式收编进 M1, 第 3/5/7 节描述的独立表 + 独立 `judge` 调用**未采用**:
+
+- `valence`/`energy` **直接来自** `affective_state.mood.valence`/`mood.arousal`(衰减、半衰期、阻尼、单轮上限全部是 M1 现成的,见 `src/state/affect.js` 和 `PARAMS.state`)。
+- `warmth` 不再单独持久化, 由 `moodToEmotion()` 纯函数从 `relationship.closeness`(亲密度基线)+ 当下 `mood.valence`/`relationship.tension`/`repair_debt` 派生(见 `src/emotion.js`、`PARAMS.emotion`)——"处得熟的人, 心情好时更黏人; 吵架这一刻即使关系阶段没变也会变冷"。
+- `emotion.update()` 是 no-op: `memory.observe({ useLLM: true })` 触发的那一次 `inferDeltasLLM` 已经**同时**产出 mood 和 relationship 的增量, 不需要再打第二次。
+- `toPrompt`/`samplingHints` 的设计(第 6 节)和落地顺序(第 12 节第 1-3 步)保持有效, 只是输入状态的来源变了。
+
+第 4/9 节描述的"per 用户基线/半衰期"(不同人设)目前受限于 `PARAMS.state.baseline`/`halfLifeHours` 仍是全局参数, 不是本次改动引入的新限制, 留待以后需要多人设时再做。
+
+---
+
 ### 1. 最核心的认知:情绪 ≠ 瞬时标签,它是两层
 
 不要把情绪做成"每轮对话重新算一个当前心情"。那样她会像金鱼,前一句被惹毛、后一句就没事了,极假。真实的情绪是**两层叠加**:

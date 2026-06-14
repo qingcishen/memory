@@ -44,20 +44,13 @@ export const PARAMS = {
     snapshotMinDelta: 0.08,
   },
 
-  // ---- Emotion · 短时情绪子系统 (编排器 current/update/toPrompt/samplingHints) ----
+  // ---- Emotion · 短时情绪展示层 (编排器 toPrompt/samplingHints) ----
+  // valence/energy 直接来自 M1 affective_state.mood (来源/衰减/更新见 state.* 参数);
+  // warmth 在亲密度基线 (relationship.closeness) 上叠加当下心情/紧张的短时调整。
   emotion: {
-    baseline: {
-      valence: 0.15,
-      energy: 0.5,
-      warmth: 0.5,
-    },
-    halfLifeHours: {
-      valence: 6,
-      energy: 4,
-      warmth: 6,
-    },
-    damping: 0.4,
-    maxStepPerTurn: 0.25,
+    warmthValenceWeight: 0.3, // 心情好时, 在亲密度基线上额外加多少"温度"
+    warmthTensionWeight: 0.4, // 紧张时, 从亲密度基线扣多少"温度"
+    warmthRepairDebtWeight: 0.3, // 还欠着没和好时, 额外扣多少"温度"
   },
 
   // ---- M2 自研激活引擎 + 心情门控检索 ----

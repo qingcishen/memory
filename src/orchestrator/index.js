@@ -4,7 +4,6 @@ export {
   EmotionAdapter,
   RelationshipAdapter,
   PersonaAdapter,
-  formatEmotionPrompt,
   formatRelationshipPrompt,
 } from './adapters.js';
 export { DefaultLLM } from './llm.js';
