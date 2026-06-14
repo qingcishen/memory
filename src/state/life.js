@@ -120,7 +120,9 @@ export class LifeDimension {
   }
 
   async current() {
-    return this.userId ? this.read(this.userId) : clampLife(defaultLifeState());
+    const state = this.userId ? await this.read(this.userId) : clampLife(defaultLifeState());
+    const hours = state.updated_at ? Math.max(0, (this.now() - new Date(state.updated_at).getTime()) / HOUR) : 0;
+    return decayLife(state, hours, this.now());
   }
 
   async evolve() {}

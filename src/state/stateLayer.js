@@ -7,24 +7,28 @@
 
 import { readState, decayState } from './affect.js';
 import { moodToEmotion, toEmotionPrompt } from '../emotion.js';
-import { moodToLife, toLifePrompt, lifeSamplingHints } from './life.js';
+import { LifeDimension, toLifePrompt, lifeSamplingHints } from './life.js';
 
 const HOUR = 1000 * 60 * 60;
 
 export class StateLayer {
-  constructor({ userId, read = readState, now = () => Date.now() } = {}) {
+  constructor({ userId, read = readState, life = new LifeDimension({ userId }), now = () => Date.now() } = {}) {
     this.userId = userId;
     this.read = read;
+    this.life = life;
     this.now = now;
   }
 
   async snapshot() {
-    const state = this.userId ? await this.read(this.userId) : {};
+    const [state, life] = await Promise.all([
+      this.userId ? this.read(this.userId) : {},
+      this.life.current(),
+    ]);
     const hours = state.updated_at ? Math.max(0, (this.now() - new Date(state.updated_at).getTime()) / HOUR) : 0;
     const decayed = decayState(state, hours);
     return {
       emotion: moodToEmotion(decayed),
-      life: moodToLife(decayed),
+      life,
     };
   }
 
