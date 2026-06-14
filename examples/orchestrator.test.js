@@ -275,6 +275,15 @@ console.log('Orchestrator 可注入 historyStore (启动加载 + 回复后异步
   ok('historyStore.append 收到本轮 user+assistant', deps.historyStore.appendCalls[0].turns.length === 2);
 }
 
+console.log('Orchestrator persona 缓存按 personaRefreshMs 刷新 (长期运行实例感知 self 记忆更新)');
+{
+  const deps = makeMocks();
+  const orch = new Orchestrator({ userId: 'u_persona_stale', deps, options: { useMonologue: false, personaRefreshMs: 0 } });
+  await orch.reply('你好');
+  await orch.reply('在吗');
+  ok('personaRefreshMs=0 时每轮都重新加载 persona', deps.persona.loadCalls === 2);
+}
+
 console.log('Orchestrator.proactiveTick (主动性入口复用组装链路)');
 {
   const deps = makeMocks();

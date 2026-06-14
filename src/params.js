@@ -93,4 +93,11 @@ export const PARAMS = {
     graceHours: 48, // time 型: 过期 graceHours 仍没被提起就降级 (不再打扰)
     defaultHour: 20, // 只给了"明天"没给具体时刻时, 默认排在当天 20:00 (晚上闲聊时段)
   },
+
+  // ---- 编排器 ----
+  orchestrator: {
+    // persona 段缓存多久后在下一次 init() 时重新加载。长期运行的实例 (如 ProactiveScheduler
+    // 反复调用同一个 Orchestrator) 需要这个值让"自我认知"反思等 self 记忆更新能体现到 prompt 里。
+    personaRefreshMs: 30 * 60 * 1000, // 30 分钟
+  },
 };
