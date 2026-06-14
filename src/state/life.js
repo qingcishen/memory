@@ -97,16 +97,24 @@ export function toLifePrompt(state) {
   if (!state) return '';
   const s = clampLife(state);
   const energy = s.energy > 0.7 ? '很有兴致' : s.energy < 0.3 ? '有些没精神' : '状态一般';
-  return `你现在${energy}。让它自然影响语气和话量, 别明说自己的身体状态。`;
+  const satiety = s.satiety < 0.25 ? '有点饿了' : s.satiety > 0.85 ? '刚吃饱很满足' : '';
+  const health = s.health < 0.55 ? '身体有点不舒服' : s.health < 0.8 ? '身体状态不算满格' : '';
+  const parts = [`你现在${energy}`];
+  if (satiety) parts.push(satiety);
+  if (health) parts.push(health);
+  return `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的身体状态。`;
 }
 
 /** life.energy -> 采样参数。低 energy 时短、平、温度低; 高 energy 时长、活、温度高。 */
 export function lifeSamplingHints(state) {
   const s = clampLife(state);
-  const temperature = round(clamp(0.7 + s.energy * 0.4, 0.6, 1.15), 2);
+  const healthDrag = s.health < 0.8 ? (0.8 - s.health) * 0.35 : 0;
+  const temperature = round(clamp(0.7 + s.energy * 0.4 - healthDrag, 0.55, 1.15), 2);
+  const baseMaxTokens = s.energy < 0.3 ? 220 : s.energy > 0.75 ? 650 : 500;
+  const healthLimit = s.health < 0.55 ? 260 : s.health < 0.8 ? 380 : baseMaxTokens;
   return {
     temperature,
-    maxTokens: s.energy < 0.3 ? 220 : s.energy > 0.75 ? 650 : 500,
+    maxTokens: Math.min(baseMaxTokens, healthLimit),
   };
 }
 
