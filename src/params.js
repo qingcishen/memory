@@ -127,6 +127,11 @@ export const PARAMS = {
     similarityThreshold: 0.75,
   },
 
+  // ---- M6 媒体向量闭环 (图搜图) ----
+  modal: {
+    mediaTopK: 5, // recallMedia 默认返回几条最相似的图/视频
+  },
+
   // ---- M7 近义去重 (embedding 近邻判重) ----
   // dedup_hash 只挡"规范化后完全相同"的重复; 这里再加一层向量近邻判重, 把
   // "讨厌香菜"/"不爱吃香菜"这类同义不同写法也认成同一条 (强化旧记忆而非新增)。

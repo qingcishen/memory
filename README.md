@@ -60,6 +60,9 @@ const historyBlock = await mem.recallHistoryAsPrompt('香菜');
 await mem.seeImage({ url: imgUrl });
 await mem.hearVoice({ transcript: '我没事', prosody: { tone: 'crying' } }); // 语气进 affect
 
+// 图搜图: 给一个查询图的向量 (调用方用 CLIP 等模型算好), 在带 media_embedding 的记忆里找最相似的几条
+const similarImages = await mem.recallMedia(queryEmbedding);
+
 // 定时: 心情回落 / 和好后软化旧怨(M3) / 合成"我们的故事"(M4) / 反思 / 遗忘
 await mem.settle();                 // 没对话时心情向基线回落
 await mem.reconsolidate();          // 按当下状态重构旧记忆 (永不改 fact_core)
@@ -160,6 +163,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `dedup.nearDuplicateThreshold` | 近义去重: 向量相似度高于它视为"同一件事换了说法" | 调低则更容易把相似表述合并强化, 但误把"喜欢/讨厌"反义当重复的风险变大 |
 | `confidence.lowThreshold` | 不确定性表达: confidence 低于它时改口"我记得好像..." | 调高则更多记忆带上不确定语气, 显得更"人"但也更含糊 |
 | `forget.similarityThreshold` | 主动遗忘: query 召回候选相似度高于它才纳入删除范围 | 调低则"忘记那件事"更容易扩大误删范围 |
+| `modal.mediaTopK` | 图搜图: `recallMedia` 默认返回几条最相似的图/视频 | 调高则一次给更多候选, 但 prompt 更长 |
 
 ## 数据流
 
@@ -206,7 +210,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 | `src/memory/reconsolidate.js` | 重构性记忆 (M3): 想起时按当下情绪重写情感层, 永不改 fact_core |
 | `src/persona.js` / `src/narrative.js` | self 人格域隔离 / dyad 共同记忆 + 关系叙事 (M4) |
 | `src/memory/prospective.js` | 预期记忆 (M5): 识别未来意图 → 到点/语境主动提起 |
-| `src/modal/` | 多模态 (M6): `image`(vision caption) / `audio`(ASR + 语气→affect) |
+| `src/modal/` | 多模态 (M6): `image`(vision caption + `recallMedia` 图搜图) / `audio`(ASR + 语气→affect) |
 | `src/memory.js` | 门面类 `Memory` |
 | `src/orchestrator/` | 编排器: `Orchestrator` 门面 + 把 Memory/persona/stateLayer/relationship 适配成统一 `toPrompt` 接口, `assemble` 纯本地拼接 prompt |
 

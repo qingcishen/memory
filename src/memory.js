@@ -13,7 +13,7 @@ import { reconsolidateOnRecall, reconsolidateRecent } from './memory/reconsolida
 import { seedPersona, personaBlock } from './persona.js';
 import { dyadBackdrop, synthesizeNarrative } from './narrative.js';
 import { scheduleFromTurns, dueProspectives, markFired } from './memory/prospective.js';
-import { ingestImage, ingestAudio } from './modal/index.js';
+import { ingestImage, ingestAudio, recallMedia } from './modal/index.js';
 import { attachConfidence } from './confidence.js';
 import { PARAMS } from './config.js';
 
@@ -146,6 +146,14 @@ export class Memory {
   /** 她听到一段语音 (M6): ASR 转写 + 语气进 affect → audio 记忆。缺凭证降级不崩。 */
   async hearVoice(opts = {}) {
     return ingestAudio(this.userId, opts);
+  }
+
+  /**
+   * 图搜图 (#6 工程债 · 媒体向量闭环): 给一个查询图的向量 (调用方用 CLIP 等模型算好),
+   * 在带 media_embedding 的记忆里找最相似的几条。本类不内置视觉 embedding 模型。
+   */
+  async recallMedia(queryEmbedding, opts = {}) {
+    return recallMedia(this.userId, queryEmbedding, opts);
   }
 
   /** 把检索结果拼成可注入 system prompt 的自然语言 */

@@ -1,11 +1,13 @@
-// M6 纯逻辑测试: 多模态记忆 (图片/语音) 的组装与降级。不连网。
+// M6 纯逻辑测试: 多模态记忆 (图片/语音) 的组装与降级, 以及媒体向量闭环 (#6 工程债)。不连网。
 // 验收 (见 docs/DEVELOPMENT.md M6):
 //   - 图片 caption 进 content (可被文本召回), modality=image
 //   - 语音转写进 content, 语气进 affect
 //   - 缺凭证 (无 url/file 且无 caption/transcript) 降级为 []、不崩
+//   - rankByMediaSimilarity: 按 media_embedding 余弦相似度排序 (图搜图), 缺向量的候选被跳过
 import assert from 'node:assert';
-import { buildImageMemory, ingestImage } from '../src/modal/image.js';
+import { buildImageMemory, ingestImage, rankByMediaSimilarity } from '../src/modal/image.js';
 import { prosodyToAffect, buildAudioMemory, ingestAudio } from '../src/modal/audio.js';
+import { PARAMS } from '../src/params.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -51,6 +53,33 @@ console.log('降级: 缺凭证且无文本时返回 []、不抛');
   ok('ingestImage 无输入 → []', Array.isArray(img) && img.length === 0);
   const aud = await ingestAudio('u_test', {}); // 无 file 无 transcript
   ok('ingestAudio 无输入 → []', Array.isArray(aud) && aud.length === 0);
+}
+
+console.log('rankByMediaSimilarity (#6 媒体向量闭环: 按 media_embedding 余弦相似度图搜图)');
+{
+  const query = [1, 0, 0];
+  const candidates = [
+    { id: 'beach', media_embedding: [1, 0, 0] }, // 与 query 完全一致
+    { id: 'mountain', media_embedding: [0, 1, 0] }, // 正交, 不相关
+    { id: 'beach2', media_embedding: '[0.9, 0.1, 0]' }, // pgvector 字符串形式, 较相似
+    { id: 'caption-only', fact_core: '只有文字描述的图', media_embedding: null }, // 没存向量
+    { id: 'no-media-field' }, // 纯文本记忆, 压根没有 media_embedding 字段
+  ];
+
+  const ranked = rankByMediaSimilarity(candidates, query);
+  ok('最相似的排第一', ranked[0]?.id === 'beach');
+  ok('第二相似的排第二', ranked[1]?.id === 'beach2');
+  ok('没有 media_embedding 的候选被跳过', !ranked.some((m) => m.id === 'caption-only' || m.id === 'no-media-field'));
+  ok('结果带 _mediaSimilarity', typeof ranked[0]._mediaSimilarity === 'number');
+  ok('完全一致的向量相似度为 1', Math.abs(ranked[0]._mediaSimilarity - 1) < 1e-9);
+  ok('降序排列', ranked[0]._mediaSimilarity >= ranked[1]._mediaSimilarity);
+
+  ok('topK 截断', rankByMediaSimilarity(candidates, query, { topK: 1 }).length === 1);
+  ok('默认 topK 取自 PARAMS.modal.mediaTopK', PARAMS.modal.mediaTopK > 0);
+
+  ok('queryEmbedding 为空时返回 []', rankByMediaSimilarity(candidates, null).length === 0);
+  ok('候选为空时返回 []', rankByMediaSimilarity([], query).length === 0);
+  ok('原字段被保留', ranked[0].id === 'beach');
 }
 
 console.log(`\nM6 全部 ${passed} 条断言通过 ✅`);
