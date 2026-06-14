@@ -82,6 +82,21 @@ create table if not exists affective_state (
   updated_at   timestamptz not null default now()
 );
 
+-- ------------------------------------------------------------
+--  L2 · 生命状态 (见 docs/appearance-life-design.md 第三部分)
+--  一个用户一行: 身体状态 + 作息派生活动。读取时惰性应用饥饿/作息/健康衰减。
+-- ------------------------------------------------------------
+create table if not exists life_state (
+  user_id          text primary key,
+  energy           real not null default 0.6,
+  satiety          real not null default 0.6,
+  health           real not null default 1.0,
+  current_activity text,
+  last_slept_at    timestamptz,
+  sick_until       timestamptz,
+  updated_at       timestamptz not null default now()
+);
+
 -- 状态历史 (feature/state-history): affective_state 只存"当下", 这张表存"轨迹"。
 -- 关系叙事(M4)与情感锚审计要看演变 —— 状态有显著变化时追加一条快照 (见 src/state/affect.js)。
 create table if not exists affective_state_history (
