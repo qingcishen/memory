@@ -26,6 +26,8 @@ cp .env.example .env   # 填入 Supabase / LLM / Embedding 凭证
 
 在 Supabase SQL Editor 执行 `sql/schema.sql`(建表 + pgvector + 检索函数)。
 
+> **升级老库**:`sql/schema.sql` 是幂等的,表结构有变更时(如新增 `companion_id` 列 / `companions`、`appearance_assets` 表 / 修改 `match_memories` RPC),把整段重新执行一遍即可平滑升级,不会动到已有数据。
+
 LLM 用 OpenAI 兼容接口,DeepSeek 直接可用;Embedding 默认 OpenAI `text-embedding-3-small`(1536 维)。换 embedding 模型记得同步改 schema 里的 `vector(维度)`。
 
 ## 用法
