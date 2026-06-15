@@ -30,6 +30,7 @@ export const CompanionConfigSchema = z.object({
   speechStyle: z.string().default(''),                // 说话风格
   appearance: z.string().default(''),                 // 外貌描述 (注入 prompt, 不做图像生成)
   seedFacts: z.array(SeedFactSchema).default([]),      // 初始 self 记忆 (可选)
+  knowledgeBank: z.array(SeedFactSchema).default([]),  // M9 每日训练知识库: 每晚按 PARAMS.training.knowledgePerDay 滴灌进 self 记忆
 });
 
 /** 校验/解析任意输入 -> 合法 CompanionConfig (缺字段补默认, 非法抛 ZodError)。 */
@@ -69,6 +70,8 @@ export function personaJsonToConfig(json = {}) {
     speechStyle,
     appearance: json.appearance?.anchor_prompt ?? '',
     seedFacts,
+    // M9 每日训练知识库: 顶层 knowledge 数组 (字符串或 {fact_core,...}), 每晚滴灌进 self 记忆。
+    knowledgeBank: Array.isArray(json.knowledge) ? json.knowledge : [],
   });
   const options = {
     useMonologue: json.runtime?.use_monologue ?? true,
@@ -118,6 +121,7 @@ export function configToRow(userId, config) {
       traits: c.traits,
       speechStyle: c.speechStyle,
       seedFacts: c.seedFacts,
+      knowledgeBank: c.knowledgeBank,
     },
     updated_at: new Date().toISOString(),
   };

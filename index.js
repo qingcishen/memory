@@ -60,6 +60,8 @@ export { CompanionRuntime, isNightlyDue, localDayKey, localHour } from './src/ru
 export { incr, get, metricsSnapshot, resetMetrics, recordLlmCall } from './src/metrics.js';
 // 真实世界感知 · 天气
 export { WeatherProvider, weatherCodeToZh, buildWeatherLine } from './src/world/weather.js';
+// M9 每日训练 · 知识滴灌 + 自我日记
+export { pickDailyKnowledge, buildDiaryPrompt, selfFactCores, dailyTraining } from './src/training.js';
 // M5 扛量 · 持久化任务队列
 export {
   enqueue,

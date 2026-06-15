@@ -15,6 +15,7 @@ import { dyadBackdrop, synthesizeNarrative } from './narrative.js';
 import { scheduleFromTurns, dueProspectives, markFired } from './memory/prospective.js';
 import { ingestImage, ingestAudio, recallMedia } from './modal/index.js';
 import { attachConfidence } from './confidence.js';
+import { dailyTraining } from './training.js';
 import { PARAMS } from './config.js';
 
 /**
@@ -197,6 +198,11 @@ export class Memory {
   /** 维护期 (如每晚) 调用: 合并近义重复记忆 (收口并发 observe 漏过的"两条当前事实")。 */
   async dedupe(opts = {}) {
     return mergeNearDuplicates(this.userId, this.companionId, opts);
+  }
+
+  /** M9 每日训练 (如每晚) 调用: 知识滴灌 + 自我日记, 见 src/training.js。 */
+  async train(opts = {}) {
+    return dailyTraining(this.userId, this.companionId, opts);
   }
 
   /** 找出几乎被遗忘的记忆; 传 { purge: true } 可清理 */

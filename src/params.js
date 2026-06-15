@@ -217,4 +217,11 @@ export const PARAMS = {
     maxBackoffMs: 5 * 60 * 1000, // 退避上限 5min
     batchSize: 10, // 一次 tick 最多 claim 几个 job
   },
+
+  // ---- M9 每日训练: 知识滴灌 + 自我日记 (src/training.js) ----
+  // 没有模型微调; "训练"落地为夜间维护时往 self 记忆里多补一点新内容,
+  // 让她随时间慢慢"展开" —— 而不是开局就把所有设定一次性灌完。
+  training: {
+    knowledgePerDay: 1, // 角色知识库里每晚最多滴灌几条新的 self 事实
+  },
 };

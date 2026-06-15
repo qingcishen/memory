@@ -202,10 +202,13 @@ export class ProactiveScheduler {
     const userId = this.orchestrator.userId;
     const companionId = this.orchestrator.companionId ?? 'default';
     const state = normalizeRateLimitState(await this.stateStore.load({ userId, companionId }).catch(() => defaultRateLimitState()));
-    const allowed = canSendProactive(state, now, { ...this.policy, ...(ctx.policy ?? {}) });
-    if (!allowed.ok) return { sent: false, reason: allowed.reason, nextAt: allowed.nextAt };
-
     const dueItems = await this.getDueItems({ userId, companionId, now, ctx }).catch(() => []);
+
+    const allowed = canSendProactive(state, now, { ...this.policy, ...(ctx.policy ?? {}) });
+    // 到期事项(如"7点叫我起床")是她答应过的事——哪怕在安静时段(她在睡觉)也要叫醒, 但仍受冷却/每日上限保护。
+    const overrideQuietHours = dueItems.length > 0 && allowed.reason === 'quiet_hours';
+    if (!allowed.ok && !overrideQuietHours) return { sent: false, reason: allowed.reason, nextAt: allowed.nextAt };
+
     // P1 分级主动性: ctx.reason > 到期事项 > 睡前道晚安 > 沉默分级 > 默认理由。
     const bedtimeTier = this.sleepWindow ? pickBedtimeTier(now, this.sleepWindow) : null;
     const lastUserMessageAt = this.getLastUserMessageAt

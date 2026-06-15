@@ -72,6 +72,10 @@ export class MemoryAdapter {
   dedupe(opts) {
     return this._mem.dedupe(opts);
   }
+  /** M9 每日训练: 知识滴灌 + 自我日记, 见 src/training.js。 */
+  train(opts) {
+    return this._mem.train(opts);
+  }
   checkProspective(ctx, now) {
     return this._mem.checkProspective(ctx, now);
   }

@@ -178,6 +178,33 @@ console.log('ProactiveScheduler.tick 分级主动性优先级链 (P1)');
   ok('到期事项优先于 bedtime/silence', dueResult.sent && dueResult.reason.includes('面试'));
 }
 
+console.log('ProactiveScheduler.tick 到期事项突破安静时段 (说话算话: 答应了几点叫醒, 哪怕在她睡觉的安静时段也要叫)');
+{
+  // 7:00 在默认 quietHours(23-8) 内: 有到期的"叫醒"提醒时仍应发送
+  const orchWakeup = makeOrchestrator();
+  const wakeupScheduler = new ProactiveScheduler({
+    orchestrator: orchWakeup,
+    stateStore: new MemoryRateLimitStore(),
+    policy,
+    clock: () => utc('2026-06-15T07:00:00Z'),
+    getDueItems: async () => [{ id: 'wake1', content: '答应过7点叫醒对方起床' }],
+  });
+  const wakeupResult = await wakeupScheduler.tick();
+  ok('安静时段内有到期事项仍能发送(叫醒)', wakeupResult.sent && wakeupResult.reason.includes('叫醒'));
+
+  // 同一时间没有到期事项时, 安静时段照常拦住
+  const orchQuiet = makeOrchestrator();
+  const quietScheduler = new ProactiveScheduler({
+    orchestrator: orchQuiet,
+    stateStore: new MemoryRateLimitStore(),
+    policy,
+    clock: () => utc('2026-06-15T07:00:00Z'),
+    getDueItems: async () => [],
+  });
+  const quietResult = await quietScheduler.tick();
+  ok('安静时段内无到期事项仍被拦住', !quietResult.sent && quietResult.reason === 'quiet_hours');
+}
+
 function makeFakeSupabase(initialState = null) {
   const calls = { select: [], upsert: [] };
   return {

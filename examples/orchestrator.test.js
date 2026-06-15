@@ -18,6 +18,7 @@ import {
   buildMonologueContext,
   formatRelationshipPrompt,
 } from '../src/orchestrator/index.js';
+import { normalizeCompanionConfig } from '../src/companion.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -165,12 +166,17 @@ function makeMocks() {
     memory: {
       recallCalls: [],
       observeCalls: [],
+      trainCalls: [],
       async recall(query) {
         this.recallCalls.push(query);
         return '你记得关于诗雅的事:\n- 诗雅讨厌香菜';
       },
       async observe(turns) {
         this.observeCalls.push(turns);
+      },
+      async train(opts) {
+        this.trainCalls.push(opts);
+        return { seeded: [], diary: null };
       },
     },
     stateLayer: {
@@ -352,6 +358,26 @@ console.log('Orchestrator persona 缓存按 personaRefreshMs 刷新 (长期运�
   await orch.reply('你好');
   await orch.reply('在吗');
   ok('personaRefreshMs=0 时每轮都重新加载 persona', deps.persona.loadCalls === 2);
+}
+
+console.log('Orchestrator.maintain 夜间触发 memory.train (M9 每日训练: 知识滴灌 + 自我日记)');
+{
+  const deps = makeMocks();
+  const config = normalizeCompanionConfig({ name: '可可', knowledgeBank: ['她爱吃甜的'] });
+  const orch = new Orchestrator({ userId: 'u_train', deps, config, options: { useMonologue: false } });
+
+  await orch.maintain({ nightly: false });
+  ok('非夜间不触发 memory.train', deps.memory.trainCalls.length === 0);
+
+  await orch.maintain({ nightly: true });
+  ok('夜间触发 memory.train 一次', deps.memory.trainCalls.length === 1);
+  const trainOpts = deps.memory.trainCalls[0];
+  ok('train 收到 knowledgeBank (来自 CompanionConfig)', trainOpts.knowledgeBank[0] === '她爱吃甜的');
+  ok('train 收到 llm (用于自我日记)', trainOpts.llm === deps.llm);
+  ok(
+    'train 收到拼好的 promptCtx (人格/状态/关系段)',
+    trainOpts.promptCtx.personaPrompt.includes('可可是这样一个人') && trainOpts.promptCtx.statePrompt.includes('状态:')
+  );
 }
 
 console.log('Orchestrator.proactiveTick (主动性入口复用组装链路)');

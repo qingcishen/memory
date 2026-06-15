@@ -119,8 +119,8 @@ alter table memories add column if not exists access_log     jsonb default '[]':
 **门面**:写入与读取都带新字段;旧 `content` 暂保留为兼容视图
 
 **验收**
-- [ ] 提取一段对话,正确分出 fact_core 与 affect,且 dyad 记忆被识别("我们一起…")
-- [ ] **不变式测试:任何写路径都不改已存在记忆的 `fact_core`**(锁定测试)
+- [x] 提取一段对话,正确分出 fact_core 与 affect,且 dyad 记忆被识别("我们一起…")
+- [x] **不变式测试:任何写路径都不改已存在记忆的 `fact_core`**(锁定测试,见 `examples/ontology.test.js` `assertFactCorePreserved`)
 
 ---
 

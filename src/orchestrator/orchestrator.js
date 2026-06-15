@@ -271,7 +271,7 @@ export class Orchestrator {
   /**
    * 维护期 (后台定时, 无对话时也跑): 让她的内在自行演变/沉淀。
    * - 常规: settle(心情随时间回落) + tickActivity(作息活动派生 + 自动生病判定)。
-   * - nightly: 额外 reflect(归纳印象) + story(我们的故事) + dedupe(合并近义重复)。
+   * - nightly: 额外 reflect(归纳印象) + story(我们的故事) + dedupe(合并近义重复) + train(M9 每日训练)。
    * 任一失败只记日志, 互不影响。
    */
   async maintain({ now = Date.now(), nightly = false } = {}) {
@@ -282,10 +282,32 @@ export class Orchestrator {
       if (typeof this.memory.reflect === 'function') tasks.push(this.memory.reflect());
       if (typeof this.memory.story === 'function') tasks.push(this.memory.story());
       if (typeof this.memory.dedupe === 'function') tasks.push(this.memory.dedupe());
+      if (typeof this.memory.train === 'function') tasks.push(this.trainNightly());
     }
     const results = await Promise.allSettled(tasks);
     for (const r of results) if (r.status === 'rejected') console.error('[maintain]', r.reason);
     return results;
+  }
+
+  /**
+   * M9 每日训练: 拼好当下人格/状态/关系段, 交给 memory.train 做知识滴灌 + 自我日记 (见 src/training.js)。
+   * 没有模型微调——"训练"落地为往 self 记忆里慢慢补充新内容, 让人设/情感的连续性随时间展开。
+   */
+  async trainNightly() {
+    await this.init().catch(() => {});
+    const [stateSnapshot, relState] = await Promise.all([
+      this.stateLayer.snapshot().catch(() => null),
+      this.relationship.current().catch(() => null),
+    ]);
+    return this.memory.train({
+      knowledgeBank: this._config?.knowledgeBank ?? [],
+      llm: this.llm,
+      promptCtx: {
+        personaPrompt: this.persona.toPrompt() ?? '',
+        statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
+        relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
+      },
+    });
   }
 
   /** 回复返回后触发的后台状态更新, 任一失败只记日志, 不影响已发出的回复。 */

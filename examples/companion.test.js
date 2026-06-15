@@ -7,6 +7,7 @@ import {
   safeCompanionConfig,
   rowToConfig,
   configToRow,
+  personaJsonToConfig,
 } from '../src/companion.js';
 import { StateLayer } from '../src/state/stateLayer.js';
 import { LifeDimension } from '../src/state/life.js';
@@ -57,6 +58,25 @@ console.log('CompanionConfig zod 校验');
     seedFacts: ['可可爱吃甜的', { fact_core: '可可怕黑', importance: 8 }],
   });
   ok('seedFacts 接受 string 与 {fact_core,...} 混合', withFacts.seedFacts.length === 2);
+
+  // M9 每日训练知识库: 与 seedFacts 同形态, 默认空数组
+  ok('knowledgeBank 默认空数组', c.knowledgeBank.length === 0);
+  const withKnowledge = normalizeCompanionConfig({
+    name: '可可',
+    knowledgeBank: ['可可大学时学过法语', { fact_core: '可可怕辣', importance: 4 }],
+  });
+  ok('knowledgeBank 接受 string 与 {fact_core,...} 混合', withKnowledge.knowledgeBank.length === 2);
+}
+
+console.log('personaJsonToConfig: 顶层 knowledge 数组映射到 knowledgeBank (M9 知识滴灌库)');
+{
+  const { config } = personaJsonToConfig({
+    meta: { display_name: '阿冷' },
+    persona: { name: '阿冷' },
+    knowledge: ['阿冷小时候学过钢琴', '阿冷怕辣'],
+  });
+  ok('knowledge 数组映射进 knowledgeBank', config.knowledgeBank.length === 2 && config.knowledgeBank[0] === '阿冷小时候学过钢琴');
+  ok('没有 knowledge 字段时 knowledgeBank 为空数组', personaJsonToConfig({ persona: { name: '阿冷' } }).config.knowledgeBank.length === 0);
 }
 
 console.log('行 <-> Config 映射 (companions 表)');
