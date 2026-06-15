@@ -45,8 +45,13 @@
     "test:activity": "node examples/activity.test.js",
     "test:health": "node examples/health.test.js",
     "test:appearance": "node examples/appearance.test.js",
+    "test:queue": "node examples/queue.test.js",
+    "test:telegram": "node examples/telegram.test.js",
+    "test:runtime": "node examples/runtime.test.js",
+    "test:weather": "node examples/weather.test.js",
+    "telegram": "node src/telegram/bot.js",
     "inspect": "node examples/inspect.js",
-    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/state-layer.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/safety.test.js && node examples/confidence.test.js && node examples/store.test.js && node examples/scenario.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js && node examples/companion.test.js && node examples/activity.test.js && node examples/health.test.js && node examples/appearance.test.js"
+    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/state-layer.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/safety.test.js && node examples/confidence.test.js && node examples/store.test.js && node examples/scenario.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js && node examples/companion.test.js && node examples/activity.test.js && node examples/health.test.js && node examples/appearance.test.js && node examples/queue.test.js && node examples/telegram.test.js && node examples/runtime.test.js && node examples/weather.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

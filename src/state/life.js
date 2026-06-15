@@ -4,8 +4,8 @@
 // 避免状态层影响主对话链路可用性。
 
 import { supabase } from '../config.js';
-import { currentActivity } from './activity.js';
-import { maybeFallSick, detectCare, applyCare, isSick } from './health.js';
+import { currentActivity, parseSleepWindow, shanghaiWallClock } from './activity.js';
+import { maybeFallSick, detectCare, applyCare, isSick, isLateNight, updateLateNightStreak } from './health.js';
 
 const HOUR = 1000 * 60 * 60;
 const FIELD_RANGE = {
@@ -13,6 +13,7 @@ const FIELD_RANGE = {
   satiety: [0, 1],
   health: [0, 1],
 };
+const MAX_LATE_NIGHT_STREAK = 30;
 
 export function defaultLifeState() {
   return {
@@ -22,6 +23,9 @@ export function defaultLifeState() {
     current_activity: null,
     last_slept_at: null,
     sick_until: null,
+    // P2: 连续熬夜天数 + 最近一次熬夜的日期(见 src/state/health.js updateLateNightStreak)
+    late_night_streak: 0,
+    last_late_night_day: null,
   };
 }
 
@@ -35,6 +39,8 @@ export function clampLife(state = {}) {
     current_activity: textOrNull(state.current_activity ?? d.current_activity),
     last_slept_at: textOrNull(state.last_slept_at ?? d.last_slept_at),
     sick_until: textOrNull(state.sick_until ?? d.sick_until),
+    late_night_streak: clamp(Math.round(num(state.late_night_streak, d.late_night_streak)), 0, MAX_LATE_NIGHT_STREAK),
+    last_late_night_day: textOrNull(state.last_late_night_day ?? d.last_late_night_day),
     updated_at: textOrNull(state.updated_at),
   };
 }
@@ -48,7 +54,7 @@ export async function readLifeState(userId, companionId = 'default') {
   if (!userId) return { ...defaultLifeState(), updated_at: null };
   const { data, error } = await supabase
     .from('life_state')
-    .select('energy, satiety, health, current_activity, last_slept_at, sick_until, updated_at')
+    .select('energy, satiety, health, current_activity, last_slept_at, sick_until, late_night_streak, last_late_night_day, updated_at')
     .eq('user_id', userId)
     .eq('companion_id', companionId)
     .maybeSingle();
@@ -68,6 +74,8 @@ export async function writeLifeState(userId, companionId = 'default', state) {
     current_activity: s.current_activity,
     last_slept_at: s.last_slept_at,
     sick_until: s.sick_until,
+    late_night_streak: s.late_night_streak,
+    last_late_night_day: s.last_late_night_day,
     updated_at: new Date().toISOString(),
   };
   const { data, error } = await supabase.from('life_state').upsert(row, { onConflict: 'user_id,companion_id' }).select().single();
@@ -88,7 +96,7 @@ export function circadianEnergyBaseline(hourOfDay) {
 export function decayLife(state = {}, hours = 0, now = Date.now()) {
   const s = clampLife(state);
   const elapsed = Math.max(0, Number(hours) || 0);
-  const hour = new Date(now).getHours();
+  const hour = shanghaiWallClock(now).getUTCHours();
   const baseline = circadianEnergyBaseline(hour);
   const satiety = clamp(s.satiety - elapsed * 0.08, 0.08, 1);
   const energyTowardBaseline = decayToward(s.energy, baseline, elapsed, 3);
@@ -139,6 +147,7 @@ export class LifeDimension {
     now = () => Date.now(),
     activityFn = currentActivity, // L3: 可注入, 测试时换成确定函数
     rng = Math.random, // L4: 可注入, 测试时换成固定值
+    lifeConfig = null, // P2: 角色专属身体参数 (companions/*.json 的 life: {sleep, sick_probability})
   } = {}) {
     this.userId = userId;
     this.companionId = companionId;
@@ -147,6 +156,8 @@ export class LifeDimension {
     this.now = now;
     this.activityFn = activityFn;
     this.rng = rng;
+    this.sleepWindow = parseSleepWindow(lifeConfig?.sleep);
+    this.sickProbability = lifeConfig?.sick_probability;
   }
 
   async current() {
@@ -175,8 +186,12 @@ export class LifeDimension {
     let relationshipDelta = null;
     let careEvent = null;
 
-    // 自动发病(熬夜抬概率)
-    const fell = maybeFallSick(state, now, this.rng);
+    // P2: 维护"连续熬夜天数"——这一轮对话发生在角色专属睡眠时段内才算一次熬夜
+    const lateNightNow = turns.length > 0 && isLateNight(now, this.sleepWindow);
+    state = { ...state, ...updateLateNightStreak(state, now, lateNightNow) };
+
+    // 自动发病(熬夜抬概率; P2: sickProbability 按角色覆盖、连续熬夜达标翻倍)
+    const fell = maybeFallSick(state, now, this.rng, 24, { sickProbability: this.sickProbability });
     if (fell.sick) {
       state = fell.state;
       moodDelta = mergeMood(moodDelta, fell.moodDelta);

@@ -8,6 +8,8 @@ import {
   isQuietHour,
   markProactiveSent,
   normalizeRateLimitState,
+  pickSilenceTier,
+  pickBedtimeTier,
 } from '../src/orchestrator/index.js';
 
 let passed = 0;
@@ -104,6 +106,76 @@ console.log('ProactiveScheduler.tick 降级路径');
   });
   const skipped = await scheduler.tick({ reason: 'skip-me' });
   ok('orchestrator 返回 null 时报告 orchestrator_skipped', !skipped.sent && skipped.reason === 'orchestrator_skipped');
+}
+
+console.log('pickSilenceTier / pickBedtimeTier (P1 分级主动性, 纯逻辑)');
+{
+  const now = utc('2026-06-14T12:00:00Z');
+  ok('lastUserMessageAt 为 null → 不触发', pickSilenceTier(now, null) === null);
+  ok('1h 未到档 → 不触发', pickSilenceTier(now, utc('2026-06-14T11:00:00Z')) === null);
+
+  const excuse = pickSilenceTier(now, utc('2026-06-14T09:30:00Z')); // 2.5h
+  ok('2-4h → excuse 档', excuse?.tier === 'excuse');
+
+  const direct = pickSilenceTier(now, utc('2026-06-14T07:00:00Z')); // 5h
+  ok('4-6h → direct 档', direct?.tier === 'direct');
+
+  const miss = pickSilenceTier(now, utc('2026-06-14T04:00:00Z')); // 8h
+  ok('>6h → miss 档', miss?.tier === 'miss');
+  ok('miss 档理由提到沉默时长', miss.reason.includes('小时没说话'));
+
+  const sleepWindow = { from: 30, to: 8 * 60 }; // 00:30-08:00
+  const beforeBed = pickBedtimeTier(new Date(2026, 5, 14, 23, 45).getTime(), sleepWindow);
+  ok('睡前 60min 内 → bedtime 档', beforeBed?.tier === 'bedtime');
+
+  const notBed = pickBedtimeTier(new Date(2026, 5, 14, 20, 0).getTime(), sleepWindow);
+  ok('离睡觉还早 → 不触发', notBed === null);
+  ok('无 sleepWindow → 不触发', pickBedtimeTier(new Date(2026, 5, 14, 23, 45).getTime(), null) === null);
+}
+
+console.log('ProactiveScheduler.tick 分级主动性优先级链 (P1)');
+{
+  // 无 ctx.reason / dueItems / 不在睡前 → 落到沉默分级 (8h 没说话 → miss 档)
+  const orchSilence = makeOrchestrator();
+  const silenceScheduler = new ProactiveScheduler({
+    orchestrator: orchSilence,
+    stateStore: new MemoryRateLimitStore(),
+    policy,
+    clock: () => utc('2026-06-14T12:00:00Z'),
+    getDueItems: async () => [],
+    sleepWindow: { from: 30, to: 8 * 60 }, // 00:30-08:00, 中午不在睡前窗口内
+    getLastUserMessageAt: async () => utc('2026-06-14T04:00:00Z'), // 8h 前
+  });
+  const silenceResult = await silenceScheduler.tick();
+  ok('落到 silence 档 (miss)', silenceResult.sent && silenceResult.reason.includes('小时没说话'));
+
+  // 同时处于睡前窗口 + 长沉默 → bedtime 优先于 silence (关闭安静时段避免 23:45 被拦)
+  const orchBedtime = makeOrchestrator();
+  const bedtimeScheduler = new ProactiveScheduler({
+    orchestrator: orchBedtime,
+    stateStore: new MemoryRateLimitStore(),
+    policy: { ...policy, quietHours: null },
+    clock: () => new Date(2026, 5, 14, 23, 45).getTime(),
+    getDueItems: async () => [],
+    sleepWindow: { from: 30, to: 8 * 60 },
+    getLastUserMessageAt: async () => utc('2026-06-14T04:00:00Z'),
+  });
+  const bedtimeResult = await bedtimeScheduler.tick();
+  ok('bedtime 档优先于 silence 档', bedtimeResult.sent && bedtimeResult.reason.includes('晚安'));
+
+  // dueItems 优先于 bedtime/silence
+  const orchDue = makeOrchestrator();
+  const dueScheduler = new ProactiveScheduler({
+    orchestrator: orchDue,
+    stateStore: new MemoryRateLimitStore(),
+    policy: { ...policy, quietHours: null },
+    clock: () => new Date(2026, 5, 14, 23, 45).getTime(),
+    getDueItems: async () => [{ id: 'p1', content: '问问面试怎么样了' }],
+    sleepWindow: { from: 30, to: 8 * 60 },
+    getLastUserMessageAt: async () => utc('2026-06-14T04:00:00Z'),
+  });
+  const dueResult = await dueScheduler.tick();
+  ok('到期事项优先于 bedtime/silence', dueResult.sent && dueResult.reason.includes('面试'));
 }
 
 function makeFakeSupabase(initialState = null) {

@@ -6,6 +6,7 @@
 //
 // 校验用 zod (项目里第一个外部校验依赖; params.js 仍保持零依赖, 故 schema 单独放这里)。
 
+import fs from 'node:fs';
 import { z } from 'zod';
 import { supabase } from './config.js';
 
@@ -40,6 +41,55 @@ export function normalizeCompanionConfig(input = {}) {
 export function safeCompanionConfig(input = {}) {
   const r = CompanionConfigSchema.safeParse(input);
   return r.success ? { ok: true, config: r.data } : { ok: false, error: r.error };
+}
+
+/**
+ * 把"富人设 JSON"(persona/appearance/life/runtime 那种, 见 companions/*.json) 映射成本系统的 CompanionConfig。
+ * 把 background/values/likes/dislikes/称呼 全折进 personality —— persona prompt 只注入
+ * 外貌/说话风格/性格, 所以这些细节要进 personality 才会进 system prompt。
+ * @returns { config, options } —— options 给 Orchestrator (useMonologue/historyTurns)
+ */
+export function personaJsonToConfig(json = {}) {
+  const p = json.persona ?? {};
+  const speechStyle = Array.isArray(p.speech) ? p.speech.join('；') : String(p.speech ?? '');
+  const parts = [];
+  if (p.personality) parts.push(p.personality);
+  if (p.background) parts.push(`【背景】${p.background}`);
+  if (p.values) parts.push(`【处世】${p.values}`);
+  if (p.address_user) parts.push(`她平时称呼对方为「${p.address_user}」。`);
+  if (Array.isArray(p.likes) && p.likes.length) parts.push(`【喜欢】${p.likes.join('、')}`);
+  if (Array.isArray(p.dislikes) && p.dislikes.length) parts.push(`【不喜欢】${p.dislikes.join('、')}`);
+  const seedFacts = [];
+  if (p.background) seedFacts.push({ fact_core: p.background, importance: 8 });
+
+  const config = normalizeCompanionConfig({
+    companionId: 'default',
+    name: p.name ?? json.meta?.display_name ?? '她',
+    personality: parts.join('\n'),
+    speechStyle,
+    appearance: json.appearance?.anchor_prompt ?? '',
+    seedFacts,
+  });
+  const options = {
+    useMonologue: json.runtime?.use_monologue ?? true,
+    historyTurns: json.runtime?.history_turns ?? 6,
+  };
+  // 角色专属作息 + 身体参数 (供 makeScheduleActivityFn / LifeDimension 的 lifeConfig); 没有则留 null 走通用默认。
+  const life = json.life?.schedule_template || json.life?.sleep || json.life?.sick_probability != null
+    ? { schedule: json.life.schedule_template ?? [], sleep: json.life.sleep ?? '', sick_probability: json.life.sick_probability }
+    : null;
+  return { config, options, life };
+}
+
+/** 从 JSON 文件读富人设并映射成 { config, options }; 文件不存在/损坏返回 null (不抛)。 */
+export function loadPersonaConfig(path) {
+  try {
+    if (!path || !fs.existsSync(path)) return null;
+    const json = JSON.parse(fs.readFileSync(path, 'utf8'));
+    return personaJsonToConfig(json);
+  } catch {
+    return null;
+  }
 }
 
 // ---- 行 <-> Config 映射 ----

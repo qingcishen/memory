@@ -137,6 +137,28 @@ const scheduler = new ProactiveScheduler({
 await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 ```
 
+## Telegram 接入
+
+项目自带一个本地 polling 版 Telegram 入口, 不需要公网 webhook。把 BotFather token 放进本机
+`.env` 后启动即可:
+
+```bash
+npm run telegram
+```
+
+需要的环境变量:
+
+```env
+TELEGRAM_BOT_TOKEN=your_telegram_bot_token
+TELEGRAM_ALLOWED_CHAT_IDS=                 # 可选, 多个 chat id 用英文逗号分隔
+TELEGRAM_COMPANION_NAME=小忆
+TELEGRAM_SUBJECT_NAME=你
+TELEGRAM_COMPANION_ID=default
+```
+
+Telegram 的 `chat.id` 会映射成 `userId = telegram:<chat.id>`, 因此每个聊天都有独立记忆和状态。
+支持 `/start`、`/help`、`/status`;普通文字消息会直接进入 `Orchestrator.reply()`。
+
 ## 项目规则
 
 开发新功能、修 bug 或做较大文档改动时,不要直接改 `main`。分支命名、提交、测试和文档同步规则见 [docs/PROJECT_RULES.md](docs/PROJECT_RULES.md)。
@@ -218,7 +240,7 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 
 ## 测试
 
-全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 438 断言)。
+全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 576 断言,22 个套件)。
 
 ```bash
 npm test             # 全部 (M0~M7)

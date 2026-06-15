@@ -4,7 +4,10 @@ export {
   shouldSendSelfie,
   canSendSelfie,
   buildSelfiePrompt,
+  buildScenePrompt,
+  decidePhoto,
   Selfie,
   readAppearanceAssets,
   insertAppearanceAsset,
+  recentPhotoRateState,
 } from './selfie.js';

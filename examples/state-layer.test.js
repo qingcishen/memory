@@ -11,6 +11,7 @@ import {
   moodToLife,
   toLifePrompt,
 } from '../src/state/life.js';
+import { dateKey } from '../src/state/activity.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -99,6 +100,31 @@ console.log('LifeDimension.current/evolve (注入 read/write 模拟持久化)');
 
   const anchored = await life.current();
   ok('再次 current() 以新 updated_at 为基准不继续大幅衰减', Math.abs(anchored.satiety - row.satiety) < 1e-9);
+}
+
+console.log('LifeDimension lifeConfig (P2: 角色专属作息窗口 + 发病概率)');
+{
+  let row2 = null;
+  const lateNow = () => new Date(2026, 5, 14, 2, 0, 0).getTime(); // 凌晨2点, 落在 00:30-08:00 内
+  const dayNow = () => new Date(2026, 5, 14, 14, 0, 0).getTime(); // 下午2点, 不在睡眠窗口
+  const read2 = async () => row2 ?? { ...defaultLifeState(), updated_at: null };
+  const write2 = async (userId, companionId, state) => {
+    row2 = { ...state, updated_at: new Date().toISOString() };
+    return row2;
+  };
+  const lifeConfig = { sleep: '00:30-08:00', sick_probability: 0.5 };
+
+  const lateLife = new LifeDimension({ userId: 'u_life2', read: read2, write: write2, now: lateNow, activityFn: () => null, rng: () => 1, lifeConfig });
+  ok('lifeConfig.sleep 解析为 sleepWindow', lateLife.sleepWindow?.from === 30 && lateLife.sleepWindow?.to === 480);
+  ok('lifeConfig.sick_probability 传入', lateLife.sickProbability === 0.5);
+
+  await lateLife.evolve([{ role: 'user', content: '还没睡' }]);
+  ok('凌晨对话落在睡眠窗口 → late_night_streak=1', row2.late_night_streak === 1);
+  ok('记录熬夜日期', row2.last_late_night_day === dateKey(new Date(lateNow())));
+
+  const dayLife = new LifeDimension({ userId: 'u_life2', read: read2, write: write2, now: dayNow, activityFn: () => null, rng: () => 1, lifeConfig });
+  await dayLife.evolve([{ role: 'user', content: '下午好' }]);
+  ok('白天对话不在睡眠窗口 → late_night_streak 不变', row2.late_night_streak === 1);
 }
 
 console.log('StateLayer snapshot/toPrompt/samplingHints/evolve');

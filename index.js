@@ -8,7 +8,7 @@ export {
   formatForPrompt,
   formatSupersededTrailForPrompt,
 } from './src/retrieve.js';
-export { runReflection, findForgettable } from './src/reflect.js';
+export { runReflection, findForgettable, mergeNearDuplicates } from './src/reflect.js';
 export { embed, embedMany } from './src/embeddings.js';
 export {
   rerank,
@@ -51,9 +51,27 @@ export {
   toEmotionPrompt,
 } from './src/emotion.js';
 // L3 生活模拟 (作息活动)
-export { currentActivity, isSleeping, ACTIVITY_TEMPLATES } from './src/state/activity.js';
+export { currentActivity, isSleeping, ACTIVITY_TEMPLATES, parseSleepWindow } from './src/state/activity.js';
 // L4 健康/生病闭环
-export { isSick, maybeFallSick, detectCare, applyCare } from './src/state/health.js';
+export { isSick, maybeFallSick, detectCare, applyCare, isLateNight, updateLateNightStreak } from './src/state/health.js';
+// 后台"活着"调度循环 (维护 + 主动性)
+export { CompanionRuntime, isNightlyDue, localDayKey, localHour } from './src/runtime/index.js';
+// 轻量监控
+export { incr, get, metricsSnapshot, resetMetrics, recordLlmCall } from './src/metrics.js';
+// 真实世界感知 · 天气
+export { WeatherProvider, weatherCodeToZh, buildWeatherLine } from './src/world/weather.js';
+// M5 扛量 · 持久化任务队列
+export {
+  enqueue,
+  claimBatch,
+  completeJob,
+  failJob,
+  queueStats,
+  Worker,
+  nextBackoffMs,
+  decideAfterFailure,
+  isClaimable,
+} from './src/queue/jobs.js';
 // A1 外貌/自拍 (骨架, 出图为仓库外基建)
 export {
   MockImageProvider,
@@ -62,9 +80,12 @@ export {
   shouldSendSelfie,
   canSendSelfie,
   buildSelfiePrompt,
+  buildScenePrompt,
+  decidePhoto,
   Selfie,
   readAppearanceAssets,
   insertAppearanceAsset,
+  recentPhotoRateState,
 } from './src/appearance/index.js';
 export {
   rankCandidates,
@@ -96,6 +117,8 @@ export {
   upsertCompanion,
   getCompanion,
   listCompanions,
+  personaJsonToConfig,
+  loadPersonaConfig,
 } from './src/companion.js';
 export { pickDyadBackdrop, composeNarrativeInput, dyadBackdrop, synthesizeNarrative } from './src/narrative.js';
 export {
@@ -127,8 +150,12 @@ export {
   DefaultLLM,
   assemble,
   buildSystemPrompt,
+  buildTimePrompt,
+  buildGapHint,
   buildMonologueContext,
   formatRelationshipPrompt,
+  LocalJsonHistoryStore,
+  SupabaseHistoryStore,
   DEFAULT_PROACTIVE_POLICY,
   ProactiveScheduler,
   MemoryRateLimitStore,
@@ -138,4 +165,6 @@ export {
   isQuietHour,
   markProactiveSent,
   normalizeRateLimitState,
+  pickSilenceTier,
+  pickBedtimeTier,
 } from './src/orchestrator/index.js';

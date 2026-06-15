@@ -56,6 +56,24 @@ console.log('inferHeuristicDeltas (从对话嗅信号)');
   ok('只看对方: AI 的话不产生信号', aiOnly.relationship.tension === 0);
 }
 
+console.log('P1 双向关系触发规则 (称呼/敷衍/钱上客气)');
+{
+  const petName = inferHeuristicDeltas([{ role: 'user', content: '老婆我回来啦' }]);
+  ok('称呼老婆: 心情转暖', petName.mood.valence > 0);
+  ok('称呼老婆: 亲密微升', petName.relationship.closeness > 0);
+
+  const dismissive = inferHeuristicDeltas([{ role: 'user', content: '哦' }]);
+  ok('敷衍"哦": 心情转冷', dismissive.mood.valence < 0);
+  ok('敷衍"哦": 紧张微升', dismissive.relationship.tension > 0);
+
+  const notDismissive = inferHeuristicDeltas([{ role: 'user', content: '哦对了, 我刚才看到一个很有趣的东西' }]);
+  ok('"哦"开头但不是整条敷衍 → 不触发', notDismissive.mood.valence === 0 && notDismissive.relationship.tension === 0);
+
+  const money = inferHeuristicDeltas([{ role: 'user', content: '这顿AA吧, 我转给你我那部分' }]);
+  ok('钱上客气(AA): 心情转冷', money.mood.valence < 0);
+  ok('钱上客气(AA): 紧张微升', money.relationship.tension > 0);
+}
+
 console.log('applyDeltas (吵架→和好 的状态因果)');
 {
   // 单次吵架: 状态被推动, 但单步上限保证一句话还不至于翻脸

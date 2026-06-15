@@ -2,7 +2,7 @@
 
 > AI 伴侣(可可)的运行时调度中枢。本文只描述编排器,记忆 / 情绪 / 人格 / 关系等子系统通过**接口契约**对接,各自内部实现不在本文范围内。
 >
-> **后续计划(v2)**:[开发设计方案](companion-roadmap.md) 提出引入统一的 `stateLayer` 门面(`snapshot/toPrompt/samplingHints/evolve`),编排器届时改为对接 `stateLayer` 而不是直接对接下文 §3.2 的 `emotion`(情绪是其内部第一个维度,[外貌与生命状态系统设计](appearance-life-design.md) 的 `life` 维度后续也会并入)。`relationship` 门面不受影响。本文档当前仍按编排器直接对接 `emotion`/`relationship` 描述现有实现(`src/orchestrator/`)。
+> **v2 已落地**:编排器已对接统一的 `stateLayer` 门面(`snapshot/toPrompt/samplingHints/evolve`,`src/state/stateLayer.js`),情绪是其内部维度、`life`(精力/作息/健康)也已并入。`relationship` 门面不受影响。此外已补:多角色隔离(`companion_id`,见 `src/companion.js`)、L3 生活模拟、L4 健康/生病闭环(身心耦合在 `Memory.observe` 统一演变)、A1 拍照分享(自拍 + 随手拍风景/猫狗,经 `onPhoto` 回调投递,见 `src/appearance/`)。本文档下半部仍按早期"编排器直接对接 emotion"叙述,读时以 `src/orchestrator/` 代码为准。
 
 ---
 

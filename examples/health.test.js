@@ -1,6 +1,7 @@
 // L4 纯逻辑测试: 健康/生病闭环。不连网, 注入固定 rng/now。
 import assert from 'node:assert';
-import { maybeFallSick, detectCare, applyCare, isSick } from '../src/state/health.js';
+import { maybeFallSick, detectCare, applyCare, isSick, isLateNight, updateLateNightStreak } from '../src/state/health.js';
+import { dateKey } from '../src/state/activity.js';
 import { PARAMS } from '../src/params.js';
 
 let passed = 0;
@@ -64,6 +65,44 @@ console.log('isSick');
   ok('sick_until 在未来 → 生病中', isSick({ sick_until: new Date(now + HOUR).toISOString() }, now) === true);
   ok('sick_until 已过 → 没病', isSick({ sick_until: new Date(now - HOUR).toISOString() }, now) === false);
   ok('无 sick_until → 没病', isSick({}, now) === false);
+}
+
+console.log('isLateNight / updateLateNightStreak (P2 身体专属参数: 熬夜重定义为对话发生在睡眠时段内)');
+{
+  const sleepWindow = { from: 30, to: 8 * 60 }; // "00:30-08:00"
+  const lateHour = new Date(2026, 5, 15, 2, 0, 0).getTime(); // 02:00, 在窗口内
+  const dayHour = new Date(2026, 5, 15, 14, 0, 0).getTime(); // 14:00, 不在窗口内
+
+  ok('凌晨2点落在睡眠窗口内', isLateNight(lateHour, sleepWindow) === true);
+  ok('下午2点不在睡眠窗口内', isLateNight(dayHour, sleepWindow) === false);
+  ok('无 sleepWindow → 总是 false', isLateNight(lateHour, null) === false);
+
+  const first = updateLateNightStreak({}, lateHour, true);
+  ok('首次熬夜 streak=1', first.late_night_streak === 1);
+  ok('记录熬夜日期', first.last_late_night_day === dateKey(new Date(lateHour)));
+
+  const sameDay = updateLateNightStreak(first, lateHour + HOUR, true);
+  ok('同一天内重复熬夜不重复计数', sameDay.late_night_streak === 1);
+
+  const second = updateLateNightStreak(first, lateHour + 24 * HOUR, true);
+  ok('连续第二天熬夜 streak+1', second.late_night_streak === 2);
+
+  const reset = updateLateNightStreak(second, lateHour + 4 * 24 * HOUR, true);
+  ok('中断过后再熬夜 → 重新计 1', reset.late_night_streak === 1);
+
+  const unchanged = updateLateNightStreak(second, dayHour, false);
+  ok('非熬夜时段不改变 streak/日期', unchanged.late_night_streak === second.late_night_streak && unchanged.last_late_night_day === second.last_late_night_day);
+}
+
+console.log('maybeFallSick: sickProbability 覆盖 + 连续熬夜翻倍 (P2 身体专属参数)');
+{
+  const highProb = maybeFallSick(healthy, now, () => 0.5, 24, { sickProbability: 0.6 });
+  ok('sickProbability 覆盖后命中更高概率', highProb.sick === true);
+  ok('不覆盖时同样的 rng 不命中(基础概率很低)', maybeFallSick(healthy, now, () => 0.5).sick === false);
+
+  const streaked = { ...healthy, late_night_streak: PARAMS.health.lateNightStreakForDouble };
+  ok('未达标连续熬夜 + rng=0.03 → 不发病', maybeFallSick(healthy, now, () => 0.03).sick === false);
+  ok('连续熬夜达标(概率翻倍) + rng=0.03 → 发病', maybeFallSick(streaked, now, () => 0.03).sick === true);
 }
 
 console.log(`\nL4 健康闭环 全部 ${passed} 条断言通过`);

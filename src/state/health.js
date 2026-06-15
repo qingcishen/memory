@@ -9,8 +9,10 @@
 // 回传给 affect 状态机统一落库(见 src/memory.js 的编排), 避免两条持久化路径互相覆盖。
 
 import { PARAMS } from '../config.js';
+import { minutesInRange, dateKey, shanghaiWallClock } from './activity.js';
 
 const HOUR = 1000 * 60 * 60;
+const DAY = HOUR * 24;
 
 /** 此刻是否在病中。 */
 export function isSick(state, now = Date.now()) {
@@ -23,23 +25,52 @@ function hoursSinceSleep(state, now) {
   return Math.max(0, (now - new Date(state.last_slept_at).getTime()) / HOUR);
 }
 
+/** 此刻(Asia/Shanghai 挂钟时间)是否落在角色专属睡眠时段内。sleepWindow 为 {from,to}(分钟, 见 scheduler.parseSleepWindow); 未配置则总是 false。 */
+export function isLateNight(now, sleepWindow) {
+  if (!sleepWindow) return false;
+  const d = shanghaiWallClock(now);
+  return minutesInRange(d.getUTCHours() * 60 + d.getUTCMinutes(), sleepWindow.from, sleepWindow.to);
+}
+
+/**
+ * P2: 维护"连续熬夜天数"。"熬夜"重定义为"在角色专属睡眠时段内还在对话"(避开已死的 last_slept_at)。
+ * 与上次熬夜日相邻的下一天 → streak+1; 同一天内重复命中不重复计数; 中断过 → 重新计 1。
+ * 这一步不是熬夜则原样透传(留给下次熬夜时按日期间隔判定是否连续)。
+ * @returns { late_night_streak, last_late_night_day }
+ */
+export function updateLateNightStreak(state, now, isLateNightNow) {
+  const streak = Math.max(0, Number(state?.late_night_streak) || 0);
+  const lastDay = state?.last_late_night_day ?? null;
+  if (!isLateNightNow) return { late_night_streak: streak, last_late_night_day: lastDay };
+
+  const today = dateKey(new Date(now));
+  if (today === lastDay) return { late_night_streak: streak, last_late_night_day: lastDay };
+
+  const yesterday = dateKey(new Date(now - DAY));
+  return { late_night_streak: lastDay === yesterday ? streak + 1 : 1, last_late_night_day: today };
+}
+
 /**
  * 可能发病。已在病中则不重复发病。
  * @param state life 状态
  * @param now 时间戳
  * @param rng 注入的 [0,1) 随机(默认 Math.random; 测试注入固定值)
  * @param stepHours 距上次演变的时长(把"日概率"折算到这一步; 默认按一整天算一次, 给 1 步=1 天的近似)
+ * @param opts { sickProbability? } —— P2: 按角色覆盖 baseDailySickProb (companions/*.json 的 life.sick_probability)
  * @returns { sick:boolean, state, moodDelta }
  */
-export function maybeFallSick(state, now = Date.now(), rng = Math.random, stepHours = 24) {
+export function maybeFallSick(state, now = Date.now(), rng = Math.random, stepHours = 24, opts = {}) {
   const h = PARAMS.health;
   if (isSick(state, now)) return { sick: false, state, moodDelta: null };
 
   // 日概率 → 本步概率(按时长线性近似, 夹在 [0,1])
-  let prob = Math.min(1, h.baseDailySickProb * (Math.max(0, stepHours) / 24));
-  // 熬夜抬概率
+  const dailyProb = opts.sickProbability ?? h.baseDailySickProb;
+  let prob = Math.min(1, dailyProb * (Math.max(0, stepHours) / 24));
+  // 熬夜抬概率(距上次睡觉过久)
   const sinceSleep = hoursSinceSleep(state, now);
   if (sinceSleep != null && sinceSleep > h.sleepDeprivationHours) prob = Math.min(1, prob * h.staleupMultiplier);
+  // P2: 连续熬夜(对话发生在角色专属睡眠时段)达标后概率翻倍
+  if ((state?.late_night_streak ?? 0) >= h.lateNightStreakForDouble) prob = Math.min(1, prob * h.lateNightStreakMultiplier);
 
   if (rng() >= prob) return { sick: false, state, moodDelta: null };
 

@@ -132,6 +132,9 @@ begin
     alter table life_state add primary key (user_id, companion_id);
   end if;
 end $$;
+-- P2 身体专属参数: 连续熬夜天数 + 最近一次熬夜的日期 (见 src/state/health.js updateLateNightStreak)。
+alter table life_state add column if not exists late_night_streak int not null default 0;
+alter table life_state add column if not exists last_late_night_day text;
 
 -- 状态历史 (feature/state-history): affective_state 只存"当下", 这张表存"轨迹"。
 -- 关系叙事(M4)与情感锚审计要看演变 —— 状态有显著变化时追加一条快照 (见 src/state/affect.js)。
@@ -219,6 +222,44 @@ create table if not exists appearance_assets (
 );
 create index if not exists appearance_assets_idx on appearance_assets (user_id, companion_id, created_at desc);
 create index if not exists appearance_assets_tags_idx on appearance_assets using gin (tags);
+
+-- ------------------------------------------------------------
+--  M5 扛量 · 持久化任务队列 (见 src/queue/jobs.js)
+--  把回复后的后台活 (observe / evolve / 主动性 / reflect) 落成 job, 进程重启不丢;
+--  worker 轮询 claim → 跑 handler → done/失败重试(指数退避), 超次进 failed。
+-- ------------------------------------------------------------
+create table if not exists jobs (
+  id           uuid primary key default gen_random_uuid(),
+  user_id      text not null,
+  companion_id text not null default 'default',
+  kind         text not null,                      -- observe / evolve / proactive / reflect / dedupe ...
+  payload      jsonb not null default '{}'::jsonb,
+  status       text not null default 'pending',    -- pending / running / done / failed
+  attempts     int  not null default 0,
+  run_after    timestamptz not null default now(), -- 退避: 重试时推到未来
+  last_error   text,
+  result       jsonb,
+  created_at   timestamptz not null default now(),
+  updated_at   timestamptz not null default now()
+);
+-- 取活: 按 (status, run_after) 捞到期的 pending; 顺带带上 user 维度便于按角色排空。
+create index if not exists jobs_claim_idx on jobs (status, run_after) where status = 'pending';
+create index if not exists jobs_owner_idx on jobs (user_id, companion_id, status);
+
+-- ------------------------------------------------------------
+--  短期对话历史 (见 src/orchestrator/historyStore.js)
+--  长期记忆在 memories 里; 但"刚才聊的几轮"是 Orchestrator 实例内存里的, 进程重启就丢。
+--  这张表把短期历史落库, 让重启/多实例也能接上最近的对话。
+-- ------------------------------------------------------------
+create table if not exists chat_history (
+  id           bigint generated always as identity primary key,
+  user_id      text not null,
+  companion_id text not null default 'default',
+  role         text not null,                       -- user / assistant
+  content      text not null,
+  created_at   timestamptz not null default now()
+);
+create index if not exists chat_history_idx on chat_history (user_id, companion_id, created_at desc);
 
 -- ------------------------------------------------------------
 --  向量检索函数: 只返回未被取代的记忆, 按余弦相似度排序取 top N。

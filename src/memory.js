@@ -6,7 +6,7 @@ import {
   formatForPrompt,
   formatSupersededTrailForPrompt,
 } from './retrieve.js';
-import { runReflection, findForgettable, forgetByQuery } from './reflect.js';
+import { runReflection, findForgettable, forgetByQuery, mergeNearDuplicates } from './reflect.js';
 import { readState, updateFromTurn, decayToBaseline, moodLabel, moodShiftMagnitude, readStateHistory } from './state/affect.js';
 import { engineRecall } from './engine/index.js';
 import { reconsolidateOnRecall, reconsolidateRecent } from './memory/reconsolidate.js';
@@ -27,11 +27,12 @@ import { PARAMS } from './config.js';
  *   const block = mem.toPrompt(hits);            // 拼成注入串
  */
 export class Memory {
-  constructor({ userId, companionId = 'default', subjectName = '对方' }) {
+  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她' }) {
     if (!userId) throw new Error('Memory 需要 userId');
     this.userId = userId;
     this.companionId = companionId;
     this.subjectName = subjectName;
+    this.companionName = companionName;
   }
 
   /**
@@ -49,7 +50,7 @@ export class Memory {
 
     const [{ before, after }, extracted, scheduled] = await Promise.all([
       updateFromTurn(this.userId, this.companionId, turns, { ...opts, extraDeltas }).catch(() => ({ before: null, after: null })),
-      extractMemories(turns, this.subjectName).catch(() => []),
+      extractMemories(turns, this.subjectName, this.companionName).catch(() => []),
       // M5: 顺手识别"未来意图"("我明天面试") 并排一条预期记忆。
       opts.prospective === false ? null : scheduleFromTurns(this.userId, this.companionId, turns, opts.now, this.subjectName).catch(() => null),
     ]);
@@ -191,6 +192,11 @@ export class Memory {
   /** 定期 (如每晚) 调用: 反思总结 */
   async reflect(opts = {}) {
     return runReflection(this.userId, this.companionId, opts);
+  }
+
+  /** 维护期 (如每晚) 调用: 合并近义重复记忆 (收口并发 observe 漏过的"两条当前事实")。 */
+  async dedupe(opts = {}) {
+    return mergeNearDuplicates(this.userId, this.companionId, opts);
   }
 
   /** 找出几乎被遗忘的记忆; 传 { purge: true } 可清理 */

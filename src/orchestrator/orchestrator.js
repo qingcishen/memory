@@ -7,11 +7,16 @@
 
 import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
 import { DefaultLLM } from './llm.js';
-import { assemble, buildMonologueContext } from './assemble.js';
+import { assemble, buildMonologueContext, buildTimePrompt } from './assemble.js';
+import { hoursSince } from '../decay.js';
 import { getCompanion } from '../companion.js';
+import { Selfie, decidePhoto } from '../appearance/index.js';
 import { PARAMS } from '../params.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
+
+// 用户在话里要看她的样子/照片 (触发自拍)。
+const PHOTO_REQUEST_RE = /自拍|拍(张|个|一)?照|照片|你长(啥|什么)样|看看你(长|现在|的样子)?|发(张|个)?(图|照)|想看你|你现在(啥|什么)样/;
 
 export class Orchestrator {
   /**
@@ -21,7 +26,7 @@ export class Orchestrator {
    * @param deps 可注入 { memory, stateLayer, relationship, persona, llm, historyStore }, 默认用真实适配器。
    * @param options { useMonologue=true, historyTurns=6 }
    */
-  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', config = null, deps = {}, options = {} }) {
+  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', config = null, activityFn = null, lifeConfig = null, deps = {}, options = {} }) {
     if (!userId) throw new Error('Orchestrator 需要 userId');
     this.userId = userId;
     this.companionId = companionId;
@@ -38,13 +43,20 @@ export class Orchestrator {
 
     // 先建状态层, 再把它内部的 LifeDimension 注入记忆适配器 —— 让 memory.observe 与状态层
     // 共用同一个 life 实例 (L4: 生病/被照顾由 memory.observe 统一演变, 避免双写 life_state)。
-    this.stateLayer = deps.stateLayer ?? new StateLayerAdapter(userId, companionId);
+    this.stateLayer = deps.stateLayer ?? new StateLayerAdapter(userId, companionId, null, { activityFn, lifeConfig });
     const sharedLife = this.stateLayer?.stateLayer?.life ?? null;
-    this.memory = deps.memory ?? new MemoryAdapter({ userId, companionId, subjectName, life: sharedLife });
+    this.memory = deps.memory ?? new MemoryAdapter({ userId, companionId, subjectName, companionName, life: sharedLife });
     this.relationship = deps.relationship ?? new RelationshipAdapter(userId, companionId);
     this.persona = deps.persona ?? new PersonaAdapter({ userId, companionId, subjectName: companionName });
     this.llm = deps.llm ?? new DefaultLLM();
     this.historyStore = deps.historyStore ?? null;
+
+    // A1 拍照分享 (自拍 + 随手拍): 需要 onPhoto 投递回调才会启用 —— 没有投递渠道就不生成,
+    // 这也让全 mock 的编排器测试默认离线 (不注入 onPhoto 即跳过)。photo 能力默认用真实 Selfie。
+    this.photo = deps.photo ?? new Selfie({ userId, companionId, provider: deps.imageProvider });
+    this.onPhoto = deps.onPhoto ?? null;
+    // 天气感知 (可选): 注入了才拉真实天气并进 prompt; 默认 null → 离线安全 (mock 测试不连网)。
+    this.weather = deps.weather ?? null;
 
     this.history = [];
     this._personaLoadedAt = 0;
@@ -93,7 +105,7 @@ export class Orchestrator {
   async loadHistory() {
     if (!this.historyStore || typeof this.historyStore.load !== 'function') return this.history;
     const limit = this.options.historyTurns * 2;
-    const loaded = await this.historyStore.load({ userId: this.userId, limit });
+    const loaded = await this.historyStore.load({ userId: this.userId, companionId: this.companionId, limit });
     if (Array.isArray(loaded)) {
       this.history = normalizeHistory(loaded).slice(-limit);
       this.trimHistory();
@@ -114,7 +126,7 @@ export class Orchestrator {
     this.history.push(...clean);
     this.trimHistory();
     if (this.historyStore && typeof this.historyStore.append === 'function') {
-      this._lastHistoryPersist = Promise.resolve(this.historyStore.append({ userId: this.userId, turns: clean })).catch((reason) => {
+      this._lastHistoryPersist = Promise.resolve(this.historyStore.append({ userId: this.userId, companionId: this.companionId, turns: clean })).catch((reason) => {
         console.error('[historyStore]', reason);
       });
     }
@@ -127,13 +139,20 @@ export class Orchestrator {
   async reply(userMessage) {
     await this.init();
 
-    const [stateSnapshot, relState, memoryBlock] = await Promise.all([
+    const [stateSnapshot, relState, memoryBlock, weather, lastUserMessageAt] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(userMessage).catch(() => ''),
+      this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
+      // 时间跳跃感: 取"对方上次说话"的时间(早于本轮, 因为本轮还没 recordHistory) -> 距今多久。
+      this.historyStore && typeof this.historyStore.lastUserMessageAt === 'function'
+        ? this.historyStore.lastUserMessageAt({ userId: this.userId, companionId: this.companionId }).catch(() => null)
+        : Promise.resolve(null),
     ]);
+    const gapHours = lastUserMessageAt != null ? hoursSince(lastUserMessageAt) : null;
 
     const promptParts = {
+      timePrompt: buildTimePrompt(new Date(), { weather, gapHours }),
       personaPrompt: this.persona.toPrompt() ?? '',
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
@@ -166,6 +185,9 @@ export class Orchestrator {
     // fire-and-forget; 暴露在 _lastAfterReply 上仅供测试 await。
     this._lastAfterReply = this.afterReply(userMessage, reply);
 
+    // A1: 用户要看她样子时, 后台生成一张自拍 (fire-and-forget, 经 onPhoto 投递, 不阻塞文字)。
+    if (PHOTO_REQUEST_RE.test(userMessage)) this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: true });
+
     return reply;
   }
 
@@ -184,13 +206,15 @@ export class Orchestrator {
     if (!shouldSend) return null;
 
     const seed = ctx.query ?? ctx.memoryQuery ?? ctx.reason ?? '想主动找对方聊一句';
-    const [stateSnapshot, relState, memoryBlock] = await Promise.all([
+    const [stateSnapshot, relState, memoryBlock, weather] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(seed).catch(() => ''),
+      this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
     ]);
 
     const promptParts = {
+      timePrompt: buildTimePrompt(new Date(), { weather }),
       personaPrompt: this.persona.toPrompt() ?? '',
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
@@ -219,7 +243,49 @@ export class Orchestrator {
     const proactive = await this.llm.generateReply(messages, samplingHints);
 
     if (ctx.recordHistory !== false) this.recordHistory([{ role: 'assistant', content: proactive }]);
+
+    // A1: 主动找你时也可能顺手分享一张照片 (在外面看到风景/猫狗的随手拍, 或心情好的自拍)。
+    this._lastPhoto = this.maybePhoto(stateSnapshot, {});
+
     return proactive;
+  }
+
+  /**
+   * A1: 此刻要不要拍照分享 —— 自拍(她自己) 或随手拍(她看到的风景/猫狗)。
+   * 需要 onPhoto 投递回调才会跑 (没投递渠道就不生成); 全程 fire-and-forget, 不阻塞文字回复。
+   * @returns 生成的 { url, tags, kind, reason } 或 null
+   */
+  async maybePhoto(snapshot, ctx = {}) {
+    if (!this.onPhoto || !snapshot) return null;
+    const rateState = await this.photo.rateState().catch(() => ({ sentAt: [] }));
+    const decision = decidePhoto(snapshot, { ...ctx, rateState });
+    if (!decision.ok) return null;
+    const result = await this.photo
+      .photo(snapshot, { kind: decision.kind, appearance: this._config?.appearance ?? '' })
+      .catch(() => null);
+    if (!result) return null;
+    await Promise.resolve(this.onPhoto({ ...result, reason: decision.reason })).catch((e) => console.error('[onPhoto]', e));
+    return result;
+  }
+
+  /**
+   * 维护期 (后台定时, 无对话时也跑): 让她的内在自行演变/沉淀。
+   * - 常规: settle(心情随时间回落) + tickActivity(作息活动派生 + 自动生病判定)。
+   * - nightly: 额外 reflect(归纳印象) + story(我们的故事) + dedupe(合并近义重复)。
+   * 任一失败只记日志, 互不影响。
+   */
+  async maintain({ now = Date.now(), nightly = false } = {}) {
+    const tasks = [];
+    if (typeof this.memory.settle === 'function') tasks.push(this.memory.settle(now));
+    if (typeof this.stateLayer.tickActivity === 'function') tasks.push(this.stateLayer.tickActivity());
+    if (nightly) {
+      if (typeof this.memory.reflect === 'function') tasks.push(this.memory.reflect());
+      if (typeof this.memory.story === 'function') tasks.push(this.memory.story());
+      if (typeof this.memory.dedupe === 'function') tasks.push(this.memory.dedupe());
+    }
+    const results = await Promise.allSettled(tasks);
+    for (const r of results) if (r.status === 'rejected') console.error('[maintain]', r.reason);
+    return results;
   }
 
   /** 回复返回后触发的后台状态更新, 任一失败只记日志, 不影响已发出的回复。 */

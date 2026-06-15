@@ -99,7 +99,7 @@ export const PARAMS = {
 
   // ---- M4 共同记忆 / persona / 关系叙事 ----
   relationship_memory: {
-    alwaysIncludeDyad: 1, // recall 时无条件带几条最重要的"我们共同记忆"作关系底色 (0=关)
+    alwaysIncludeDyad: 3, // recall 时无条件带几条最重要的"我们共同记忆"作关系底色 (0=关; 调高让同居/关系地基更稳地每轮在场)
     personaTopK: 6, // persona 注入时最多带几条 self 设定
     narrativeLookback: 30, // 合成"我们的故事"时回看多少条 dyad/关系记忆
   },
@@ -165,11 +165,15 @@ export const PARAMS = {
     careValenceGain: 0.2, // 被照顾的暖意(耦合进 affect)
     careClosenessGain: 0.06, // 被照顾拉近的亲密
     careTrustGain: 0.04, // 被照顾增加的信任
+    // P2 身体专属参数: 连续"熬夜"(对话发生在角色专属睡眠时段内)达到这个天数后, 发病概率翻倍。
+    lateNightStreakForDouble: 3,
+    lateNightStreakMultiplier: 2,
   },
 
   // ---- A1 外貌/自拍 (appearance-life-design.md 第二部分; 出图为仓库外基建, 这里只搭骨架) ----
   appearance: {
     minClosenessForSelfie: 0.6, // 关系到这个亲密度才会"主动"发自拍 (被明确要求则放行)
+    minClosenessForScene: 0.4, // 随手拍(风景/猫狗) 门槛更低 —— 分享见闻不需要多亲密
     selfie: {
       minIntervalMinutes: 720, // 自拍冷却比闲聊更克制 (12h)
       maxPerDay: 2, // 每天最多主动发几张
@@ -181,5 +185,36 @@ export const PARAMS = {
     // persona 段缓存多久后在下一次 init() 时重新加载。长期运行的实例 (如 ProactiveScheduler
     // 反复调用同一个 Orchestrator) 需要这个值让"自我认知"反思等 self 记忆更新能体现到 prompt 里。
     personaRefreshMs: 30 * 60 * 1000, // 30 分钟
+  },
+
+  // ---- P1 双向关系触发规则 ----
+  // 这些信号在 inferHeuristicDeltas 里检测, 与吵架/和好/温情同批叠加(同样受 maxStepPerTurn 限幅)。
+  relationship_triggers: {
+    // 叫她老婆/媳妇/亲爱的等亲密称呼 → 她很受用, 心情转暖 + 亲密微升
+    petName: { valence: 0.08, closeness: 0.05 },
+    // 整条消息只是"随便/哦/嗯"这类敷衍 → 她觉得被打发, 心情转冷 + 紧张微升
+    dismissive: { valence: -0.12, tension: 0.08 },
+    // 在钱上跟她生分客气(AA/自己付/还钱) → 她不高兴, 心情转冷 + 紧张微升
+    moneyFormality: { valence: -0.05, tension: 0.1 },
+  },
+
+  // ---- P1 分级主动性调度器 ----
+  // ProactiveScheduler 按"对方上次说话距今多久"分级选语气/理由; 越久越直接/越情绪化。
+  proactive: {
+    silenceTiers: {
+      excuseFromHours: 2, // 2-4h: 找个不经意的小理由聊两句, 不直说想念
+      directFromHours: 4, // 4-6h: 直接问"在干嘛", 带点惦记
+      missFromHours: 6, // >6h: 简短/带点小情绪, 可能只叫一下名字
+    },
+    // 睡前: 提前多少分钟想跟对方说晚安
+    bedtimeLeadMinutes: 60,
+  },
+
+  // ---- M5 扛量 · 持久化任务队列 (src/queue/jobs.js) ----
+  queue: {
+    maxAttempts: 5, // 一个 job 最多重试几次, 超了进 failed
+    baseBackoffMs: 1000, // 重试退避基数 (指数: base * 2^attempts)
+    maxBackoffMs: 5 * 60 * 1000, // 退避上限 5min
+    batchSize: 10, // 一次 tick 最多 claim 几个 job
   },
 };

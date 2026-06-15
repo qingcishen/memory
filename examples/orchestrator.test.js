@@ -13,6 +13,8 @@ import {
   DefaultLLM,
   assemble,
   buildSystemPrompt,
+  buildTimePrompt,
+  buildGapHint,
   buildMonologueContext,
   formatRelationshipPrompt,
 } from '../src/orchestrator/index.js';
@@ -29,10 +31,37 @@ console.log('buildSystemPrompt (纯拼接, 跳过空段落)');
   ok('全部为空 -> 空串', buildSystemPrompt({}) === '');
   ok('非空段落用空行分隔', buildSystemPrompt({ personaPrompt: 'A', statePrompt: 'B' }) === 'A\n\nB');
   ok(
+    '时间段排在 system 最前面',
+    buildSystemPrompt({ timePrompt: 'T', personaPrompt: 'A', statePrompt: 'B' }) === 'T\n\nA\n\nB'
+  );
+  ok(
     '内心独白被包装并追加在最后',
     buildSystemPrompt({ personaPrompt: 'A', monologue: '想法' }) === 'A\n\n(你此刻的想法, 别直接说出来): 想法'
   );
   ok('空白独白不会被追加', buildSystemPrompt({ personaPrompt: 'A', monologue: '   ' }) === 'A');
+}
+
+console.log('buildTimePrompt (真实时间上下文)');
+{
+  const prompt = buildTimePrompt(new Date('2026-06-15T08:33:00Z'));
+  ok('包含中国/武汉时区', prompt.includes('武汉') && prompt.includes('Asia/Shanghai'));
+  ok('包含换算后的本地时间', prompt.includes('2026-06-15 16:33'));
+  ok('要求问时间时直接回答', prompt.includes('问现在几点'));
+  ok('未传 gapHours 不带时间跳跃感提示', !prompt.includes('才回'));
+
+  const withGap = buildTimePrompt(new Date('2026-06-15T08:33:00Z'), { gapHours: 5 });
+  ok('gapHours 够大时追加时间跳跃感提示', withGap.includes('才回来'));
+}
+
+console.log('buildGapHint (时间跳跃感: 距上次说话过了多久, 分级软提示)');
+{
+  ok('null -> 不提', buildGapHint(null) === '');
+  ok('刚聊过 (0.5h) -> 不提', buildGapHint(0.5) === '');
+  ok('excuse 档 (2-4h) -> 轻描淡写接上', buildGapHint(2.5).includes('才回'));
+  ok('direct 档 (4-6h) -> 惦记, 问问刚才在干嘛', buildGapHint(5).includes('惦记'));
+  ok('miss 档 (>6h) -> 小情绪/失落', buildGapHint(8).includes('失落'));
+  ok('跨天 (>=24h) -> 好久没理我/想你, 按天数', buildGapHint(50).includes('2 天') && buildGapHint(50).includes('想你'));
+  ok('所有分级提示都要求别报数字', [2.5, 5, 8, 50].every((h) => buildGapHint(h).includes('别报数字')));
 }
 
 console.log('assemble (system + 短期历史裁剪 + 当前消息)');
@@ -202,7 +231,7 @@ function makeMocks() {
   };
 }
 
-function makeHistoryStore(initial = []) {
+function makeHistoryStore(initial = [], lastUserMessageAt = null) {
   return {
     loadCalls: [],
     appendCalls: [],
@@ -212,6 +241,9 @@ function makeHistoryStore(initial = []) {
     },
     async append(args) {
       this.appendCalls.push(args);
+    },
+    async lastUserMessageAt() {
+      return lastUserMessageAt;
     },
   };
 }
@@ -292,6 +324,27 @@ console.log('Orchestrator 可注入 historyStore (启动加载 + 回复后异步
   ok('historyStore.append 收到本轮 user+assistant', deps.historyStore.appendCalls[0].turns.length === 2);
 }
 
+console.log('Orchestrator.reply 时间跳跃感 (historyStore.lastUserMessageAt -> gapHours -> system 软提示)');
+{
+  // 8 小时前说过话 -> miss 档 ("失落")
+  const deps = makeMocks();
+  const longAgo = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
+  deps.historyStore = makeHistoryStore([], longAgo);
+  const orch = new Orchestrator({ userId: 'u_gap', deps, options: { useMonologue: false } });
+  await orch.reply('在吗');
+  const { messages } = deps.llm.generateCalls[0];
+  ok('距上次说话 8h -> system 带"失落"软提示', messages[0].content.includes('失落'));
+  ok('软提示带"别报数字"', messages[0].content.includes('别报数字'));
+
+  // 没有上次说话记录 (lastUserMessageAt 返回 null) -> 不带提示
+  const deps2 = makeMocks();
+  deps2.historyStore = makeHistoryStore([], null);
+  const orch2 = new Orchestrator({ userId: 'u_gap2', deps: deps2, options: { useMonologue: false } });
+  await orch2.reply('在吗');
+  const { messages: messages2 } = deps2.llm.generateCalls[0];
+  ok('没有上次说话记录 -> 不带时间跳跃感提示', !messages2[0].content.includes('别报数字'));
+}
+
 console.log('Orchestrator persona 缓存按 personaRefreshMs 刷新 (长期运行实例感知 self 记忆更新)');
 {
   const deps = makeMocks();
@@ -321,6 +374,45 @@ console.log('Orchestrator.proactiveTick (主动性入口复用组装链路)');
   ok('主动 prompt 带入 reason/style', messages.at(-1).content.includes('很久没聊天') && messages.at(-1).content.includes('轻一点'));
   ok('主动生成同样收到 stateLayer samplingHints', opts.temperature === 0.91 && opts.maxTokens === 333);
   ok('主动消息默认记入短期历史为 assistant', orch.history.at(-1).role === 'assistant' && orch.history.at(-1).content === msg);
+}
+
+console.log('Orchestrator A1 拍照分享 (onPhoto 投递回调 + 用户要求触发自拍)');
+{
+  const deps = makeMocks();
+  const photoCalls = [];
+  const delivered = [];
+  deps.photo = {
+    async rateState() {
+      return { sentAt: [] };
+    },
+    async photo(snapshot, opts) {
+      photoCalls.push(opts);
+      return { url: 'mock://selfie.png', tags: ['selfie', 'happy'], kind: opts.kind, cached: false };
+    },
+  };
+  deps.onPhoto = (p) => delivered.push(p);
+  const orch = new Orchestrator({ userId: 'u_photo', deps, options: { useMonologue: false } });
+
+  // 普通消息: 不触发拍照
+  await orch.reply('今天好热');
+  await (orch._lastPhoto ?? Promise.resolve());
+  ok('普通消息不触发拍照', photoCalls.length === 0 && delivered.length === 0);
+
+  // 要看她样子: 触发自拍, 经 onPhoto 投递
+  await orch.reply('发张自拍看看你现在的样子');
+  await orch._lastPhoto;
+  ok('用户要照片 → 生成一张', photoCalls.length === 1);
+  ok('生成的是自拍 (kind=selfie)', photoCalls[0].kind === 'selfie');
+  ok('经 onPhoto 投递, 带 url 与 kind', delivered.length === 1 && delivered[0].url === 'mock://selfie.png' && delivered[0].kind === 'selfie');
+
+  // 没有 onPhoto 投递渠道时, 不生成 (默认离线安全)
+  const deps2 = makeMocks();
+  let called = false;
+  deps2.photo = { async rateState() { return { sentAt: [] }; }, async photo() { called = true; return null; } };
+  const orch2 = new Orchestrator({ userId: 'u_nophoto', deps: deps2, options: { useMonologue: false } });
+  await orch2.reply('发张自拍');
+  await (orch2._lastPhoto ?? Promise.resolve());
+  ok('没配 onPhoto → 不生成照片', called === false);
 }
 
 console.log(`\nOrchestrator 全部 ${passed} 条断言通过 ✅`);

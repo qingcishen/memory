@@ -12,12 +12,12 @@ import { LifeDimension, toLifePrompt, lifeSamplingHints } from './life.js';
 const HOUR = 1000 * 60 * 60;
 
 export class StateLayer {
-  constructor({ userId, companionId = 'default', read = readState, life = null, now = () => Date.now() } = {}) {
+  constructor({ userId, companionId = 'default', read = readState, life = null, now = () => Date.now(), activityFn, lifeConfig } = {}) {
     this.userId = userId;
     this.companionId = companionId;
     this.read = read;
     this.now = now;
-    this.life = life ?? new LifeDimension({ userId, companionId, now });
+    this.life = life ?? new LifeDimension({ userId, companionId, now, ...(activityFn ? { activityFn } : {}), ...(lifeConfig ? { lifeConfig } : {}) });
   }
 
   async snapshot() {

@@ -154,6 +154,28 @@ export function inferHeuristicDeltas(turns = []) {
     d.relationship.closeness += 0.04;
   }
 
+  // P1 双向关系触发规则: 称呼 / 敷衍 / 钱上客气, 与上面三块同批叠加 (同样受 maxStepPerTurn 限幅)。
+  const rt = PARAMS.relationship_triggers;
+
+  // 称呼: 叫她老婆/媳妇/亲爱的等亲密称呼 → 她很受用, 心情转暖 + 亲密微升
+  if (hit(PET_NAME_RE)) {
+    d.mood.valence += rt.petName.valence;
+    d.relationship.closeness += rt.petName.closeness;
+  }
+
+  // 敷衍: 某一条整条消息只是"随便/哦/嗯"这类 → 她觉得被打发, 心情转冷 + 紧张微升
+  const userTexts = turns.filter((t) => t.role === 'user').map((t) => String(t.content ?? '').trim());
+  if (userTexts.some((t) => DISMISSIVE_RE.test(t))) {
+    d.mood.valence += rt.dismissive.valence;
+    d.relationship.tension += rt.dismissive.tension;
+  }
+
+  // 钱上客气: AA/自己付/还钱 等 → 她觉得被当外人, 心情转冷 + 紧张微升
+  if (hit(MONEY_FORMALITY_RE)) {
+    d.mood.valence += rt.moneyFormality.valence;
+    d.relationship.tension += rt.moneyFormality.tension;
+  }
+
   return d;
 }
 
@@ -176,6 +198,14 @@ export function detectTensionTarget(text = '') {
   }
   return { target: 'user', topic: null };
 }
+
+// P1 双向关系触发规则: 称呼 / 敷衍 / 钱上客气 (见 PARAMS.relationship_triggers)。
+// 叫她老婆/媳妇/亲爱的等亲密称呼 → 她很受用。
+const PET_NAME_RE = /老婆|媳妇|老公|亲爱的|小宝贝|心肝/;
+// 整条消息只是"随便/哦/嗯"这类敷衍 (逐条匹配 trim 后的整条消息, 避免误判长句里出现的同字)。
+const DISMISSIVE_RE = /^(随便|随便你|都行|都可以|无所谓|哦+|嗯+|啊+|噢+|行吧?|算了)[。.,，！!~～…\s]*$/;
+// 在钱上跟她生分客气: AA / 各自付 / 还钱给她。
+const MONEY_FORMALITY_RE = /AA|各付各的|各自付|自己付自己的|我自己付|算我的吧|我转给你|还你钱|这钱还你|我付我的|你付你的|分开算|分开付|不用你请|不用你出/;
 
 /** 两个状态之间的总变化幅度 (各字段绝对差之和)。用于判断是否值得记一条历史快照。 */
 export function stateDelta(before, after) {

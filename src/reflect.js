@@ -1,6 +1,7 @@
 import { supabase, llm, LLM_MODEL, PARAMS } from './config.js';
 import { embed } from './embeddings.js';
 import { memoryStrength } from './decay.js';
+import { selectNearDupMerges } from './dedup.js';
 
 /**
  * 反思: 把最近的零散记忆聚成更高层的总结 (如"诗雅最近压力大, 在备考"),
@@ -127,6 +128,53 @@ export async function forgetByQuery(userId, companionId = 'default', query, opts
     .delete()
     .in('id', targets.map((m) => m.id));
   return targets;
+}
+
+/**
+ * #10 残余债收口: 维护期合并近义重复 (并发 observe 极端时序漏过去的"两条当前事实")。
+ * 拉活跃记忆(带向量) → selectNearDupMerges 选出该合并的对 → loser.superseded_by 指向 winner,
+ * 并把 loser 的访问计数并进 winner (强化, 不丢"被提起过几次")。
+ * @returns { merged: number }
+ */
+export async function mergeNearDuplicates(userId, companionId = 'default', opts = {}) {
+  const lookback = opts.recent ?? 200;
+  const { data: mems, error } = await supabase
+    .from('memories')
+    .select('id, embedding, importance, created_at, access_count, access_log')
+    .eq('user_id', userId)
+    .eq('companion_id', companionId)
+    .is('superseded_by', null)
+    .not('embedding', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(lookback);
+  if (error) throw error;
+  if (!mems || mems.length < 2) return { merged: 0 };
+
+  const normalized = mems.map((m) => ({ ...m, embedding: parseVector(m.embedding) }));
+  const merges = selectNearDupMerges(normalized, opts.threshold);
+  for (const { loser, winner } of merges) {
+    // loser 指向 winner; 同时把 loser 的 access_count 计进 winner (保留"被提起过"的强度)
+    await supabase.from('memories').update({ superseded_by: winner.id }).eq('id', loser.id).is('superseded_by', null);
+    await supabase
+      .from('memories')
+      .update({ access_count: (winner.access_count ?? 0) + (loser.access_count ?? 0) + 1, last_accessed: new Date().toISOString() })
+      .eq('id', winner.id);
+  }
+  return { merged: merges.length };
+}
+
+/** pgvector → number[]。已是数组原样; 字符串 "[...]" 解析; 其它 null。 */
+function parseVector(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    try {
+      const a = JSON.parse(v);
+      return Array.isArray(a) ? a : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function clampNum(v, lo, hi, dflt) {

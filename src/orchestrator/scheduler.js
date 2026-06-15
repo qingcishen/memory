@@ -3,9 +3,12 @@
 // Orchestrator.proactiveTick() 只负责"生成一句主动消息"; 本模块负责"现在能不能发"、
 // "用什么理由发"、"发完如何记录频率"。它不依赖具体 cron/队列服务, 外部定时调用 tick() 即可。
 
-import { supabase } from '../config.js';
+import { supabase, PARAMS } from '../config.js';
+import { minutesInRange, shanghaiWallClock } from '../state/activity.js';
 
 const DAY = 24 * 60 * 60 * 1000;
+const HOUR = 60 * 60 * 1000;
+const MINUTES_IN_DAY = 24 * 60;
 
 export const DEFAULT_PROACTIVE_POLICY = {
   minIntervalMinutes: 180,
@@ -125,6 +128,48 @@ export class SupabaseRateLimitStore {
   }
 }
 
+/**
+ * P1 分级主动性: 按"对方上次说话距今多久"分级, 越久语气越直接/越带情绪 (见 PARAMS.proactive.silenceTiers)。
+ * @param now 当前时间 (ms)
+ * @param lastUserMessageAt 对方上次说话的时间 (ms | ISO string | null/undefined); 未知则不触发
+ * @returns { tier:'excuse'|'direct'|'miss', hours, reason } | null (还不够久, 不必为此找理由)
+ */
+export function pickSilenceTier(now, lastUserMessageAt, tiers = PARAMS.proactive.silenceTiers) {
+  if (lastUserMessageAt == null) return null;
+  const last = typeof lastUserMessageAt === 'number' ? lastUserMessageAt : new Date(lastUserMessageAt).getTime();
+  if (Number.isNaN(last)) return null;
+  const hours = Math.max(0, (now - last) / HOUR);
+  const h = hours.toFixed(1);
+  if (hours >= tiers.missFromHours) {
+    return { tier: 'miss', hours, reason: `对方已经 ${h} 小时没说话了, 心里有点小情绪/失落, 想简短地搭句话, 哪怕只是叫一下他的名字也好` };
+  }
+  if (hours >= tiers.directFromHours) {
+    return { tier: 'direct', hours, reason: `对方已经 ${h} 小时没说话了, 有点惦记, 想直接问问他在干嘛` };
+  }
+  if (hours >= tiers.excuseFromHours) {
+    return { tier: 'excuse', hours, reason: `对方已经 ${h} 小时没说话了, 想找个不经意的小理由跟他聊两句, 别直接说想他` };
+  }
+  return null;
+}
+
+/**
+ * P1 分级主动性: 快到自己睡觉的时间时, 想在睡前跟对方说一句晚安 (见 PARAMS.proactive.bedtimeLeadMinutes)。
+ * sleepWindow 来自角色专属作息 (Asia/Shanghai 挂钟时间), 这里按同一时区判断"现在几点", 不依赖服务器本地时区。
+ * @param now 当前时间 (ms)
+ * @param sleepWindow {from,to}(分钟, 见 state/activity.js parseSleepWindow); 无则不触发
+ * @param leadMinutes 提前多少分钟算"快到睡觉时间"
+ * @returns { tier:'bedtime', reason } | null
+ */
+export function pickBedtimeTier(now, sleepWindow, leadMinutes = PARAMS.proactive.bedtimeLeadMinutes) {
+  if (!sleepWindow) return null;
+  const d = shanghaiWallClock(now);
+  const cur = d.getUTCHours() * 60 + d.getUTCMinutes();
+  const lead = Math.max(0, Number(leadMinutes) || 0);
+  const from = (((sleepWindow.from - lead) % MINUTES_IN_DAY) + MINUTES_IN_DAY) % MINUTES_IN_DAY;
+  if (!minutesInRange(cur, from, sleepWindow.from)) return null;
+  return { tier: 'bedtime', reason: '快到自己要睡觉的时间了, 想在睡前跟对方说一句晚安' };
+}
+
 export class ProactiveScheduler {
   constructor({
     orchestrator,
@@ -135,6 +180,8 @@ export class ProactiveScheduler {
     policy = {},
     clock = () => Date.now(),
     defaultReason = '想主动找对方聊一句',
+    sleepWindow = null, // P1: 角色专属睡眠时段 {from,to}(分钟), 供 pickBedtimeTier
+    getLastUserMessageAt = null, // P1: ({userId,companionId}) => 对方上次说话时间 (ms|ISO|null), 供 pickSilenceTier
   } = {}) {
     if (!orchestrator) throw new Error('ProactiveScheduler 需要 orchestrator');
     this.orchestrator = orchestrator;
@@ -145,6 +192,8 @@ export class ProactiveScheduler {
     this.policy = { ...DEFAULT_PROACTIVE_POLICY, ...policy };
     this.clock = clock;
     this.defaultReason = defaultReason;
+    this.sleepWindow = sleepWindow;
+    this.getLastUserMessageAt = getLastUserMessageAt;
     this._timer = null;
   }
 
@@ -157,7 +206,13 @@ export class ProactiveScheduler {
     if (!allowed.ok) return { sent: false, reason: allowed.reason, nextAt: allowed.nextAt };
 
     const dueItems = await this.getDueItems({ userId, companionId, now, ctx }).catch(() => []);
-    const reason = ctx.reason ?? formatDueReason(dueItems) ?? this.defaultReason;
+    // P1 分级主动性: ctx.reason > 到期事项 > 睡前道晚安 > 沉默分级 > 默认理由。
+    const bedtimeTier = this.sleepWindow ? pickBedtimeTier(now, this.sleepWindow) : null;
+    const lastUserMessageAt = this.getLastUserMessageAt
+      ? await this.getLastUserMessageAt({ userId, companionId }).catch(() => null)
+      : null;
+    const silenceTier = pickSilenceTier(now, lastUserMessageAt);
+    const reason = ctx.reason ?? formatDueReason(dueItems) ?? bedtimeTier?.reason ?? silenceTier?.reason ?? this.defaultReason;
     const message = await this.orchestrator.proactiveTick({
       ...ctx,
       reason,

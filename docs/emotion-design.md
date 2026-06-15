@@ -2,7 +2,7 @@
 
 > AI 伴侣(可可)的情绪子系统。本文描述情绪的表示、存储、更新、衰减,以及它如何反过来影响回复。接口与《编排器设计方案》对齐:`current` / `update` / `toPrompt`。
 >
-> **后续计划(v2)**:[开发设计方案](companion-roadmap.md) 与 [外貌与生命状态系统设计](appearance-life-design.md) 提出把本文档的情绪子系统并入统一的 `StateLayer`,并把 `energy` 迁到新的 `life` 维度——情绪维度届时只保留 `valence` + `warmth`。本文档当前仍按 `valence/energy/warmth` 三维描述现有实现(`src/emotion.js`),迁移尚未落地。
+> **v2 已落地**:情绪子系统已并入统一的 `StateLayer`(`src/state/stateLayer.js`),`energy` 迁到 `life` 维度,情绪维度只保留 `valence` + `warmth`(`src/emotion.js`,由 M1 `affective_state` 映射而来)。另已补 **#5 情绪指向性**:`tension` 带 `tension_target`(user/external)+ `tension_topic`,指向外部话题的紧张不再拉冷对用户的 warmth,检索门控也只点亮与话题相关的负面记忆(`directedMoodCongruence`)。本文档下半部仍按早期 `valence/energy/warmth` 三维叙述,读时以代码为准。
 
 ---
 

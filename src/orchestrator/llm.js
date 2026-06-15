@@ -4,6 +4,7 @@
 // 缺凭证时 import 不报错 (config.js 已有占位默认值), 真正调用才需要真实凭证。
 
 import { llm, LLM_MODEL, REPLY_MODEL } from '../config.js';
+import { recordLlmCall } from '../metrics.js';
 
 export class DefaultLLM {
   /** 生成给用户的回复 (好模型, 温度高一点更有人味)。 */
@@ -14,6 +15,7 @@ export class DefaultLLM {
       ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
       messages,
     });
+    recordLlmCall('reply', res.usage);
     return res.choices[0].message.content;
   }
 
@@ -27,6 +29,7 @@ export class DefaultLLM {
         { role: 'user', content: context },
       ],
     });
+    recordLlmCall('think', res.usage);
     return res.choices[0].message.content;
   }
 }

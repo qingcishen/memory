@@ -41,8 +41,8 @@ export function formatRelationshipPrompt(state) {
 export class MemoryAdapter {
   // life: 与 StateLayerAdapter 共享的同一个 LifeDimension。observe 时由 Memory 统一演变 life
   // 并把"生病/被照顾"对情绪/关系的耦合增量并进 affect 写入 (L4, 避免双写 life_state)。
-  constructor({ userId, companionId = 'default', subjectName = '对方', life = null }) {
-    this._mem = new Memory({ userId, companionId, subjectName });
+  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', life = null }) {
+    this._mem = new Memory({ userId, companionId, subjectName, companionName });
     this._life = life;
   }
 
@@ -58,12 +58,33 @@ export class MemoryAdapter {
   async observe(turns, opts = {}) {
     await this._mem.observe(turns, { useLLM: true, life: this._life, ...opts });
   }
+
+  // ---- 维护期委托 (给后台调度循环用; 没对话时也让她的内在演变/沉淀) ----
+  settle(now) {
+    return this._mem.settle(now);
+  }
+  reflect(opts) {
+    return this._mem.reflect(opts);
+  }
+  story(opts) {
+    return this._mem.story(opts);
+  }
+  dedupe(opts) {
+    return this._mem.dedupe(opts);
+  }
+  checkProspective(ctx, now) {
+    return this._mem.checkProspective(ctx, now);
+  }
+  dismissProspective(ids) {
+    return this._mem.dismissProspective(ids);
+  }
 }
 
 /** 状态层门面适配: 包统一 StateLayer, 编排器不再直接接 emotion。 */
 export class StateLayerAdapter {
-  constructor(userId, companionId = 'default', stateLayer = new StateLayer({ userId, companionId })) {
-    this.stateLayer = stateLayer;
+  constructor(userId, companionId = 'default', stateLayer = null, { activityFn, lifeConfig } = {}) {
+    // 角色专属作息 activityFn / 身体参数 lifeConfig 经此注入到内部 StateLayer→LifeDimension (没传则用通用默认)。
+    this.stateLayer = stateLayer ?? new StateLayer({ userId, companionId, activityFn, lifeConfig });
   }
 
   async snapshot() {
@@ -75,6 +96,11 @@ export class StateLayerAdapter {
    * memory.observe 统一演变 (MemoryAdapter 注入了同一个 LifeDimension), 这里再演变就会重复写 life_state。
    */
   async evolve() {}
+
+  /** L3/L4: 无对话时也推进她的一天 (作息活动派生 + 自动生病判定), 固化进库。 */
+  async tickActivity() {
+    if (typeof this.stateLayer.life?.tickActivity === 'function') return this.stateLayer.life.tickActivity();
+  }
 
   toPrompt(snapshot) {
     return this.stateLayer.toPrompt(snapshot);

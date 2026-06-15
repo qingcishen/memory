@@ -93,10 +93,65 @@ export function buildSelfiePrompt(snapshot, appearance = '', now = Date.now()) {
     mods.push('在家、居家穿着、灯光柔和');
   }
   if (tags.length === 0) tags.push('default');
+  tags.unshift('selfie'); // 区分自拍 vs 随手拍, 给图库命中分桶
 
   const base = appearance ? appearance.trim() : '一个年轻女生';
   const prompt = [base, ...mods, '自拍视角, 自然真实'].join(', ');
   return { prompt, tags };
+}
+
+// 当下活动 → "她看到的世界" (随手拍的题材)。命中才返回, 否则 null (没什么好拍的)。
+const SCENE_BY_ACTIVITY = [
+  { re: /公园|散步|遛|户外|外面|逛/, scene: '公园里的风景, 也许还有一只可爱的狗狗', tag: 'park' },
+  { re: /健身/, scene: '健身房一角 / 运动后的天空', tag: 'gym' },
+  { re: /咖啡|奶茶/, scene: '咖啡馆的拿铁拉花和窗边光线', tag: 'cafe' },
+  { re: /吃|饭|晚饭|午饭|做饭/, scene: '刚做好/点的一桌好吃的', tag: 'food' },
+  { re: /追剧|看书|在家|手机|沙发/, scene: '窝在家里的小角落, 也许有只赖着的猫', tag: 'home-pet' },
+  { re: /旅行|出差|路上|地铁|赶车/, scene: '路上看到的街景', tag: 'street' },
+];
+
+/**
+ * 随手拍: 把当下活动拼成"她看到的东西"的出图 prompt + tags。没有合适题材时返回 null。
+ * @returns { prompt, tags } | null
+ */
+export function buildScenePrompt(snapshot, now = Date.now()) {
+  const life = snapshot?.life ?? {};
+  if (isSickLife(life, now)) return null; // 病着不会出去拍风景
+  const activity = String(life.current_activity ?? '');
+  const hit = SCENE_BY_ACTIVITY.find((s) => s.re.test(activity));
+  if (!hit) return null;
+  return { prompt: `${hit.scene}, 随手拍, 生活感, 没有人物`, tags: ['scene', hit.tag] };
+}
+
+/**
+ * 统一决策: 此刻要不要拍照分享, 拍哪种(selfie 自拍 / scene 随手拍)。
+ * - 被点名要看她 → selfie。
+ * - 冷却未过 → 不发。
+ * - 在外面/有好题材 → scene (门槛低, "你看我遇到只狗")。
+ * - 否则够亲密 + 正向情境 → selfie。
+ * @returns { ok, kind?: 'selfie'|'scene', reason }
+ */
+export function decidePhoto(snapshot, ctx = {}, now = Date.now(), policy = {}) {
+  const p = { ...PARAMS.appearance, ...policy };
+  const cool = canSendSelfie(ctx.rateState ?? {}, now, p.selfie);
+  if (!cool.ok) return { ok: false, reason: cool.reason };
+
+  // 被明确要求看她本人 → 自拍 (生病也不发自拍, 交给 shouldSendSelfie 判)
+  if (ctx.requested) {
+    const s = shouldSendSelfie(snapshot, ctx, now, policy);
+    return s.ok ? { ok: true, kind: 'selfie', reason: 'requested' } : { ok: false, reason: s.reason };
+  }
+
+  // 随手拍: 有好题材就分享 (亲密度门槛更低 —— 分享一只狗不需要多熟)
+  const scene = buildScenePrompt(snapshot, now);
+  const warmth = num(snapshot?.emotion?.warmth, 0);
+  if (scene && warmth >= p.minClosenessForScene) {
+    return { ok: true, kind: 'scene', reason: 'saw_something' };
+  }
+
+  // 否则走主动自拍 (亲密度高 + 心情好/刚健身)
+  const s = shouldSendSelfie(snapshot, ctx, now, policy);
+  return s.ok ? { ok: true, kind: 'selfie', reason: s.reason } : { ok: false, reason: s.reason };
 }
 
 // ============================================================
@@ -114,22 +169,35 @@ export class Selfie {
   }
 
   /**
-   * 产出一张反映此刻状态的自拍 (异步, 调用方 fire-and-forget; 不进 reply 同步路径)。
+   * 产出一张照片 (异步, 调用方 fire-and-forget; 不进 reply 同步路径)。
    * @param snapshot stateLayer 快照
-   * @param opts { appearance, now, seed }
-   * @returns { url, tags, cached, seed }
+   * @param opts { kind:'selfie'|'scene', appearance, now, seed }
+   * @returns { url, tags, kind, cached, seed } | null (scene 无合适题材时返回 null)
    */
-  async selfie(snapshot, opts = {}) {
+  async photo(snapshot, opts = {}) {
     const now = opts.now ?? Date.now();
-    const { prompt, tags } = buildSelfiePrompt(snapshot, opts.appearance ?? '', now);
+    const kind = opts.kind ?? 'selfie';
+    const built = kind === 'scene' ? buildScenePrompt(snapshot, now) : buildSelfiePrompt(snapshot, opts.appearance ?? '', now);
+    if (!built) return null; // scene 没题材
+    const { prompt, tags } = built;
 
-    // 先查图库: 同状态 tags 命中过就复用 (省一次出图)
+    // 先查图库: 同 kind/状态 tags 命中过就复用 (省一次出图)
     const hit = await this.read(this.userId, this.companionId, { tags }).catch(() => null);
-    if (hit) return { url: hit.url, tags, cached: true, seed: hit.seed ?? null };
+    if (hit) return { url: hit.url, tags, kind, cached: true, seed: hit.seed ?? null };
 
     const img = await this.provider.generate(prompt, { seed: opts.seed });
-    await this.write(this.userId, this.companionId, { url: img.url, tags, prompt, seed: img.seed, meta: img.meta }).catch(() => {});
-    return { url: img.url, tags, cached: false, seed: img.seed };
+    await this.write(this.userId, this.companionId, { url: img.url, tags, prompt, seed: img.seed, meta: { ...img.meta, kind } }).catch(() => {});
+    return { url: img.url, tags, kind, cached: false, seed: img.seed };
+  }
+
+  /** 自拍 (= photo({kind:'selfie'})); 保留旧名便于直接调用。 */
+  async selfie(snapshot, opts = {}) {
+    return this.photo(snapshot, { ...opts, kind: 'selfie' });
+  }
+
+  /** 取冷却用的发送轨迹 (图库 created_at)。封装成方法便于注入/测试。 */
+  async rateState(opts = {}) {
+    return recentPhotoRateState(this.userId, this.companionId, opts);
   }
 }
 
@@ -149,7 +217,20 @@ export async function readAppearanceAssets(userId, companionId = 'default', { ta
   return data[0];
 }
 
-/** 入库一张新生成的自拍。 */
+/** 取最近发过的照片时间(图库 created_at 当作发送轨迹, 给冷却用), 返回 {sentAt:[...]}。 */
+export async function recentPhotoRateState(userId, companionId = 'default', { sinceMs = 2 * 24 * 60 * 60 * 1000, now = Date.now() } = {}) {
+  const { data, error } = await supabase
+    .from('appearance_assets')
+    .select('created_at')
+    .eq('user_id', userId)
+    .eq('companion_id', companionId)
+    .gte('created_at', new Date(now - sinceMs).toISOString())
+    .order('created_at', { ascending: true });
+  if (error || !data) return { sentAt: [] };
+  return { sentAt: data.map((r) => r.created_at) };
+}
+
+/** 入库一张新生成的照片(自拍/随手拍)。 */
 export async function insertAppearanceAsset(userId, companionId = 'default', asset = {}) {
   const row = {
     user_id: userId,
