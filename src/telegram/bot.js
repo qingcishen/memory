@@ -38,7 +38,7 @@ export function telegramUserId(chatId) {
 
 export function chunkMessage(text, limit = MAX_TELEGRAM_MESSAGE_LENGTH) {
   const src = String(text ?? '').trim();
-  if (!src) return ['...'];
+  if (!src) return [];
   const chunks = [];
   for (let i = 0; i < src.length; i += limit) chunks.push(src.slice(i, i + limit));
   return chunks;
