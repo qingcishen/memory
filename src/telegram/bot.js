@@ -403,12 +403,12 @@ function acquireProcessLock(lockPath = process.env.TELEGRAM_LOCK_FILE || DEFAULT
   };
 }
 
-/** 去除 LLM 回复里的旁白/动作括号和非真人习惯: （...） () *动作* 开头省略号 等。 */
+/** 清理 LLM 回复里明显的格式噪音, 但保留括号内容。
+ *  括号（）() 里可能是角色的声音/感觉/情绪 (亲密场景常见), 不能无脑删。
+ *  系统提示已要求"不要用括号写旁白"——如果模型忽视指令用了括号, 保留比删空更好。 */
 function stripNarration(text = '') {
   return text
-    .replace(/（[^）]*）/g, '')      // 全角括号 （...）
-    .replace(/\([^)]*\)/g, '')       // 半角括号 (...)
-    .replace(/\*[^*]+\*/g, '')       // *动作描写*
+    .replace(/\*[^*]+\*/g, '')       // *markdown动作* 这类明显是格式标记, 删
     .replace(/\n{2,}/g, '\n')        // 段落空行 → 单换行
     .replace(/^[.…·。\s]+/, '')      // 开头的 ... / …… / 。 等停顿符
     .trim();
