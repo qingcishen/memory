@@ -411,7 +411,8 @@ function isProcessAlive(pid) {
   }
 }
 
-if (import.meta.url === `file://${process.argv[1]}`) {
+// PM2 replaces argv[1] with its own ProcessContainerFork.js, so also check PM2_HOME
+if (import.meta.url === `file://${process.argv[1]}` || process.env.PM2_HOME) {
   let releaseLock = () => {};
   const bot = new TelegramMemoryBot();
   const shutdown = () => {
