@@ -10,16 +10,17 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
-      - name: Deploy via SSH
-        uses: appleboy/ssh-action@v1.0.3
-        with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          password: ${{ secrets.VPS_PASS }}
-          script: |
-            cd /root/memory-system
-            git pull origin ${{ github.ref_name }}
-            npm install 2>&1 | tail -3
-            pm2 restart memory-bot
-            sleep 3
-            pm2 list
+      - name: Deploy via sshpass
+        env:
+          VPS_HOST: ${{ secrets.VPS_HOST }}
+          VPS_USER: ${{ secrets.VPS_USER }}
+          VPS_PASS: ${{ secrets.VPS_PASS }}
+          BRANCH: ${{ github.ref_name }}
+        run: |
+          sudo apt-get install -y sshpass -q
+          sshpass -p "$VPS_PASS" ssh \
+            -o StrictHostKeyChecking=no \
+            -o PreferredAuthentications=password \
+            -o PubkeyAuthentication=no \
+            "$VPS_USER@$VPS_HOST" \
+            "cd /root/memory-system && git pull origin $BRANCH && npm install 2>&1 | tail -3 && pm2 restart memory-bot && sleep 3 && pm2 list"
