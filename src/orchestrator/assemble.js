@@ -17,6 +17,8 @@ export function buildSystemPrompt({
 } = {}) {
   const sections = [timePrompt, personaPrompt, relationshipPrompt, statePrompt || emotionPrompt, memoryBlock];
   if (monologue && monologue.trim()) sections.push(`(你此刻的想法, 别直接说出来): ${monologue.trim()}`);
+  // 格式强制: 禁止旁白/动作描写括号, 只输出她说的话本身。
+  sections.push('【输出格式】直接用第一人称说话。绝对不要用（）或()括号加动作/场景/表情描写, 不要写旁白叙述, 不要 *斜体动作*。只写她说出口的话本身。');
   return sections.filter((s) => s && s.trim()).join('\n\n');
 }
 

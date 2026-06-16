@@ -291,7 +291,8 @@ export class TelegramMemoryBot {
     const bot = this.botForChat(chatId);
     console.log(`[telegram] replying chat=${chatId} timeoutMs=${this.replyTimeoutMs}`);
     try {
-      const reply = await withTimeout(bot.reply(text), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
+      const raw = await withTimeout(bot.reply(text), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
+      const reply = stripNarration(raw);
       for (const chunk of chunkMessage(reply)) {
         await this.api.sendMessage(chatId, chunk);
       }
@@ -400,6 +401,16 @@ function acquireProcessLock(lockPath = process.env.TELEGRAM_LOCK_FILE || DEFAULT
       if (current === String(process.pid)) fs.rmSync(lockPath, { force: true });
     } catch {}
   };
+}
+
+/** 去除 LLM 回复里的旁白/动作括号: （...） () *动作* 等, 只保留说出口的话。 */
+function stripNarration(text = '') {
+  return text
+    .replace(/（[^）]*）/g, '')   // 全角括号 （...）
+    .replace(/\([^)]*\)/g, '')    // 半角括号 (...)
+    .replace(/\*[^*]+\*/g, '')    // *动作描写*
+    .replace(/\n{3,}/g, '\n\n')   // 多余空行压缩
+    .trim();
 }
 
 function isProcessAlive(pid) {
