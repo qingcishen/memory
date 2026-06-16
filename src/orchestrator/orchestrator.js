@@ -138,6 +138,13 @@ export class Orchestrator {
    */
   async reply(userMessage) {
     await this.init();
+    // 长时间沉默后清历史: 若距上次用户发言超过 4 小时, 旧消息时间背景与当前严重错位,
+    // 清掉旧历史让 LLM 按系统提示的当前时间重新建立上下文, 防止它被几小时前的对话带偏。
+    const idleHours = this._lastUserMessageAt ? (Date.now() - this._lastUserMessageAt) / 3600000 : 0;
+    if (idleHours >= 4 && this.history.length > 0) {
+      this.history = [];
+    }
+    this._lastUserMessageAt = Date.now();
 
     const [stateSnapshot, relState, memoryBlock, weather, lastUserMessageAt] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),

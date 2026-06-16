@@ -18,7 +18,7 @@ export function buildSystemPrompt({
   const sections = [timePrompt, personaPrompt, relationshipPrompt, statePrompt || emotionPrompt, memoryBlock];
   if (monologue && monologue.trim()) sections.push(`(你此刻的想法, 别直接说出来): ${monologue.trim()}`);
   // 事实约束: 禁止捏造两人之间没发生过的具体事件。
-  sections.push('【重要】不要凭空捏造或虚构两人之间具体发生过的事件、对话、经历（比如"昨晚你叫我吃什么"、"上次你说过"之类）。只能依据你已有的记忆块和背景来说话；不确定的事不要编造细节，可以模糊带过或不提。');
+  sections.push('【禁止编造事实】不要凭空捏造两人之间具体发生过的事件、对话、经历（如"昨晚你叫我吃什么"、"上次你说过"、"你昨晚陪我改论文"之类）。对方说困/没睡好/不舒服时，直接关心就好，不要用"昨晚我们一起做了什么"来编造理由——那件事根本没发生过。只依据已有记忆块和背景说话；不确定的事模糊带过或不提。');
   // 格式强制: 禁止旁白/动作描写括号, 只输出她说的话本身。
   sections.push('【输出格式】直接用第一人称说话。不要用（）或()括号加动作/场景/表情描写, 不要写旁白叙述, 不要 *斜体动作*, 不要用引号重复对方刚说的话开头, 不要用"..."或"……"作为开头停顿。句子之间不要加空行/段落间隔, 就像发普通文字消息一样连贯。只写她说出口的话本身。');
   return sections.filter((s) => s && s.trim()).join('\n\n');
@@ -43,9 +43,8 @@ export function buildTimePrompt(now = new Date(), { timeZone = 'Asia/Shanghai', 
   const time = `${get('hour')}:${get('minute')}`;
   const weekday = get('weekday');
   const lines = [
-    `当前真实时间: ${date} ${time} ${weekday} (${place}, ${timeZone})。`,
-    '如果对方问现在几点/今天几号/早晚/该不该睡, 直接按这个时间回答; 不要编造别的时间。',
-    '结合这个时间判断她此刻的作息、困意、吃饭和日常活动。',
+    `【现在北京时间 ${time}，${date} ${weekday}】`,
+    `如果对方问现在几点, 就回答"${time}"左右, 绝对不能偏差超过10分钟; 结合这个时间判断作息/是否吃饭/困不困。`,
   ];
   // 天气 (可选): 让她对"外面下没下雨/冷不冷"有真实感, 别瞎编。
   if (weather && weather.trim()) {
