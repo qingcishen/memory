@@ -403,13 +403,14 @@ function acquireProcessLock(lockPath = process.env.TELEGRAM_LOCK_FILE || DEFAULT
   };
 }
 
-/** 去除 LLM 回复里的旁白/动作括号: （...） () *动作* 等, 只保留说出口的话。 */
+/** 去除 LLM 回复里的旁白/动作括号和非真人习惯: （...） () *动作* 开头省略号 等。 */
 function stripNarration(text = '') {
   return text
-    .replace(/（[^）]*）/g, '')   // 全角括号 （...）
-    .replace(/\([^)]*\)/g, '')    // 半角括号 (...)
-    .replace(/\*[^*]+\*/g, '')    // *动作描写*
-    .replace(/\n{3,}/g, '\n\n')   // 多余空行压缩
+    .replace(/（[^）]*）/g, '')      // 全角括号 （...）
+    .replace(/\([^)]*\)/g, '')       // 半角括号 (...)
+    .replace(/\*[^*]+\*/g, '')       // *动作描写*
+    .replace(/\n{2,}/g, '\n')        // 段落空行 → 单换行
+    .replace(/^[.…·。\s]+/, '')      // 开头的 ... / …… / 。 等停顿符
     .trim();
 }
 
