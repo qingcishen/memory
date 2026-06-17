@@ -9,6 +9,7 @@
 import { supabase, PARAMS } from './config.js';
 import { embedMany } from './embeddings.js';
 import { normalizeMemory } from './ontology.js';
+import { sanitizeForPrompt } from './promptSafety.js';
 
 // ---- 纯逻辑 ----
 
@@ -22,7 +23,8 @@ export function filterBySubject(mems, subjects) {
 /** 把 self 记忆拼成可注入人格 prompt 的"她是谁"段落。 */
 export function formatPersonaBlock(selfMems, subjectName = '她') {
   if (!selfMems || selfMems.length === 0) return '';
-  const lines = selfMems.map((m) => `- ${m.narrative || m.fact_core || m.content}`).join('\n');
+  // sanitizeForPrompt: self 记忆同样来自用户输入/LLM 提取, 过滤可疑的 prompt 注入话术
+  const lines = selfMems.map((m) => `- ${sanitizeForPrompt(m.narrative || m.fact_core || m.content)}`).join('\n');
   return `${subjectName}是这样一个人:\n${lines}`;
 }
 
@@ -32,7 +34,7 @@ export function formatPersonaBlock(selfMems, subjectName = '她') {
  * 播种人格: 把一组"她对自己的设定"写成 self 记忆。
  * @param facts 字符串数组, 或 {fact_core, importance, fact_locked, affect} 对象数组
  */
-export async function seedPersona(userId, facts = []) {
+export async function seedPersona(userId, companionId = 'default', facts = []) {
   const norm = facts
     .map((f) => normalizeMemory(typeof f === 'string' ? { fact_core: f } : f))
     .map((m) => ({ ...m, subject_kind: 'self' })); // 强制 self 域
@@ -41,6 +43,7 @@ export async function seedPersona(userId, facts = []) {
   const embeddings = await embedMany(norm.map((m) => m.fact_core));
   const rows = norm.map((m, i) => ({
     user_id: userId,
+    companion_id: companionId,
     type: m.type === 'fact' ? 'fact' : m.type,
     content: m.fact_core,
     fact_core: m.fact_core,
@@ -61,12 +64,13 @@ export async function seedPersona(userId, facts = []) {
 
 
 /** 取她当前的 self 设定并拼成 persona 注入块 (域隔离: 只取 self)。 */
-export async function personaBlock(userId, subjectName = '她', opts = {}) {
+export async function personaBlock(userId, companionId = 'default', subjectName = '她', opts = {}) {
   const topK = opts.topK ?? PARAMS.relationship_memory.personaTopK;
   const { data, error } = await supabase
     .from('memories')
     .select('fact_core, content, narrative, importance')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .eq('subject_kind', 'self')
     .is('superseded_by', null)
     .order('importance', { ascending: false })

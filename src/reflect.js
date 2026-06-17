@@ -1,18 +1,20 @@
-import { supabase, llm, LLM_MODEL } from './config.js';
+import { supabase, llm, LLM_MODEL, PARAMS } from './config.js';
 import { embed } from './embeddings.js';
 import { memoryStrength } from './decay.js';
+import { selectNearDupMerges } from './dedup.js';
 
 /**
  * 反思: 把最近的零散记忆聚成更高层的总结 (如"诗雅最近压力大, 在备考"),
  * 作为高重要性的 reflection 记忆存回。让伴侣形成"整体印象"而非一堆碎片。
  */
-export async function runReflection(userId, opts = {}) {
+export async function runReflection(userId, companionId = 'default', opts = {}) {
   const lookback = opts.recent ?? 40;
 
   const { data: mems, error } = await supabase
     .from('memories')
     .select('id, content, type, importance, emotion, created_at')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .is('superseded_by', null)
     .neq('type', 'reflection')
     .order('created_at', { ascending: false })
@@ -51,6 +53,7 @@ export async function runReflection(userId, opts = {}) {
       .from('memories')
       .insert({
         user_id: userId,
+        companion_id: companionId,
         type: 'reflection',
         content,
         embedding,
@@ -68,11 +71,12 @@ export async function runReflection(userId, opts = {}) {
  * 找出"几乎被遗忘"的记忆 (强度低于阈值)。默认不删除, 返回供决定。
  * 想自动清理可传 { purge: true }。
  */
-export async function findForgettable(userId, threshold = 0.05, opts = {}) {
+export async function findForgettable(userId, companionId = 'default', threshold = 0.05, opts = {}) {
   const { data: mems, error } = await supabase
     .from('memories')
     .select('*')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .is('superseded_by', null);
   if (error) throw error;
 
@@ -86,6 +90,91 @@ export async function findForgettable(userId, threshold = 0.05, opts = {}) {
       .in('id', weak.map((m) => m.id));
   }
   return weak;
+}
+
+/**
+ * 主动遗忘 (P2 工程债 #9): 纯逻辑。从相似度候选 (如 match_memories 结果) 里
+ * 选出"够相关、可以认定为在说这件事"的一批 —— 相似度需达到 threshold。
+ * fact_locked (生日/名字/承诺等硬事实) 默认不进遗忘范围, 即使用户随口提到也不误删;
+ * 传 { includeLocked: true } 可放开 (用户明确要求时)。
+ */
+export function selectForgettable(candidates = [], opts = {}) {
+  const threshold = opts.threshold ?? PARAMS.forget.similarityThreshold;
+  return (candidates ?? []).filter(
+    (c) => (c.similarity ?? 0) >= threshold && (opts.includeLocked || !c.fact_locked)
+  );
+}
+
+/**
+ * 主动遗忘 API: "忘记我刚才说的那件事" 这类显式请求。
+ * 按 query 向量召回候选, 挑出 selectForgettable 命中的几条直接删除 (不可恢复)。
+ * @returns 被删除的记忆列表 (可能为空)
+ */
+export async function forgetByQuery(userId, companionId = 'default', query, opts = {}) {
+  const queryEmbedding = await embed(query);
+  const { data: candidates, error } = await supabase.rpc('match_memories', {
+    p_user_id: userId,
+    p_companion_id: companionId,
+    query_embedding: queryEmbedding,
+    match_count: opts.pool ?? PARAMS.candidatePool,
+  });
+  if (error) throw error;
+
+  const targets = selectForgettable(candidates ?? [], opts);
+  if (targets.length === 0) return [];
+
+  await supabase
+    .from('memories')
+    .delete()
+    .in('id', targets.map((m) => m.id));
+  return targets;
+}
+
+/**
+ * #10 残余债收口: 维护期合并近义重复 (并发 observe 极端时序漏过去的"两条当前事实")。
+ * 拉活跃记忆(带向量) → selectNearDupMerges 选出该合并的对 → loser.superseded_by 指向 winner,
+ * 并把 loser 的访问计数并进 winner (强化, 不丢"被提起过几次")。
+ * @returns { merged: number }
+ */
+export async function mergeNearDuplicates(userId, companionId = 'default', opts = {}) {
+  const lookback = opts.recent ?? 200;
+  const { data: mems, error } = await supabase
+    .from('memories')
+    .select('id, embedding, importance, created_at, access_count, access_log')
+    .eq('user_id', userId)
+    .eq('companion_id', companionId)
+    .is('superseded_by', null)
+    .not('embedding', 'is', null)
+    .order('created_at', { ascending: false })
+    .limit(lookback);
+  if (error) throw error;
+  if (!mems || mems.length < 2) return { merged: 0 };
+
+  const normalized = mems.map((m) => ({ ...m, embedding: parseVector(m.embedding) }));
+  const merges = selectNearDupMerges(normalized, opts.threshold);
+  for (const { loser, winner } of merges) {
+    // loser 指向 winner; 同时把 loser 的 access_count 计进 winner (保留"被提起过"的强度)
+    await supabase.from('memories').update({ superseded_by: winner.id }).eq('id', loser.id).is('superseded_by', null);
+    await supabase
+      .from('memories')
+      .update({ access_count: (winner.access_count ?? 0) + (loser.access_count ?? 0) + 1, last_accessed: new Date().toISOString() })
+      .eq('id', winner.id);
+  }
+  return { merged: merges.length };
+}
+
+/** pgvector → number[]。已是数组原样; 字符串 "[...]" 解析; 其它 null。 */
+function parseVector(v) {
+  if (Array.isArray(v)) return v;
+  if (typeof v === 'string') {
+    try {
+      const a = JSON.parse(v);
+      return Array.isArray(a) ? a : null;
+    } catch {
+      return null;
+    }
+  }
+  return null;
 }
 
 function clampNum(v, lo, hi, dflt) {

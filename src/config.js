@@ -19,6 +19,8 @@ export const llm = new OpenAI({
   baseURL: process.env.LLM_BASE_URL || 'https://api.deepseek.com',
 });
 export const LLM_MODEL = process.env.LLM_MODEL || 'deepseek-chat';
+// 编排器回复模型 (好模型, 可与 LLM_MODEL 不同 provider); 未配置时退回 LLM_MODEL。
+export const REPLY_MODEL = process.env.REPLY_MODEL || LLM_MODEL;
 
 // ---- Embedding ----
 // 可与 LLM 用不同 provider。OpenAI: text-embedding-3-small (1536 维)

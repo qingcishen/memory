@@ -10,6 +10,7 @@
 // 这套打分是 SQL 永远做不到的 (心情/扩散塞进排序), 也是必须自研引擎的根本原因。
 
 import { PARAMS } from '../params.js';
+import { cosine } from './vector-index.js';
 
 const HOUR = 1000 * 60 * 60;
 const DAY = HOUR * 24;
@@ -41,6 +42,30 @@ export function moodCongruence(mem, state) {
   const intensity = clamp01(num(mem.affect_intensity, 0));
   // 同号相乘为正 (点亮), 异号为负 (压低); 弱情绪记忆受心情影响小
   return moodV * memV * (0.4 + 0.6 * intensity);
+}
+
+/**
+ * #5 定向心情门控: 在全局门控基础上, 当她的负面情绪【指向某外部话题】时,
+ * 只点亮与该话题语义相关的负面记忆, 而不是一负面就翻出所有旧伤疤。
+ * - tension_target !== 'external' / tension 不够高 / 没有话题向量 / 非负面记忆 → 退化为全局 moodCongruence。
+ * - 否则把全局项乘上 gate = directedGateFloor + (1-floor)*cosine(话题, 记忆), 与话题无关的负面记忆被压到 floor。
+ * @param opts { topicEmbedding?: number[] } 当前紧张话题的向量 (engineRecall 注入)
+ */
+export function directedMoodCongruence(mem, state, opts = {}) {
+  const base = moodCongruence(mem, state);
+  const rel = state?.relationship ?? {};
+  const memV = num(mem.affect_valence, 0);
+  const p = PARAMS.engine;
+  const directed =
+    rel.tension_target === 'external' &&
+    num(rel.tension, 0) > p.tensionGateMin &&
+    memV < 0 &&
+    Array.isArray(opts.topicEmbedding) &&
+    Array.isArray(mem.embedding);
+  if (!directed) return base;
+  const relTopic = clamp01(cosine(opts.topicEmbedding, mem.embedding));
+  const gate = p.directedGateFloor + (1 - p.directedGateFloor) * relTopic;
+  return base * gate;
 }
 
 /** 关系里程碑: dyad 共同记忆 / 锁定的硬事实 (生日承诺) / 关系类记忆常驻。返回 0..1。 */
@@ -78,7 +103,8 @@ export function scoreActivation(items, state, opts = {}) {
       const B = baseLevel(m, now, p.forgetRate);
       const sim = num(m.similarity, 0);
       const spread = num(m._spread, 0);
-      const mood = moodCongruence(m, state);
+      // #5: opts.topicEmbedding 在场且她负面情绪指向外部话题时, 走定向门控; 否则等同全局 moodCongruence。
+      const mood = directedMoodCongruence(m, state, { topicEmbedding: opts.topicEmbedding });
       const mile = milestone(m);
       const tpen = temporalPenalty(m, now);
 

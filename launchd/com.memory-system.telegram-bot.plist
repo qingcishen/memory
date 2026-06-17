@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN"
+  "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+  <key>Label</key>
+  <string>com.memory-system.telegram-bot</string>
+
+  <key>ProgramArguments</key>
+  <array>
+    <string>/Users/hk/memory-system/scripts/run-telegram-bot.sh</string>
+  </array>
+
+  <key>WorkingDirectory</key>
+  <string>/Users/hk/memory-system</string>
+
+  <key>RunAtLoad</key>
+  <true/>
+
+  <key>KeepAlive</key>
+  <true/>
+
+  <key>StandardOutPath</key>
+  <string>/Users/hk/memory-system/logs/telegram-bot.log</string>
+
+  <key>StandardErrorPath</key>
+  <string>/Users/hk/memory-system/logs/telegram-bot.err.log</string>
+
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>PATH</key>
+    <string>/opt/homebrew/bin:/Users/hk/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+  </dict>
+</dict>
+</plist>

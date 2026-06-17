@@ -8,7 +8,7 @@ export {
   formatForPrompt,
   formatSupersededTrailForPrompt,
 } from './src/retrieve.js';
-export { runReflection, findForgettable } from './src/reflect.js';
+export { runReflection, findForgettable, mergeNearDuplicates } from './src/reflect.js';
 export { embed, embedMany } from './src/embeddings.js';
 export {
   rerank,
@@ -34,6 +34,7 @@ export {
   moodLabel,
   stateDelta,
   labelStateEvent,
+  detectTensionTarget,
   summarizeTrajectory,
   formatTrajectory,
   readState,
@@ -44,6 +45,51 @@ export {
   readStateHistory,
 } from './src/state/affect.js';
 export {
+  defaultEmotion,
+  clampEmotion,
+  moodToEmotion,
+  toEmotionPrompt,
+} from './src/emotion.js';
+// L3 生活模拟 (作息活动)
+export { currentActivity, isSleeping, ACTIVITY_TEMPLATES, parseSleepWindow } from './src/state/activity.js';
+// L4 健康/生病闭环
+export { isSick, maybeFallSick, detectCare, applyCare, isLateNight, updateLateNightStreak } from './src/state/health.js';
+// 后台"活着"调度循环 (维护 + 主动性)
+export { CompanionRuntime, isNightlyDue, localDayKey, localHour } from './src/runtime/index.js';
+// 轻量监控
+export { incr, get, metricsSnapshot, resetMetrics, recordLlmCall } from './src/metrics.js';
+// 真实世界感知 · 天气
+export { WeatherProvider, weatherCodeToZh, buildWeatherLine } from './src/world/weather.js';
+// M9 每日训练 · 知识滴灌 + 自我日记
+export { pickDailyKnowledge, buildDiaryPrompt, selfFactCores, dailyTraining } from './src/training.js';
+// M5 扛量 · 持久化任务队列
+export {
+  enqueue,
+  claimBatch,
+  completeJob,
+  failJob,
+  queueStats,
+  Worker,
+  nextBackoffMs,
+  decideAfterFailure,
+  isClaimable,
+} from './src/queue/jobs.js';
+// A1 外貌/自拍 (骨架, 出图为仓库外基建)
+export {
+  MockImageProvider,
+  HttpImageProvider,
+  defaultImageProvider,
+  shouldSendSelfie,
+  canSendSelfie,
+  buildSelfiePrompt,
+  buildScenePrompt,
+  decidePhoto,
+  Selfie,
+  readAppearanceAssets,
+  insertAppearanceAsset,
+  recentPhotoRateState,
+} from './src/appearance/index.js';
+export {
   rankCandidates,
   engineRecall,
   scoreActivation,
@@ -52,15 +98,30 @@ export {
   spreadActivation,
   attachSpread,
 } from './src/engine/index.js';
-export { baseLevel, moodCongruence, milestone, temporalPenalty } from './src/engine/activation.js';
+export { baseLevel, moodCongruence, directedMoodCongruence, milestone, temporalPenalty } from './src/engine/activation.js';
 export {
   reconsolidate,
   shouldRewriteNarrative,
   reconsolidateOnRecall,
   reconsolidateRecent,
   persistReconsolidation,
+  anchorTarget,
+  clampToOrigin,
+  driftFromOrigin,
 } from './src/memory/reconsolidate.js';
 export { filterBySubject, formatPersonaBlock, seedPersona, personaBlock } from './src/persona.js';
+export {
+  CompanionConfigSchema,
+  normalizeCompanionConfig,
+  safeCompanionConfig,
+  rowToConfig,
+  configToRow,
+  upsertCompanion,
+  getCompanion,
+  listCompanions,
+  personaJsonToConfig,
+  loadPersonaConfig,
+} from './src/companion.js';
 export { pickDyadBackdrop, composeNarrativeInput, dyadBackdrop, synthesizeNarrative } from './src/narrative.js';
 export {
   relativeTriggerAt,
@@ -82,3 +143,30 @@ export {
   ingestAudio,
 } from './src/modal/index.js';
 export { normalizeForHash, dedupHash, findDuplicate } from './src/dedup.js';
+export {
+  Orchestrator,
+  MemoryAdapter,
+  StateLayerAdapter,
+  RelationshipAdapter,
+  PersonaAdapter,
+  DefaultLLM,
+  assemble,
+  buildSystemPrompt,
+  buildTimePrompt,
+  buildGapHint,
+  buildMonologueContext,
+  formatRelationshipPrompt,
+  LocalJsonHistoryStore,
+  SupabaseHistoryStore,
+  DEFAULT_PROACTIVE_POLICY,
+  ProactiveScheduler,
+  MemoryRateLimitStore,
+  SupabaseRateLimitStore,
+  canSendProactive,
+  defaultRateLimitState,
+  isQuietHour,
+  markProactiveSent,
+  normalizeRateLimitState,
+  pickSilenceTier,
+  pickBedtimeTier,
+} from './src/orchestrator/index.js';

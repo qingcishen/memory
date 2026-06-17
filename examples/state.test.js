@@ -11,10 +11,13 @@ import {
   inferHeuristicDeltas,
   moodLabel,
   stateDelta,
+  moodShiftMagnitude,
   labelStateEvent,
+  detectTensionTarget,
   summarizeTrajectory,
   formatTrajectory,
 } from '../src/state/affect.js';
+import { applyMoodShiftBoost } from '../src/extract.js';
 import { PARAMS } from '../src/params.js';
 
 let passed = 0;
@@ -51,6 +54,24 @@ console.log('inferHeuristicDeltas (从对话嗅信号)');
   // AI 的话不该影响状态 (只看对方)
   const aiOnly = inferHeuristicDeltas([{ role: 'assistant', content: '我很生气, 吵架' }]);
   ok('只看对方: AI 的话不产生信号', aiOnly.relationship.tension === 0);
+}
+
+console.log('P1 双向关系触发规则 (称呼/敷衍/钱上客气)');
+{
+  const petName = inferHeuristicDeltas([{ role: 'user', content: '老婆我回来啦' }]);
+  ok('称呼老婆: 心情转暖', petName.mood.valence > 0);
+  ok('称呼老婆: 亲密微升', petName.relationship.closeness > 0);
+
+  const dismissive = inferHeuristicDeltas([{ role: 'user', content: '哦' }]);
+  ok('敷衍"哦": 心情转冷', dismissive.mood.valence < 0);
+  ok('敷衍"哦": 紧张微升', dismissive.relationship.tension > 0);
+
+  const notDismissive = inferHeuristicDeltas([{ role: 'user', content: '哦对了, 我刚才看到一个很有趣的东西' }]);
+  ok('"哦"开头但不是整条敷衍 → 不触发', notDismissive.mood.valence === 0 && notDismissive.relationship.tension === 0);
+
+  const money = inferHeuristicDeltas([{ role: 'user', content: '这顿AA吧, 我转给你我那部分' }]);
+  ok('钱上客气(AA): 心情转冷', money.mood.valence < 0);
+  ok('钱上客气(AA): 紧张微升', money.relationship.tension > 0);
 }
 
 console.log('applyDeltas (吵架→和好 的状态因果)');
@@ -117,6 +138,24 @@ console.log('stateDelta / labelStateEvent (历史快照触发与事件标签)');
   ok('微小变化无事件标签', labelStateEvent(base, applyDeltas(base, { mood: { valence: 0.01 } })) === null);
 }
 
+console.log('moodShiftMagnitude / applyMoodShiftBoost (情绪 → 记忆重要性, emotion-design.md §8)');
+{
+  const base = defaultState();
+  ok('相同状态 moodShift=0', moodShiftMagnitude(base, base) === 0);
+
+  const fought = applyDeltas(base, inferHeuristicDeltas([{ role: 'user', content: '我很生气, 太失望了' }]));
+  const shift = moodShiftMagnitude(base, fought);
+  ok('吵架后 moodShift 达到单轮上限 (两个 mood 字段都被推满)', Math.abs(shift - 0.6) < 1e-9);
+
+  const mems = [{ fact_core: '诗雅很生气', importance: 5 }];
+  ok('心情位移在阈值以下时 importance 不变', applyMoodShiftBoost(mems, 0)[0].importance === 5);
+  ok('心情位移达到满额时 importance 加满额', applyMoodShiftBoost(mems, shift)[0].importance === 7);
+  ok('心情位移在阈值与满额之间按比例加成', Math.abs(applyMoodShiftBoost(mems, 0.375)[0].importance - 6) < 1e-9);
+
+  const maxed = applyMoodShiftBoost([{ fact_core: 'x', importance: 9.5 }], shift);
+  ok('importance 加成后仍夹在 10 以内', maxed[0].importance === 10);
+}
+
 console.log('summarizeTrajectory / formatTrajectory (关系走向)');
 {
   ok('空历史 points=0', summarizeTrajectory([]).points === 0);
@@ -135,6 +174,40 @@ console.log('summarizeTrajectory / formatTrajectory (关系走向)');
   ok('轨迹文本提到越来越亲近', txt.includes('亲近'));
   ok('轨迹文本提到争执', txt.includes('争执'));
   ok('空轨迹 → 空串', formatTrajectory(summarizeTrajectory([])) === '');
+}
+
+console.log('#5 情绪指向性 (tension 冲着谁/为了什么)');
+{
+  // 默认指向 user, 保持旧语义
+  ok('defaultState: tension_target 默认 user', defaultState().relationship.tension_target === 'user');
+  ok('defaultState: tension_topic 默认 null', defaultState().relationship.tension_topic === null);
+
+  // detectTensionTarget 纯逻辑
+  ok('冲着用户: "你怎么又这样" → user', detectTensionTarget('你怎么又这样, 烦死了').target === 'user');
+  const ext = detectTensionTarget('明天要考试了, 压力好大快崩溃');
+  ok('为外部事焦虑 → external', ext.target === 'external');
+  ok('external 抓出话题 (考试)', ext.topic === '考试');
+  ok('没明显线索默认 user', detectTensionTarget('今天天气不错').target === 'user');
+
+  // applyDeltas: tension 上升时采纳指向; clampState 校验非法 target
+  const fightExt = applyDeltas(defaultState(), {
+    relationship: { tension: 0.3, tension_target: 'external', tension_topic: '工作' },
+  });
+  ok('applyDeltas: tension 升 → 采纳 external 指向', fightExt.relationship.tension_target === 'external');
+  ok('applyDeltas: 采纳话题', fightExt.relationship.tension_topic === '工作');
+  const noTension = applyDeltas(defaultState(), {
+    relationship: { closeness: 0.1, tension_target: 'external', tension_topic: '考试' },
+  });
+  ok('applyDeltas: tension 没升则不采纳新指向', noTension.relationship.tension_target === 'user');
+  ok('clampState: 非法 target 回退 user', clampState({ relationship: { tension_target: 'xyz' } }).relationship.tension_target === 'user');
+
+  // decayState: tension 缓和回基线下后, 清空指向
+  const cleared = decayState(
+    { mood: { valence: 0 }, relationship: { tension: 0.02, tension_target: 'external', tension_topic: '考试' } },
+    0
+  );
+  ok('decayState: tension 低于阈值 → target 回 user', cleared.relationship.tension_target === 'user');
+  ok('decayState: tension 低于阈值 → topic 清空', cleared.relationship.tension_topic === null);
 }
 
 console.log(`\nM1 全部 ${passed} 条断言通过 ✅`);

@@ -25,6 +25,8 @@
   "scripts": {
     "demo": "node examples/demo.js",
     "test:logic": "node examples/logic.test.js",
+    "test:emotion": "node examples/emotion.test.js",
+    "test:state-layer": "node examples/state-layer.test.js",
     "test:ontology": "node examples/ontology.test.js",
     "test:state": "node examples/state.test.js",
     "test:engine": "node examples/engine.test.js",
@@ -33,12 +35,29 @@
     "test:prospective": "node examples/prospective.test.js",
     "test:modal": "node examples/modal.test.js",
     "test:dedup": "node examples/dedup.test.js",
+    "test:safety": "node examples/safety.test.js",
+    "test:confidence": "node examples/confidence.test.js",
+    "test:store": "node examples/store.test.js",
+    "test:scenario": "node examples/scenario.test.js",
+    "test:orchestrator": "node examples/orchestrator.test.js",
+    "test:scheduler": "node examples/scheduler.test.js",
+    "test:companion": "node examples/companion.test.js",
+    "test:training": "node examples/training.test.js",
+    "test:activity": "node examples/activity.test.js",
+    "test:health": "node examples/health.test.js",
+    "test:appearance": "node examples/appearance.test.js",
+    "test:queue": "node examples/queue.test.js",
+    "test:telegram": "node examples/telegram.test.js",
+    "test:runtime": "node examples/runtime.test.js",
+    "test:weather": "node examples/weather.test.js",
+    "telegram": "node src/telegram/bot.js",
     "inspect": "node examples/inspect.js",
-    "test": "node examples/logic.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js"
+    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/state-layer.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/safety.test.js && node examples/confidence.test.js && node examples/store.test.js && node examples/scenario.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js && node examples/companion.test.js && node examples/training.test.js && node examples/activity.test.js && node examples/health.test.js && node examples/appearance.test.js && node examples/queue.test.js && node examples/telegram.test.js && node examples/runtime.test.js && node examples/weather.test.js"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",
     "dotenv": "^16.4.5",
-    "openai": "^4.56.0"
+    "openai": "^4.56.0",
+    "zod": "^3.25.76"
   }
 }

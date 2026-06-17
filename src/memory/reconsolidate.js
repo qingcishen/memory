@@ -27,6 +27,8 @@ import { applyAffectUpdate, assertFactCorePreserved } from '../ontology.js';
 export function reconsolidate(mems, state, opts = {}) {
   const p = PARAMS.reconsolidation;
   const step = Math.min(opts.rate ?? p.onRecallRate, p.affectClamp);
+  const pull = opts.originPull ?? p.originPull;
+  const maxDrift = opts.maxDriftFromOrigin ?? p.maxDriftFromOrigin;
   const moodV = num(state?.mood?.valence, 0);
   const arousal = num(state?.mood?.arousal, 0);
   const narratives = opts.narratives ?? {};
@@ -35,19 +37,46 @@ export function reconsolidate(mems, state, opts = {}) {
     // 锁定的硬事实 (生日/承诺): 连情感层都零漂移
     if (m.fact_locked) return m;
 
+    // 原始情感锚 (缺失则以当前值兜底, 等于无锚)
+    const originV = num(m.affect_origin_valence ?? m.affect_valence, 0);
+    const originI = num(m.affect_origin_intensity ?? m.affect_intensity, 0);
+
     const patch = applyAffectUpdate(
       m,
       {
-        affect_valence: moodV, // 记忆情感正负 → 朝她当下心情靠拢 (受伤态旧事更苦, 开心态旧事更暖)
-        affect_intensity: arousal, // 强度 → 朝当下唤起靠拢 (平静时反复想起会慢慢淡)
+        // 目标 = 当下心情, 但被原始锚往回拉一部分 (开心/受伤都不会把旧事彻底改性)
+        affect_valence: anchorTarget(moodV, originV, pull),
+        affect_intensity: anchorTarget(arousal, originI, pull),
         narrative: narratives[m.id], // 有 LLM 重写才换解读, 否则保留
       },
       { clamp: step, factLocked: false }
     );
 
+    // 硬上限: 情感离诞生时不得超过 maxDrift —— 长期负面心情也洗不黑一条本来温暖的记忆
+    patch.affect_valence = clamp(clampToOrigin(patch.affect_valence, originV, maxDrift), -1, 1);
+    patch.affect_intensity = clamp(clampToOrigin(patch.affect_intensity, originI, maxDrift), 0, 1);
+
     assertFactCorePreserved(m, patch); // 红线自检: 任何路径改了 fact_core 立即抛
     return { ...m, ...patch };
   });
+}
+
+/** 重构目标: 当下心情与原始情感锚的加权 (pull 越大越被原始锚拉住)。 */
+export function anchorTarget(mood, origin, pull) {
+  const k = clamp(pull, 0, 1);
+  return mood * (1 - k) + origin * k;
+}
+
+/** 把值夹在"距原始锚 ±maxDrift"之内 (情感漂移的硬边界)。 */
+export function clampToOrigin(value, origin, maxDrift) {
+  return Math.min(origin + maxDrift, Math.max(origin - maxDrift, value));
+}
+
+/** 漂移审计: 当前情感离诞生时锚有多远 (给 inspect / 监控用)。 */
+export function driftFromOrigin(mem) {
+  const v = num(mem.affect_valence, 0) - num(mem.affect_origin_valence ?? mem.affect_valence, 0);
+  const i = num(mem.affect_intensity, 0) - num(mem.affect_origin_intensity ?? mem.affect_intensity, 0);
+  return { valence: v, intensity: i, total: Math.abs(v) + Math.abs(i) };
 }
 
 /** 本轮情绪相对某记忆是否"显著变化", 值得花一次 LLM 重写 narrative。 */
@@ -110,12 +139,13 @@ export async function reconsolidateOnRecall(hits, state, opts = {}) {
  * 情绪显著变化的记忆额外让 LLM 重写 narrative。
  * 典型用法: 和好后调一次, 把高 tension 的旧怨整体软化。
  */
-export async function reconsolidateRecent(userId, state, opts = {}) {
+export async function reconsolidateRecent(userId, companionId = 'default', state, opts = {}) {
   const lookback = opts.recent ?? 60;
   const { data: mems, error } = await supabase
     .from('memories')
-    .select('id, fact_core, content, narrative, affect_valence, affect_intensity, fact_locked, reconsolidation_count, type')
+    .select('id, fact_core, content, narrative, affect_valence, affect_intensity, affect_origin_valence, affect_origin_intensity, fact_locked, reconsolidation_count, type')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .is('superseded_by', null)
     .eq('fact_locked', false)
     .order('created_at', { ascending: false })
@@ -162,4 +192,7 @@ async function rewriteNarratives(mems, state) {
 function num(v, d = 0) {
   const n = Number(v);
   return Number.isNaN(n) ? d : n;
+}
+function clamp(x, lo, hi) {
+  return Math.min(hi, Math.max(lo, Number(x) || 0));
 }

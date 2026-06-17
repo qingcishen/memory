@@ -61,14 +61,14 @@ export async function transcribeAudio(audioFile, opts = {}) {
  * @param opts { file?, transcript?, prosody?, mediaRef?, subjectName?, ... }
  * @returns 存入的记忆数组 (失败/无转写时返回 [], 不抛)
  */
-export async function ingestAudio(userId, opts = {}) {
+export async function ingestAudio(userId, companionId = 'default', opts = {}) {
   let transcript = opts.transcript;
   if (!transcript && opts.file) transcript = await transcribeAudio(opts.file).catch(() => null);
   if (!transcript) return []; // 降级: 转不出文字就不记, 不崩
 
   const mem = buildAudioMemory({ ...opts, transcript });
   if (!mem) return [];
-  return storeMemories(userId, [mem]);
+  return storeMemories(userId, companionId, [mem]);
 }
 
 function clamp(x, lo, hi) {
