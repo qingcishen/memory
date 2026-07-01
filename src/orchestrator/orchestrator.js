@@ -11,6 +11,7 @@ import { assemble, buildMonologueContext, buildTimePrompt } from './assemble.js'
 import { hoursSince } from '../decay.js';
 import { getCompanion } from '../companion.js';
 import { Selfie, decidePhoto } from '../appearance/index.js';
+import { buildNarrationPrompt } from '../narration.js';
 import { PARAMS } from '../params.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
@@ -57,6 +58,10 @@ export class Orchestrator {
     this.onPhoto = deps.onPhoto ?? null;
     // 天气感知 (可选): 注入了才拉真实天气并进 prompt; 默认 null → 离线安全 (mock 测试不连网)。
     this.weather = deps.weather ?? null;
+    // 世界观系统 (可选): 注入 WorldDimension 才有背景剧情线/氛围并随对话演变; 默认 null → 离线安全。
+    this.world = deps.world ?? null;
+    // 旁白系统 (可选): 注入 SceneClassifier 才按场景动态给旁白指令; 默认 null → 离线安全, 不额外调 LLM。
+    this.narration = deps.narration ?? null;
 
     this.history = [];
     this._personaLoadedAt = 0;
@@ -146,11 +151,14 @@ export class Orchestrator {
     }
     this._lastUserMessageAt = Date.now();
 
-    const [stateSnapshot, relState, memoryBlock, weather, lastUserMessageAt] = await Promise.all([
+    const [stateSnapshot, relState, memoryBlock, weather, worldSnapshot, sceneType, lastUserMessageAt] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(userMessage).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
+      this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
+      // 场景分类 (旁白系统): 用最近历史 + 这句话判断当前场景, 决定这一轮用哪条旁白指令。
+      this.narration ? this.narration.classify({ userMessage, history: this.history }).catch(() => 'daily') : Promise.resolve('daily'),
       // 时间跳跃感: 取"对方上次说话"的时间(早于本轮, 因为本轮还没 recordHistory) -> 距今多久。
       this.historyStore && typeof this.historyStore.lastUserMessageAt === 'function'
         ? this.historyStore.lastUserMessageAt({ userId: this.userId, companionId: this.companionId }).catch(() => null)
@@ -161,9 +169,11 @@ export class Orchestrator {
     const promptParts = {
       timePrompt: buildTimePrompt(new Date(), { weather, gapHours }),
       personaPrompt: this.persona.toPrompt() ?? '',
+      worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
       memoryBlock: memoryBlock ?? '',
+      narrationPrompt: this.narration ? buildNarrationPrompt(sceneType) : '',
     };
 
     let monologue = '';
@@ -213,16 +223,18 @@ export class Orchestrator {
     if (!shouldSend) return null;
 
     const seed = ctx.query ?? ctx.memoryQuery ?? ctx.reason ?? '想主动找对方聊一句';
-    const [stateSnapshot, relState, memoryBlock, weather] = await Promise.all([
+    const [stateSnapshot, relState, memoryBlock, weather, worldSnapshot] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(seed).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
+      this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
     ]);
 
     const promptParts = {
       timePrompt: buildTimePrompt(new Date(), { weather }),
       personaPrompt: this.persona.toPrompt() ?? '',
+      worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
       memoryBlock: memoryBlock ?? '',
@@ -323,11 +335,10 @@ export class Orchestrator {
       { role: 'user', content: userMessage },
       { role: 'assistant', content: reply },
     ];
-    return Promise.allSettled([
-      this.stateLayer.evolve(turns),
-      this.memory.observe(turns),
-      this.relationship.bump(),
-    ]).then((results) => {
+    const tasks = [this.stateLayer.evolve(turns), this.memory.observe(turns), this.relationship.bump()];
+    // 世界观系统: 后台判断这一轮要不要推进世界线 (大多数寻常对话不推进, 见 WorldDimension.evolve)。
+    if (this.world) tasks.push(this.world.evolve(turns));
+    return Promise.allSettled(tasks).then((results) => {
       for (const r of results) if (r.status === 'rejected') console.error('[afterReply]', r.reason);
       return results;
     });

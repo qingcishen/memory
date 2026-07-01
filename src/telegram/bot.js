@@ -8,6 +8,8 @@ import { metricsSnapshot } from '../metrics.js';
 import { queueStats } from '../queue/jobs.js';
 import { makeScheduleActivityFn, parseSleepWindow } from '../state/activity.js';
 import { WeatherProvider } from '../world/weather.js';
+import { WorldDimension } from '../world/index.js';
+import { SceneClassifier } from '../narration.js';
 
 dotenv.config();
 
@@ -113,6 +115,8 @@ export class TelegramMemoryBot {
       ...(process.env.WEATHER_LAT ? { lat: Number(process.env.WEATHER_LAT) } : {}),
       ...(process.env.WEATHER_LON ? { lon: Number(process.env.WEATHER_LON) } : {}),
     });
+    // 旁白系统: 场景分类器无状态, 所有 chat 共用一个实例即可。
+    this.narration = new SceneClassifier();
     this.pollTimeoutSeconds = pollTimeoutSeconds;
     this.idleLogMs = idleLogMs;
     this.replyTimeoutMs = replyTimeoutMs;
@@ -145,7 +149,13 @@ export class TelegramMemoryBot {
         activityFn: this.persona?.life ? makeScheduleActivityFn(this.persona.life) : null,
         // P2: 角色专属身体参数 (睡眠时段/发病概率), 喂给 LifeDimension
         lifeConfig: this.persona?.life ?? null,
-        deps: { historyStore: this.historyStore, weather: this.weather }, // 短期历史落库 + 真实天气
+        deps: {
+          historyStore: this.historyStore,
+          weather: this.weather,
+          // 世界观系统: 按 (userId, companionId) 维护各自的背景剧情线, 因此每个 chat 一个实例。
+          world: new WorldDimension({ userId: telegramUserId(chatId), companionId: this.companionId }),
+          narration: this.narration,
+        }, // 短期历史落库 + 真实天气 + 世界观 + 旁白
       });
       this.bots.set(key, orchestrator);
       this.startRuntime(chatId, orchestrator);

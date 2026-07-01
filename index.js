@@ -1,5 +1,5 @@
 export { Memory } from './src/memory.js';
-export { extractMemories } from './src/extract.js';
+export { extractMemories, extractObservation } from './src/extract.js';
 export { storeMemories } from './src/store.js';
 export {
   retrieveMemories,
@@ -60,6 +60,24 @@ export { CompanionRuntime, isNightlyDue, localDayKey, localHour } from './src/ru
 export { incr, get, metricsSnapshot, resetMetrics, recordLlmCall } from './src/metrics.js';
 // 真实世界感知 · 天气
 export { WeatherProvider, weatherCodeToZh, buildWeatherLine } from './src/world/weather.js';
+// 世界观系统 · 动态世界状态 (背景剧情线/氛围随对话演变)
+export {
+  defaultWorldState,
+  readWorldState,
+  writeWorldState,
+  toWorldPrompt,
+  composeEvolveInput,
+  WorldDimension,
+} from './src/world/index.js';
+// 旁白系统 · 按场景动态给旁白指令
+export {
+  SCENE_TYPES,
+  NARRATION_DIRECTIVES,
+  buildNarrationPrompt,
+  parseSceneLabel,
+  composeClassifyInput,
+  SceneClassifier,
+} from './src/narration.js';
 // M9 每日训练 · 知识滴灌 + 自我日记
 export { pickDailyKnowledge, buildDiaryPrompt, selfFactCores, dailyTraining } from './src/training.js';
 // M5 扛量 · 持久化任务队列
@@ -143,6 +161,18 @@ export {
   ingestAudio,
 } from './src/modal/index.js';
 export { normalizeForHash, dedupHash, findDuplicate } from './src/dedup.js';
+export {
+  extractKnowledgeTriples,
+  storeKnowledgeTriples,
+  queryKnowledgeGraph,
+  recallKnowledgeAsPrompt,
+  entityKey,
+  relationKey,
+  normalizeTriple,
+  normalizeTriples,
+  expandNeighborhood,
+  formatGraphPrompt,
+} from './src/knowledge-graph/index.js';
 export {
   Orchestrator,
   MemoryAdapter,

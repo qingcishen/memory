@@ -27,19 +27,30 @@ const ok = (name, cond) => {
   passed++;
 };
 
-console.log('buildSystemPrompt (纯拼接, 跳过空段落)');
+console.log('buildSystemPrompt (纯拼接, 跳过空段落; 结尾恒定追加事实/格式规则)');
 {
-  ok('全部为空 -> 空串', buildSystemPrompt({}) === '');
-  ok('非空段落用空行分隔', buildSystemPrompt({ personaPrompt: 'A', statePrompt: 'B' }) === 'A\n\nB');
+  const bare = buildSystemPrompt({});
+  ok('全部业务段为空时, 只剩恒定的事实/格式规则', bare.includes('【禁止编造事实】') && bare.includes('【输出格式】'));
+  ok('没有场景旁白指令(narrationPrompt 未传)时不追加旁白段', !bare.includes('【旁白提示】') && !bare.includes('【性爱'));
+
+  const withParts = buildSystemPrompt({ personaPrompt: 'A', statePrompt: 'B' });
+  ok('非空段落用空行分隔, 排在恒定规则前面', withParts.startsWith('A\n\nB\n\n【禁止编造事实】'));
+
+  const withTime = buildSystemPrompt({ timePrompt: 'T', personaPrompt: 'A', statePrompt: 'B' });
+  ok('时间段排在 system 最前面', withTime.startsWith('T\n\nA\n\nB\n\n'));
+
+  const withWorld = buildSystemPrompt({ personaPrompt: 'A', worldPrompt: 'W', statePrompt: 'B' });
+  ok('世界观段排在 persona 之后、relationship/state 之前', withWorld.startsWith('A\n\nW\n\nB'));
+
+  const withMono = buildSystemPrompt({ personaPrompt: 'A', monologue: '想法' });
   ok(
-    '时间段排在 system 最前面',
-    buildSystemPrompt({ timePrompt: 'T', personaPrompt: 'A', statePrompt: 'B' }) === 'T\n\nA\n\nB'
+    '内心独白被包装并追加在业务段之后、恒定规则之前',
+    withMono.startsWith('A\n\n(你此刻的想法, 别直接说出来): 想法\n\n【禁止编造事实】')
   );
-  ok(
-    '内心独白被包装并追加在最后',
-    buildSystemPrompt({ personaPrompt: 'A', monologue: '想法' }) === 'A\n\n(你此刻的想法, 别直接说出来): 想法'
-  );
-  ok('空白独白不会被追加', buildSystemPrompt({ personaPrompt: 'A', monologue: '   ' }) === 'A');
+  ok('空白独白不会被追加', !buildSystemPrompt({ personaPrompt: 'A', monologue: '   ' }).includes('你此刻的想法'));
+
+  const withNarration = buildSystemPrompt({ personaPrompt: 'A', narrationPrompt: '【旁白提示】测试指令' });
+  ok('传入的场景旁白指令追加在最后', withNarration.endsWith('【旁白提示】测试指令'));
 }
 
 console.log('buildTimePrompt (真实时间上下文)');
