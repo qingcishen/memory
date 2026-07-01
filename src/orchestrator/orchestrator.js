@@ -92,6 +92,10 @@ export class Orchestrator {
         if (this.persona && typeof this.persona.setExtra === 'function') {
           this.persona.setExtra(buildPersonaExtra(this._config));
         }
+        // 只在这个 (user, companion) 还没有任何 affective_state 记录时生效一次, 见 RelationshipAdapter.seedIfNew。
+        if (typeof this.relationship?.seedIfNew === 'function') {
+          await this.relationship.seedIfNew(this._config);
+        }
       }
       this._configLoaded = true;
     }

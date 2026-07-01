@@ -43,6 +43,9 @@ export {
   decayToBaseline,
   appendStateHistory,
   readStateHistory,
+  RELATIONSHIP_STAGE_PRESETS,
+  resolveRelationshipBaseline,
+  seedInitialStateIfNew,
 } from './src/state/affect.js';
 export {
   defaultEmotion,

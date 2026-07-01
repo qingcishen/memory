@@ -74,6 +74,20 @@ console.log('CompanionConfig zod 校验');
     identityConstraints: ['他是在读大二学生, 不是上班族'],
   });
   ok('identityConstraints 接受字符串数组', withIdentity.identityConstraints.length === 1 && withIdentity.identityConstraints[0] === '他是在读大二学生, 不是上班族');
+
+  // 关系起点标签 / 情绪基线: 只在首次建档时生效一次 (见 seedInitialStateIfNew), 默认 null
+  ok('relationshipStartStage 默认 null', c.relationshipStartStage === null);
+  ok('emotionBaseline 默认 null', c.emotionBaseline === null);
+  const withRelStart = normalizeCompanionConfig({ name: '可可', relationshipStartStage: '恋人', emotionBaseline: { valence: 0.2 } });
+  ok('relationshipStartStage 接受字符串', withRelStart.relationshipStartStage === '恋人');
+  ok('emotionBaseline 接受 {valence}', withRelStart.emotionBaseline.valence === 0.2);
+  let threwBadValence = false;
+  try {
+    normalizeCompanionConfig({ name: '可可', emotionBaseline: { valence: 5 } });
+  } catch {
+    threwBadValence = true;
+  }
+  ok('emotionBaseline.valence 越界 (>1) 抛错', threwBadValence);
 }
 
 console.log('personaJsonToConfig: 顶层 knowledge 数组映射到 knowledgeBank (M9 知识滴灌库)');
@@ -97,6 +111,20 @@ console.log('personaJsonToConfig: persona.identity_constraints 映射到 identit
   ok('没有 identity_constraints 字段时为空数组', personaJsonToConfig({ persona: { name: '阿冷' } }).config.identityConstraints.length === 0);
 }
 
+console.log('personaJsonToConfig: 顶层 relationship.start_stage / emotion_baseline.valence 映射');
+{
+  const { config } = personaJsonToConfig({
+    meta: { display_name: '阿冷' },
+    persona: { name: '阿冷' },
+    relationship: { start_stage: '恋人' },
+    emotion_baseline: { valence: 0.2, warmth: 0.65, half_life_hours: 5 },
+  });
+  ok('relationship.start_stage 映射进 relationshipStartStage', config.relationshipStartStage === '恋人');
+  ok('emotion_baseline.valence 映射进 emotionBaseline.valence (warmth/half_life_hours 目前不消费)', config.emotionBaseline.valence === 0.2);
+  const bare = personaJsonToConfig({ persona: { name: '阿冷' } }).config;
+  ok('没有 relationship/emotion_baseline 字段时都是 null', bare.relationshipStartStage === null && bare.emotionBaseline === null);
+}
+
 console.log('行 <-> Config 映射 (companions 表)');
 {
   const config = {
@@ -108,12 +136,15 @@ console.log('行 <-> Config 映射 (companions 表)');
     appearance: '齐肩黑发, 米色毛衣',
     seedFacts: ['可可爱吃甜的'],
     identityConstraints: ['他是在读大二学生, 不是上班族'],
+    relationshipStartStage: '恋人',
+    emotionBaseline: { valence: 0.2 },
   };
   const row = configToRow('u1', config);
   ok('configToRow: user_id/companion_id 落独立列', row.user_id === 'u1' && row.companion_id === 'keke');
   ok('configToRow: name/appearance 冗余成独立列', row.name === '可可' && row.appearance.includes('米色毛衣'));
   ok('configToRow: 其余收进 config jsonb', row.config.personality === '软糯爱撒娇' && row.config.traits.length === 2 && row.config.seedFacts.length === 1);
   ok('configToRow: identityConstraints 收进 config jsonb', row.config.identityConstraints.length === 1);
+  ok('configToRow: relationshipStartStage/emotionBaseline 收进 config jsonb', row.config.relationshipStartStage === '恋人' && row.config.emotionBaseline.valence === 0.2);
 
   // 模拟从表里读回的行 (列 + config jsonb), round-trip 回 Config
   const dbRow = {
@@ -128,10 +159,12 @@ console.log('行 <-> Config 映射 (companions 表)');
   ok('rowToConfig: name/appearance 还原', back.name === '可可' && back.appearance.includes('米色毛衣'));
   ok('rowToConfig: config jsonb 字段还原', back.personality === '软糯爱撒娇' && back.speechStyle === '语气词多');
   ok('rowToConfig: 没有 identityConstraints 列时默认空数组', back.identityConstraints.length === 0);
+  ok('rowToConfig: 没有 relationshipStartStage/emotionBaseline 列时默认 null', back.relationshipStartStage === null && back.emotionBaseline === null);
   // 干净的 round-trip: config -> row -> config 保持核心字段
   const rt = rowToConfig(configToRow('u1', config));
   ok('round-trip 保持核心字段', rt.companionId === 'keke' && rt.name === '可可' && rt.speechStyle === '语气词多' && rt.seedFacts.length === 1);
   ok('round-trip 保持 identityConstraints', rt.identityConstraints.length === 1 && rt.identityConstraints[0] === '他是在读大二学生, 不是上班族');
+  ok('round-trip 保持 relationshipStartStage/emotionBaseline', rt.relationshipStartStage === '恋人' && rt.emotionBaseline.valence === 0.2);
   ok('rowToConfig(null) -> null', rowToConfig(null) === null);
 }
 

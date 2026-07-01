@@ -29,16 +29,38 @@ const FIELD_RANGE = {
 //  纯逻辑 (无 IO, 离线可测)
 // ============================================================
 
-/** 全新关系的初始状态 (= 各字段基线)。 */
-export function defaultState() {
+// 人设可选的"关系起点"标签 -> 初始 closeness/trust。人设作者写标签比直接填 0-1 浮点数直觉得多。
+// 没在这张表里的标签、或人设没给标签时, 一律退回 PARAMS.state.baseline (= 陌生/刚认识)。
+export const RELATIONSHIP_STAGE_PRESETS = {
+  陌生: { closeness: 0.15, trust: 0.25 },
+  初识: { closeness: 0.3, trust: 0.35 },
+  暧昧: { closeness: 0.5, trust: 0.45 },
+  恋人: { closeness: 0.78, trust: 0.7 },
+  同居: { closeness: 0.85, trust: 0.78 },
+  老夫老妻: { closeness: 0.92, trust: 0.85 },
+};
+
+/** 关系起点标签 -> {closeness, trust}; 不认识的标签/空值返回 null (调用方退回全局默认)。 */
+export function resolveRelationshipBaseline(stage) {
+  if (!stage) return null;
+  return RELATIONSHIP_STAGE_PRESETS[stage] ?? null;
+}
+
+/**
+ * 全新关系的初始状态 (= 各字段基线)。
+ * @param overrides 可选, 来自 CompanionConfig 的人设专属起点 (见 seedInitialStateIfNew):
+ *   { closeness, trust, valence } —— 缺的字段仍退回全局 PARAMS.state.baseline。
+ */
+export function defaultState(overrides = null) {
   const b = PARAMS.state.baseline;
+  const o = overrides ?? {};
   return {
-    mood: { valence: b.valence, arousal: b.arousal },
+    mood: { valence: o.valence ?? b.valence, arousal: b.arousal },
     relationship: {
-      closeness: b.closeness,
+      closeness: o.closeness ?? b.closeness,
       tension: b.tension,
       repair_debt: b.repair_debt,
-      trust: b.trust,
+      trust: o.trust ?? b.trust,
       // #5: 默认紧张指向"用户"(保持旧语义: 没有指向信息时, tension 照旧拉冷对用户的态度)
       tension_target: 'user',
       tension_topic: null,
@@ -351,6 +373,25 @@ export async function writeState(userId, companionId = 'default', state) {
     );
   if (error) throw error;
   return s;
+}
+
+/**
+ * 只在这个 (userId, companionId) 还没有任何 affective_state 记录时, 用人设的关系起点/情绪基线
+ * 落一条初始状态 —— 否则新用户永远从"刚认识"起步, 跟人设里写好的关系阶段(比如已经是恋人/同居)对不上。
+ * 已有记录 (哪怕只是一次回落) 就什么都不做, 不会覆盖正在演变的真实关系。
+ * @param config CompanionConfig (可能为 null); 用到 relationshipStartStage / emotionBaseline.valence。
+ */
+export async function seedInitialStateIfNew(userId, companionId = 'default', config = null) {
+  if (!userId) return null;
+  const existing = await readState(userId, companionId);
+  if (existing.updated_at) return null; // 已有记录, 不是新用户, 不动
+  const relBaseline = resolveRelationshipBaseline(config?.relationshipStartStage);
+  const overrides = {
+    ...(relBaseline ?? {}),
+    ...(typeof config?.emotionBaseline?.valence === 'number' ? { valence: config.emotionBaseline.valence } : {}),
+  };
+  if (Object.keys(overrides).length === 0) return null; // 人设没给起点, 用全局默认即可, 不用特地落库
+  return writeState(userId, companionId, defaultState(overrides));
 }
 
 /** 往状态历史表追加一条快照 (带可选事件标签)。 */

@@ -34,6 +34,11 @@ export const CompanionConfigSchema = z.object({
   // 用户角色的硬性身份事实(短句), 独立于 personality 大段散文单独高显著度注入, 不参与 self 记忆的
   // topK/重要性排序 —— 埋在长人设散文里的否定性事实容易被模型忽略, 见 buildIdentityConstraints (orchestrator.js)。
   identityConstraints: z.array(z.string().min(1)).default([]),
+  // 关系起点标签 (如"恋人"/"同居"), 只在这个 (user, companion) 还没有任何 affective_state 记录时生效一次,
+  // 见 src/state/affect.js resolveRelationshipBaseline / seedInitialStateIfNew。不认识的标签退回全局默认。
+  relationshipStartStage: z.string().min(1).nullable().default(null),
+  // 情绪基线: 目前只用 valence (mood 的初始正负向); 同样只在首次建档时生效一次。
+  emotionBaseline: z.object({ valence: z.number().min(-1).max(1) }).nullable().default(null),
 });
 
 /** 校验/解析任意输入 -> 合法 CompanionConfig (缺字段补默认, 非法抛 ZodError)。 */
@@ -76,6 +81,8 @@ export function personaJsonToConfig(json = {}) {
     // M9 每日训练知识库: 顶层 knowledge 数组 (字符串或 {fact_core,...}), 每晚滴灌进 self 记忆。
     knowledgeBank: Array.isArray(json.knowledge) ? json.knowledge : [],
     identityConstraints: Array.isArray(p.identity_constraints) ? p.identity_constraints : [],
+    relationshipStartStage: json.relationship?.start_stage ?? null,
+    emotionBaseline: typeof json.emotion_baseline?.valence === 'number' ? { valence: json.emotion_baseline.valence } : null,
   });
   const options = {
     useMonologue: json.runtime?.use_monologue ?? true,
@@ -127,6 +134,8 @@ export function configToRow(userId, config) {
       seedFacts: c.seedFacts,
       knowledgeBank: c.knowledgeBank,
       identityConstraints: c.identityConstraints,
+      relationshipStartStage: c.relationshipStartStage,
+      emotionBaseline: c.emotionBaseline,
     },
     updated_at: new Date().toISOString(),
   };

@@ -6,7 +6,7 @@
 
 import { Memory } from '../memory.js';
 import { personaBlock } from '../persona.js';
-import { readState, clampState } from '../state/affect.js';
+import { readState, clampState, seedInitialStateIfNew } from '../state/affect.js';
 import { StateLayer } from '../state/stateLayer.js';
 
 // ============================================================
@@ -128,6 +128,17 @@ export class RelationshipAdapter {
 
   /** 原因同 StateLayerAdapter.evolve: relationship 的增量已随 memory.observe({ useLLM: true }) 完成, 这里不重复写。 */
   async bump() {}
+
+  /**
+   * 只在这个 (user, companion) 还没有任何记录时, 用人设的关系起点/情绪基线落一条初始状态
+   * (见 src/state/affect.js seedInitialStateIfNew)。Orchestrator.init() 在配置刚加载出来时调一次。
+   */
+  async seedIfNew(config) {
+    return seedInitialStateIfNew(this.userId, this.companionId, config).catch((e) => {
+      console.error('[seedIfNew]', e);
+      return null;
+    });
+  }
 
   toPrompt(state) {
     return formatRelationshipPrompt(state);

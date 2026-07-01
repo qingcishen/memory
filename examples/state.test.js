@@ -16,6 +16,8 @@ import {
   detectTensionTarget,
   summarizeTrajectory,
   formatTrajectory,
+  resolveRelationshipBaseline,
+  RELATIONSHIP_STAGE_PRESETS,
 } from '../src/state/affect.js';
 import { applyMoodShiftBoost } from '../src/extract.js';
 import { PARAMS } from '../src/params.js';
@@ -37,6 +39,20 @@ console.log('defaultState / clampState');
   ok('越界 arousal 裁剪到 0', c.mood.arousal === 0);
   ok('越界 tension 裁剪到 1', c.relationship.tension === 1);
   ok('缺失字段补基线 trust=0.5', c.relationship.trust === 0.5);
+
+  // 人设专属关系起点/情绪基线覆盖 (见 seedInitialStateIfNew)
+  const seeded = defaultState({ closeness: 0.78, trust: 0.7, valence: 0.2 });
+  ok('overrides 覆盖 closeness/trust/valence', seeded.relationship.closeness === 0.78 && seeded.relationship.trust === 0.7 && seeded.mood.valence === 0.2);
+  ok('overrides 没给的字段仍是全局基线 (tension=0)', seeded.relationship.tension === 0);
+  ok('不传 overrides 行为不变 (向后兼容)', defaultState(null).relationship.closeness === 0.5);
+}
+
+console.log('resolveRelationshipBaseline (关系起点标签 -> 数值)');
+{
+  ok('"恋人" 命中预设表', resolveRelationshipBaseline('恋人').closeness === RELATIONSHIP_STAGE_PRESETS['恋人'].closeness);
+  ok('"恋人" 的 closeness 落在"很亲密"档位 (>0.75)', resolveRelationshipBaseline('恋人').closeness > 0.75);
+  ok('不认识的标签返回 null', resolveRelationshipBaseline('青梅竹马') === null);
+  ok('空/undefined 返回 null', resolveRelationshipBaseline(null) === null && resolveRelationshipBaseline(undefined) === null);
 }
 
 console.log('inferHeuristicDeltas (从对话嗅信号)');

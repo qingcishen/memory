@@ -405,6 +405,34 @@ console.log('Orchestrator.reply 身份硬约束 (CompanionConfig.identityConstra
   );
 }
 
+console.log('Orchestrator.init 只在配置刚加载出来那一次调用 relationship.seedIfNew (关系起点/情绪基线只落一次初始档)');
+{
+  const deps = makeMocks();
+  deps.relationship.seedIfNewCalls = [];
+  deps.relationship.seedIfNew = async function (config) {
+    this.seedIfNewCalls.push(config);
+  };
+  const config = normalizeCompanionConfig({ name: '可可', relationshipStartStage: '恋人', emotionBaseline: { valence: 0.2 } });
+  const orch = new Orchestrator({ userId: 'u_seed', deps, config, options: { useMonologue: false } });
+
+  await orch.reply('你好');
+  ok('第一轮 init 时调用一次 seedIfNew, 带上 config', deps.relationship.seedIfNewCalls.length === 1 && deps.relationship.seedIfNewCalls[0] === config);
+
+  await orch.reply('在吗');
+  ok('第二轮不重复调用 (同一 Orchestrator 实例 _configLoaded 已置位)', deps.relationship.seedIfNewCalls.length === 1);
+
+  // mock 的 relationship 没有 seedIfNew 方法时 (默认 makeMocks) 不应报错, 静默跳过
+  const plainDeps = makeMocks();
+  const plainOrch = new Orchestrator({ userId: 'u_no_seed', deps: plainDeps, options: { useMonologue: false } });
+  let threw = false;
+  try {
+    await plainOrch.reply('你好');
+  } catch {
+    threw = true;
+  }
+  ok('relationship 没有 seedIfNew 方法时不抛错', !threw);
+}
+
 console.log('Orchestrator.maintain 夜间触发 memory.train (M9 每日训练: 知识滴灌 + 自我日记)');
 {
   const deps = makeMocks();
