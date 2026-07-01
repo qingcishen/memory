@@ -1,5 +1,5 @@
 export { Memory } from './src/memory.js';
-export { extractMemories, extractObservation } from './src/extract.js';
+export { extractMemories } from './src/extract.js';
 export { storeMemories } from './src/store.js';
 export {
   retrieveMemories,
@@ -161,18 +161,6 @@ export {
   ingestAudio,
 } from './src/modal/index.js';
 export { normalizeForHash, dedupHash, findDuplicate } from './src/dedup.js';
-export {
-  extractKnowledgeTriples,
-  storeKnowledgeTriples,
-  queryKnowledgeGraph,
-  recallKnowledgeAsPrompt,
-  entityKey,
-  relationKey,
-  normalizeTriple,
-  normalizeTriples,
-  expandNeighborhood,
-  formatGraphPrompt,
-} from './src/knowledge-graph/index.js';
 export {
   Orchestrator,
   MemoryAdapter,
