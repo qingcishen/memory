@@ -170,6 +170,7 @@ export class Orchestrator {
       timePrompt: buildTimePrompt(new Date(), { weather, gapHours }),
       personaPrompt: this.persona.toPrompt() ?? '',
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
+      identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
       memoryBlock: memoryBlock ?? '',
@@ -235,6 +236,7 @@ export class Orchestrator {
       timePrompt: buildTimePrompt(new Date(), { weather }),
       personaPrompt: this.persona.toPrompt() ?? '',
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
+      identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
       memoryBlock: memoryBlock ?? '',
@@ -357,6 +359,16 @@ function buildPersonaExtra(config) {
   if (config.personality) parts.push(`性格: ${config.personality}`);
   if (Array.isArray(config.traits) && config.traits.length) parts.push(`特点: ${config.traits.join('、')}`);
   return parts.join('\n');
+}
+
+/**
+ * 身份硬约束: 从 CompanionConfig.identityConstraints 渲染成独立的高显著性段落,
+ * 避免像 background 散文里的否定性事实那样被淹没、被模型忽略 (见 docs 里对齐这条的教训)。
+ */
+function buildIdentityConstraints(config) {
+  if (!config?.identityConstraints?.length) return '';
+  const bullets = config.identityConstraints.map((s) => `- ${s}`).join('\n');
+  return `【身份设定·硬约束】以下是关于对方身份的确定事实, 任何时候都不能编造/推测出与之矛盾的内容:\n${bullets}`;
 }
 
 function normalizeHistory(turns = []) {

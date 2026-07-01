@@ -66,6 +66,14 @@ console.log('CompanionConfig zod 校验');
     knowledgeBank: ['可可大学时学过法语', { fact_core: '可可怕辣', importance: 4 }],
   });
   ok('knowledgeBank 接受 string 与 {fact_core,...} 混合', withKnowledge.knowledgeBank.length === 2);
+
+  // 身份硬约束: 用户角色的确定事实, 纯字符串数组, 默认空
+  ok('identityConstraints 默认空数组', c.identityConstraints.length === 0);
+  const withIdentity = normalizeCompanionConfig({
+    name: '可可',
+    identityConstraints: ['他是在读大二学生, 不是上班族'],
+  });
+  ok('identityConstraints 接受字符串数组', withIdentity.identityConstraints.length === 1 && withIdentity.identityConstraints[0] === '他是在读大二学生, 不是上班族');
 }
 
 console.log('personaJsonToConfig: 顶层 knowledge 数组映射到 knowledgeBank (M9 知识滴灌库)');
@@ -79,6 +87,16 @@ console.log('personaJsonToConfig: 顶层 knowledge 数组映射到 knowledgeBank
   ok('没有 knowledge 字段时 knowledgeBank 为空数组', personaJsonToConfig({ persona: { name: '阿冷' } }).config.knowledgeBank.length === 0);
 }
 
+console.log('personaJsonToConfig: persona.identity_constraints 映射到 identityConstraints');
+{
+  const { config } = personaJsonToConfig({
+    meta: { display_name: '阿冷' },
+    persona: { name: '阿冷', identity_constraints: ['不是上班族', '住在学校旁边不用通勤'] },
+  });
+  ok('identity_constraints 数组映射进 identityConstraints', config.identityConstraints.length === 2 && config.identityConstraints[0] === '不是上班族');
+  ok('没有 identity_constraints 字段时为空数组', personaJsonToConfig({ persona: { name: '阿冷' } }).config.identityConstraints.length === 0);
+}
+
 console.log('行 <-> Config 映射 (companions 表)');
 {
   const config = {
@@ -89,11 +107,13 @@ console.log('行 <-> Config 映射 (companions 表)');
     speechStyle: '语气词多',
     appearance: '齐肩黑发, 米色毛衣',
     seedFacts: ['可可爱吃甜的'],
+    identityConstraints: ['他是在读大二学生, 不是上班族'],
   };
   const row = configToRow('u1', config);
   ok('configToRow: user_id/companion_id 落独立列', row.user_id === 'u1' && row.companion_id === 'keke');
   ok('configToRow: name/appearance 冗余成独立列', row.name === '可可' && row.appearance.includes('米色毛衣'));
   ok('configToRow: 其余收进 config jsonb', row.config.personality === '软糯爱撒娇' && row.config.traits.length === 2 && row.config.seedFacts.length === 1);
+  ok('configToRow: identityConstraints 收进 config jsonb', row.config.identityConstraints.length === 1);
 
   // 模拟从表里读回的行 (列 + config jsonb), round-trip 回 Config
   const dbRow = {
@@ -107,9 +127,11 @@ console.log('行 <-> Config 映射 (companions 表)');
   ok('rowToConfig: companionId 取自 companion_id 列', back.companionId === 'keke');
   ok('rowToConfig: name/appearance 还原', back.name === '可可' && back.appearance.includes('米色毛衣'));
   ok('rowToConfig: config jsonb 字段还原', back.personality === '软糯爱撒娇' && back.speechStyle === '语气词多');
+  ok('rowToConfig: 没有 identityConstraints 列时默认空数组', back.identityConstraints.length === 0);
   // 干净的 round-trip: config -> row -> config 保持核心字段
   const rt = rowToConfig(configToRow('u1', config));
   ok('round-trip 保持核心字段', rt.companionId === 'keke' && rt.name === '可可' && rt.speechStyle === '语气词多' && rt.seedFacts.length === 1);
+  ok('round-trip 保持 identityConstraints', rt.identityConstraints.length === 1 && rt.identityConstraints[0] === '他是在读大二学生, 不是上班族');
   ok('rowToConfig(null) -> null', rowToConfig(null) === null);
 }
 

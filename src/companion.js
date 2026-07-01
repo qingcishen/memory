@@ -31,6 +31,9 @@ export const CompanionConfigSchema = z.object({
   appearance: z.string().default(''),                 // 外貌描述 (注入 prompt, 不做图像生成)
   seedFacts: z.array(SeedFactSchema).default([]),      // 初始 self 记忆 (可选)
   knowledgeBank: z.array(SeedFactSchema).default([]),  // M9 每日训练知识库: 每晚按 PARAMS.training.knowledgePerDay 滴灌进 self 记忆
+  // 用户角色的硬性身份事实(短句), 独立于 personality 大段散文单独高显著度注入, 不参与 self 记忆的
+  // topK/重要性排序 —— 埋在长人设散文里的否定性事实容易被模型忽略, 见 buildIdentityConstraints (orchestrator.js)。
+  identityConstraints: z.array(z.string().min(1)).default([]),
 });
 
 /** 校验/解析任意输入 -> 合法 CompanionConfig (缺字段补默认, 非法抛 ZodError)。 */
@@ -72,6 +75,7 @@ export function personaJsonToConfig(json = {}) {
     seedFacts,
     // M9 每日训练知识库: 顶层 knowledge 数组 (字符串或 {fact_core,...}), 每晚滴灌进 self 记忆。
     knowledgeBank: Array.isArray(json.knowledge) ? json.knowledge : [],
+    identityConstraints: Array.isArray(p.identity_constraints) ? p.identity_constraints : [],
   });
   const options = {
     useMonologue: json.runtime?.use_monologue ?? true,
@@ -122,6 +126,7 @@ export function configToRow(userId, config) {
       speechStyle: c.speechStyle,
       seedFacts: c.seedFacts,
       knowledgeBank: c.knowledgeBank,
+      identityConstraints: c.identityConstraints,
     },
     updated_at: new Date().toISOString(),
   };

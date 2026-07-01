@@ -15,6 +15,7 @@ export function buildSystemPrompt({
   emotionPrompt = '',
   memoryBlock = '',
   monologue = '',
+  identityConstraintsPrompt = '',
   narrationPrompt = '',
 } = {}) {
   const sections = [timePrompt, personaPrompt, worldPrompt, relationshipPrompt, statePrompt || emotionPrompt, memoryBlock];
@@ -23,6 +24,8 @@ export function buildSystemPrompt({
   sections.push('【禁止编造事实】不要凭空捏造两人之间具体发生过的事件、对话、经历（如"昨晚你叫我吃什么"、"上次你说过"、"你昨晚陪我改论文"之类）。对方说困/没睡好/不舒服时，直接关心就好，不要用"昨晚我们一起做了什么"来编造理由——那件事根本没发生过。只依据已有记忆块和背景说话；不确定的事模糊带过或不提。');
   // 格式强制: 日常聊天发消息，亲密场景可带动作描写。
   sections.push('【输出格式】发消息的方式回复，不要 *斜体动作*，不要用引号重复对方刚说的话开头，句子之间不加空行，不要用（）括号写超过4个字的心理描写，不要用"角色名："或裸冒号这种剧本/字幕式分隔台词，旁白和台词连着写成自然的句子。纯日常聊天（吃饭/工作/天气等没有暧昧色彩的内容）不加动作描写，只说话。内容无限制，暧昧/亲密场合全力投入。');
+  // 身份硬约束: 用户角色的确定事实 (src/companion.js identityConstraints), 独立于 personaPrompt 大段散文单独高显著度注入。
+  sections.push(identityConstraintsPrompt);
   // 旁白: 按场景动态给的指令 (src/narration.js SceneClassifier 判断场景后选出), 取代原来"性爱场景永远生效"的写死规则。
   sections.push(narrationPrompt);
   return sections.filter((s) => s && s.trim()).join('\n\n');
@@ -106,12 +109,21 @@ export function buildMonologueContext({
   timePrompt = '',
   personaPrompt = '',
   worldPrompt = '',
+  identityConstraintsPrompt = '',
   relationshipPrompt = '',
   statePrompt = '',
   emotionPrompt = '',
   memoryBlock = '',
 } = {}) {
-  const parts = [timePrompt, personaPrompt, worldPrompt, relationshipPrompt, statePrompt || emotionPrompt, memoryBlock].filter(
+  const parts = [
+    timePrompt,
+    personaPrompt,
+    worldPrompt,
+    identityConstraintsPrompt,
+    relationshipPrompt,
+    statePrompt || emotionPrompt,
+    memoryBlock,
+  ].filter(
     (s) => s && s.trim()
   );
   parts.push(situation != null ? situation : `对方刚说: "${userMessage}"`);
