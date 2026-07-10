@@ -48,6 +48,10 @@ export class MemoryAdapter {
 
   /** 输入当前用户消息, 返回可直接注入 system prompt 的记忆块。 */
   async recall(query, opts = {}) {
+    if (opts.debug) {
+      const hits = await this._mem.recall(query, opts);
+      return { block: this._mem.toPrompt(hits), hits };
+    }
     return this._mem.recallAsPrompt(query, opts);
   }
 

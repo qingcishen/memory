@@ -310,7 +310,8 @@ new Orchestrator({
 ```
 // 编排器
 new Orchestrator({ userId, subjectName, companionName, deps?, options? })
-orchestrator.reply(userMessage) -> Promise<string>
+orchestrator.reply(userMessage) -> Promise<{ text: string, parts: ReplyPart[] }>
+orchestrator.proactiveTick(ctx?) -> Promise<null | { text: string, parts: ReplyPart[] }>
 
 // 子系统门面 (编排器依赖的全部接口)
 memory.recall(query, opts?) -> Promise<string>
@@ -328,6 +329,8 @@ relationship.bump() -> Promise<void>
 relationship.toPrompt(state) -> string
 
 // LLM 封装 (可注入)
-llm.generateReply(messages) -> Promise<string>   // 好模型
+llm.generateReply(messages) -> Promise<string | { parts: ReplyPart[] } | { text: string, parts?: ReplyPart[] }> // 好模型; 编排器会归一化
 llm.think(context) -> Promise<string>            // 便宜模型, 内心独白
+
+type ReplyPart = { type: 'dialogue' | 'narration', text: string }
 ```

@@ -78,13 +78,15 @@ export class LocalJsonHistoryStore {
       .map((t) => ({ role: t.role, content: String(t.content), created_at: new Date().toISOString() }));
     if (!rows.length) return;
 
-    this._lock = this._lock.then(async () => {
+    // 上一次写失败不能毒化锁链: 先 catch 掉再排队, 否则一次磁盘错误后所有后续 append 永久静默失败
+    const task = this._lock.catch(() => {}).then(async () => {
       const db = await this.read();
       const key = this.key(userId, companionId);
       db[key] = [...(db[key] ?? []), ...rows].slice(-this.maxTurnsPerChat);
       await this.write(db);
     });
-    return this._lock;
+    this._lock = task;
+    return task;
   }
 
   /** 对方上次说话的时间 (ISO string); 没有则 null。供 P1 分级主动性调度器判断沉默时长。 */

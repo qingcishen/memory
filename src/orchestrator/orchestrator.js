@@ -6,7 +6,7 @@
 // 详见编排器设计方案 §5。
 
 import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
-import { DefaultLLM } from './llm.js';
+import { DefaultLLM, normalizeReplyResult } from './llm.js';
 import { assemble, buildMonologueContext, buildTimePrompt } from './assemble.js';
 import { hoursSince } from '../decay.js';
 import { getCompanion } from '../companion.js';
@@ -145,7 +145,7 @@ export class Orchestrator {
    * 一轮对话主入口: 加载状态+记忆 -> (可选)内心独白 -> 组装 -> 生成回复。
    * 任一子系统加载失败都降级为空, 不影响回复 (见编排器设计方案 §9)。
    */
-  async reply(userMessage) {
+  async reply(userMessage, opts = {}) {
     await this.init();
     // 长时间沉默后清历史: 若距上次用户发言超过 4 小时, 旧消息时间背景与当前严重错位,
     // 清掉旧历史让 LLM 按系统提示的当前时间重新建立上下文, 防止它被几小时前的对话带偏。
@@ -155,10 +155,10 @@ export class Orchestrator {
     }
     this._lastUserMessageAt = Date.now();
 
-    const [stateSnapshot, relState, memoryBlock, weather, worldSnapshot, sceneType, lastUserMessageAt] = await Promise.all([
+    const [stateSnapshot, relState, memoryResult, weather, worldSnapshot, sceneType, lastUserMessageAt] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
-      this.memory.recall(userMessage).catch(() => ''),
+      this.memory.recall(userMessage, { debug: Boolean(opts.debug) }).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
       // 场景分类 (旁白系统): 用最近历史 + 这句话判断当前场景, 决定这一轮用哪条旁白指令。
@@ -168,6 +168,8 @@ export class Orchestrator {
         ? this.historyStore.lastUserMessageAt({ userId: this.userId, companionId: this.companionId }).catch(() => null)
         : Promise.resolve(null),
     ]);
+    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
+    const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
     const gapHours = lastUserMessageAt != null ? hoursSince(lastUserMessageAt) : null;
 
     const promptParts = {
@@ -197,7 +199,7 @@ export class Orchestrator {
 
     const samplingHints =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
-    const reply = await this.llm.generateReply(messages, samplingHints);
+    const { text: reply, parts } = normalizeReplyResult(await this.llm.generateReply(messages, samplingHints));
 
     this.recordHistory([
       { role: 'user', content: userMessage },
@@ -210,7 +212,20 @@ export class Orchestrator {
     // A1: 用户要看她样子时, 后台生成一张自拍 (fire-and-forget, 经 onPhoto 投递, 不阻塞文字)。
     if (PHOTO_REQUEST_RE.test(userMessage)) this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: true });
 
-    return reply;
+    // parts 给调用方(bot.js)按 narration/dialogue 分开发多条消息; text 是拼好的整段, 供日志/兼容用。
+    const debug = opts.debug ? {
+      stateSnapshot,
+      relationshipState: relState,
+      worldSnapshot,
+      sceneType,
+      memoryHits: memoryHits.map(({ embedding, media_embedding, ...m }) => m),
+      promptParts,
+      monologue,
+      messages,
+      samplingHints,
+      historyTurns: this.options.historyTurns,
+    } : undefined;
+    return { text: reply, parts, ...(debug ? { debug } : {}) };
   }
 
   /**
@@ -265,14 +280,14 @@ export class Orchestrator {
 
     const samplingHints =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
-    const proactive = await this.llm.generateReply(messages, samplingHints);
+    const { text: proactive, parts } = normalizeReplyResult(await this.llm.generateReply(messages, samplingHints));
 
     if (ctx.recordHistory !== false) this.recordHistory([{ role: 'assistant', content: proactive }]);
 
     // A1: 主动找你时也可能顺手分享一张照片 (在外面看到风景/猫狗的随手拍, 或心情好的自拍)。
     this._lastPhoto = this.maybePhoto(stateSnapshot, {});
 
-    return proactive;
+    return { text: proactive, parts };
   }
 
   /**

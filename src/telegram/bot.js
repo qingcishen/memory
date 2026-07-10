@@ -1,6 +1,7 @@
 import dotenv from 'dotenv';
 import fs from 'node:fs';
 import https from 'node:https';
+import path from 'node:path';
 import { Orchestrator, ProactiveScheduler, SupabaseRateLimitStore, LocalJsonHistoryStore, SupabaseHistoryStore } from '../../index.js';
 import { loadPersonaConfig } from '../companion.js';
 import { CompanionRuntime } from '../runtime/index.js';
@@ -40,10 +41,42 @@ export function telegramUserId(chatId) {
 
 export function chunkMessage(text, limit = MAX_TELEGRAM_MESSAGE_LENGTH) {
   const src = String(text ?? '').trim();
-  if (!src) return [];
+  if (!src) return ['...']; // 空回复也要发出点什么, 别悄无声息地什么都不发
   const chunks = [];
-  for (let i = 0; i < src.length; i += limit) chunks.push(src.slice(i, i + limit));
+  let i = 0;
+  while (i < src.length) {
+    let end = Math.min(i + limit, src.length);
+    // 切点落在代理对中间会劈出两个非法半字符 (emoji 变乱码, Telegram 可能整条拒收), 往前挪一位
+    if (end < src.length && isHighSurrogate(src.charCodeAt(end - 1))) end -= 1;
+    chunks.push(src.slice(i, end));
+    i = end;
+  }
   return chunks;
+}
+
+function isHighSurrogate(code) {
+  return code >= 0xd800 && code <= 0xdbff;
+}
+
+/**
+ * parts (来自 Orchestrator.reply()/proactiveTick()) -> 实际要发的一组消息, 按顺序、每条独立发送。
+ * dialogue part 过一遍 stripNarration 兜底(防止偶尔有旁白残留混进台词); narration part 是独立字段,
+ * 原样发, 不再需要从文字里抠。超长的单条 part 仍按 chunkMessage 拆分。纯函数, 不发消息。
+ */
+export function buildOutgoingMessages(parts = []) {
+  const out = [];
+  for (const p of parts ?? []) {
+    const type = p?.type === 'narration' ? 'narration' : 'dialogue';
+    const cleaned = type === 'narration' ? String(p?.text ?? '').trim() : stripNarration(String(p?.text ?? ''));
+    if (!cleaned) continue;
+    for (const chunk of chunkMessage(cleaned)) out.push({ type, text: chunk });
+  }
+  return out;
+}
+
+/** 按文字长度估一个"打字用了多久"的延迟, 让连续发消息不是瞬间刷屏。纯函数。 */
+export function typingDelayMs(text = '') {
+  return Math.min(4000, Math.max(600, String(text ?? '').length * 40));
 }
 
 class TelegramApi {
@@ -126,6 +159,8 @@ export class TelegramMemoryBot {
     this.runtimes = new Map();
     this.chatQueues = new Map();
     this.stopped = false;
+    this.statusFile = process.env.CYBER_UI_STATUS_FILE || '';
+    this.statusTimer = null;
     // 主动性策略: 安静时段 + 冷却 + 每日上限 (东八区)。
     this.proactivePolicy = {
       quietHours: { start: 23, end: 8 },
@@ -163,6 +198,22 @@ export class TelegramMemoryBot {
     return this.bots.get(key);
   }
 
+  /**
+   * 把 Orchestrator.reply()/proactiveTick() 返回的 parts 依次发出去, 每条之间模拟一个打字延迟
+   * (typingDelayMs), 让连续的旁白/多条台词读起来像真人在打字, 而不是瞬间刷屏。
+   * 发送失败会抛出 (不在这里吞掉) —— 主动消息路径没人在等、可以整体 catch 掉忽略;
+   * 用户主动发消息这条路径需要失败能冒泡到外层, 好触发"卡了一下"的兜底回复。
+   */
+  async sendParts(chatId, parts) {
+    const outgoing = buildOutgoingMessages(parts);
+    for (const msg of outgoing) {
+      await this.api.sendChatAction(chatId, 'typing').catch(() => {});
+      await sleep(typingDelayMs(msg.text));
+      await this.api.sendMessage(chatId, msg.text);
+    }
+    return outgoing;
+  }
+
   /** 给一个 chat 起后台"活着"循环: 维护(心情回落/作息/生病/夜间反思) + 主动消息(投递回这个 chat)。 */
   startRuntime(chatId, orchestrator) {
     const key = String(chatId);
@@ -171,10 +222,10 @@ export class TelegramMemoryBot {
       orchestrator,
       stateStore: new SupabaseRateLimitStore(),
       policy: this.proactivePolicy,
-      // 主动消息直接发回这个 chat
+      // 主动消息直接发回这个 chat; 没人在等这条消息, 发送失败就整体忽略, 不影响下次主动性 tick。
       deliver: async ({ message }) => {
-        for (const chunk of chunkMessage(message)) await this.api.sendMessage(chatId, chunk).catch(() => {});
-        console.log(`[telegram] proactive sent chat=${chatId} chars=${message.length}`);
+        const sent = await this.sendParts(chatId, message.parts).catch(() => []);
+        console.log(`[telegram] proactive sent chat=${chatId} chars=${message.text.length} parts=${sent.length}`);
       },
       // 到期的预期记忆 ("上次面试怎么样了") 作为主动由头
       getDueItems: () => orchestrator.memory.checkProspective?.({}).catch(() => []) ?? [],
@@ -202,6 +253,7 @@ export class TelegramMemoryBot {
         : '[telegram] allowed chats: all',
     );
     console.log('[telegram] waiting for messages...');
+    this.startStatusReporter();
     while (!this.stopped) {
       await this.pollOnce().catch(async (error) => {
         console.error('[telegram] poll error:', formatError(error));
@@ -213,6 +265,32 @@ export class TelegramMemoryBot {
   stop() {
     this.stopped = true;
     for (const rt of this.runtimes.values()) rt.stop();
+    if (this.statusTimer) clearInterval(this.statusTimer);
+    this.statusTimer = null;
+    this.writeStatus().catch(() => {});
+  }
+
+  startStatusReporter() {
+    if (!this.statusFile || this.statusTimer) return;
+    this.writeStatus().catch(() => {});
+    this.statusTimer = setInterval(() => this.writeStatus().catch(() => {}), 10000);
+    this.statusTimer.unref?.();
+  }
+
+  async writeStatus() {
+    if (!this.statusFile) return;
+    const queue = await queueStats().catch(() => null);
+    const payload = {
+      updatedAt: new Date().toISOString(),
+      stopped: this.stopped,
+      activeChats: this.bots.size,
+      runtimes: this.runtimes.size,
+      queuedChats: this.chatQueues.size,
+      metrics: metricsSnapshot(),
+      queue,
+    };
+    fs.mkdirSync(path.dirname(this.statusFile), { recursive: true });
+    fs.writeFileSync(this.statusFile, `${JSON.stringify(payload, null, 2)}\n`);
   }
 
   async pollOnce() {
@@ -301,12 +379,9 @@ export class TelegramMemoryBot {
     const bot = this.botForChat(chatId);
     console.log(`[telegram] replying chat=${chatId} timeoutMs=${this.replyTimeoutMs}`);
     try {
-      const raw = await withTimeout(bot.reply(text), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
-      const reply = stripNarration(raw);
-      for (const chunk of chunkMessage(reply)) {
-        await this.api.sendMessage(chatId, chunk);
-      }
-      console.log(`[telegram] replied chat=${chatId} chars=${reply.length}`);
+      const { text: reply, parts } = await withTimeout(bot.reply(text), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
+      const sent = await this.sendParts(chatId, parts);
+      console.log(`[telegram] replied chat=${chatId} chars=${reply.length} parts=${sent.length}`);
     } catch (error) {
       console.error(`[telegram] reply failed chat=${chatId}:`, formatError(error));
       await this.api

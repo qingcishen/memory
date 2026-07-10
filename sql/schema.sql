@@ -88,6 +88,57 @@ create index if not exists memories_embedding_idx
   on memories using ivfflat (embedding vector_cosine_ops) with (lists = 100);
 
 -- ------------------------------------------------------------
+--  K1 · 结构化知识图谱。
+--  与 src/engine/graph.js 的临时语义相似图分工:
+--  相似图负责联想扩散; 本图持久化可解释的“实体 —关系→ 实体”事实。
+-- ------------------------------------------------------------
+create table if not exists knowledge_entities (
+  id             uuid primary key default gen_random_uuid(),
+  user_id        text not null,
+  companion_id   text not null default 'default',
+  entity_key     text not null,                    -- 规范化后的实体键, 用于去重
+  canonical_name text not null,                    -- 展示名称
+  entity_type    text not null default 'concept'
+                 check (entity_type in ('person', 'place', 'organization', 'thing', 'event', 'concept')),
+  aliases        jsonb not null default '[]'::jsonb,
+  embedding      vector(1536),                     -- 查询入口实体的语义向量
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  unique (user_id, companion_id, entity_key)
+);
+
+create table if not exists knowledge_relations (
+  id               uuid primary key default gen_random_uuid(),
+  user_id          text not null,
+  companion_id     text not null default 'default',
+  source_entity_id uuid not null references knowledge_entities(id) on delete cascade,
+  relation         text not null,                  -- 稳定的 snake_case 关系名
+  target_entity_id uuid not null references knowledge_entities(id) on delete cascade,
+  confidence       real not null default 0.7 check (confidence >= 0 and confidence <= 1),
+  evidence         text,                           -- 对话中的简短依据
+  source_memory_id uuid references memories(id) on delete set null,
+  status           text not null default 'active'
+                   check (status in ('active', 'superseded', 'retracted')),
+  valid_from       timestamptz,
+  valid_to         timestamptz,
+  created_at       timestamptz not null default now(),
+  updated_at       timestamptz not null default now(),
+  check (source_entity_id <> target_entity_id),
+  unique (user_id, companion_id, source_entity_id, relation, target_entity_id)
+);
+
+create index if not exists knowledge_entities_scope_idx
+  on knowledge_entities (user_id, companion_id, entity_key);
+create index if not exists knowledge_entities_embedding_idx
+  on knowledge_entities using ivfflat (embedding vector_cosine_ops) with (lists = 100);
+create index if not exists knowledge_relations_source_idx
+  on knowledge_relations (user_id, companion_id, source_entity_id) where status = 'active';
+create index if not exists knowledge_relations_target_idx
+  on knowledge_relations (user_id, companion_id, target_entity_id) where status = 'active';
+create index if not exists knowledge_relations_memory_idx
+  on knowledge_relations (source_memory_id) where source_memory_id is not null;
+
+-- ------------------------------------------------------------
 --  M1 · 关系-情感状态机 (见 docs/DEVELOPMENT.md §1.1, M1)
 --  一个用户一行: 她当下的心情 + 你俩关系的状态。
 --  写入与读取见 src/state/affect.js; mood 随时间回落, relationship 主要被事件改变。
@@ -379,3 +430,40 @@ as $$
   order by m.embedding <=> query_embedding
   limit match_count;
 $$;
+
+-- ------------------------------------------------------------
+--  K1 · 知识图谱入口实体向量召回。
+--  RPC 只负责找与 query 最接近的入口实体; 有界多跳展开由应用层完成。
+--  先删除历史签名, 避免返回列变化时 create or replace 无法升级。
+-- ------------------------------------------------------------
+drop function if exists match_knowledge_entities(text, vector, int);
+drop function if exists match_knowledge_entities(text, vector, text, int);
+create or replace function match_knowledge_entities (
+  p_user_id       text,
+  query_embedding vector(1536),
+  p_companion_id  text default 'default',
+  match_count     int default 4
+)
+returns table (
+  id             uuid,
+  canonical_name text,
+  entity_type    text,
+  similarity     real
+)
+language sql stable
+as $$
+  select
+    e.id,
+    e.canonical_name,
+    e.entity_type,
+    (1 - (e.embedding <=> query_embedding))::real as similarity
+  from knowledge_entities e
+  where e.user_id = p_user_id
+    and e.companion_id = p_companion_id
+    and e.embedding is not null
+  order by e.embedding <=> query_embedding
+  limit greatest(0, least(coalesce(match_count, 4), 50));
+$$;
+
+-- 让 Supabase PostgREST 立即识别新表 / 新 RPC, 避免等待 schema cache 自动刷新。
+notify pgrst, 'reload schema';

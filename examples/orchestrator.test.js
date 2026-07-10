@@ -91,11 +91,11 @@ console.log('buildGapHint (时间跳跃感: 距上次说话过了多久, 分级�
 console.log('assemble (system + 短期历史裁剪 + 当前消息)');
 {
   const withSystem = assemble({ userMessage: '你好', history: [], personaPrompt: 'A' });
-  ok('有 system 段时排在最前', withSystem[0].role === 'system' && withSystem[0].content === 'A');
+  ok('有 system 段时排在最前', withSystem[0].role === 'system' && withSystem[0].content.includes('A'));
   ok('最后一条是当前用户消息', withSystem.at(-1).role === 'user' && withSystem.at(-1).content === '你好');
 
   const noSystem = assemble({ userMessage: '你好', history: [] });
-  ok('所有段落都为空时不插入 system', noSystem.length === 1 && noSystem[0].role === 'user');
+  ok('业务段为空时仍插入恒定事实/格式规则 system', noSystem.length === 2 && noSystem[0].content.includes('【禁止编造事实】'));
 
   const history = [
     { role: 'user', content: '1' },
@@ -288,8 +288,9 @@ console.log('Orchestrator.reply 完整管线 (deps 全 mock)');
     options: { historyTurns: 1 },
   });
 
-  const reply1 = await orch.reply('诗雅最近怎么样?');
-  ok('reply 返回 llm.generateReply 的结果', reply1 === '嗯嗯, 我记得呀!');
+  const reply1 = await orch.reply('诗雅最近怎么样?', { debug: true });
+  ok('reply 返回 text + parts', reply1.text === '嗯嗯, 我记得呀!' && reply1.parts[0].type === 'dialogue');
+  ok('debug 模式返回最终 messages 和状态快照', Array.isArray(reply1.debug?.messages) && reply1.debug?.stateSnapshot?.life?.energy === 0.4);
   ok('persona.load 只在首轮调用一次', deps.persona.loadCalls === 1);
   ok('memory.recall 收到当前用户消息', deps.memory.recallCalls[0] === '诗雅最近怎么样?');
   ok('stateLayer.snapshot 被调用', deps.stateLayer.snapshotCalls === 1);
@@ -315,7 +316,7 @@ console.log('Orchestrator.reply 完整管线 (deps 全 mock)');
 
   // 第二轮: 验证短期历史按 historyTurns=1 (2条) 注入且持续裁剪
   const reply2 = await orch.reply('那她现在心情怎么样?');
-  ok('第二轮回复正常返回', reply2 === '嗯嗯, 我记得呀!');
+  ok('第二轮回复正常返回', reply2.text === '嗯嗯, 我记得呀!');
   ok('persona.load 不重复调用 (已缓存)', deps.persona.loadCalls === 1);
   ok('history 仍裁剪在 2 条以内', orch.history.length === 2);
 
@@ -463,7 +464,7 @@ console.log('Orchestrator.proactiveTick (主动性入口复用组装链路)');
   ok('跳过时不调用生成模型', deps.llm.generateCalls.length === 0);
 
   const msg = await orch.proactiveTick({ reason: '很久没聊天', style: '轻一点' });
-  ok('主动消息返回 generateReply 的结果', msg === '嗯嗯, 我记得呀!');
+  ok('主动消息返回 text + parts', msg.text === '嗯嗯, 我记得呀!' && msg.parts[0].type === 'dialogue');
   ok('主动消息会检索记忆', deps.memory.recallCalls.length === 1);
   ok('主动消息默认也会生成内心独白', deps.llm.thinkCalls.length === 1);
   ok('主动独白输入不把主动开场指令当成"对方刚说"', !deps.llm.thinkCalls[0].includes('对方刚说'));
@@ -472,7 +473,7 @@ console.log('Orchestrator.proactiveTick (主动性入口复用组装链路)');
   ok('主动 prompt 最后一条是内部主动开场指令', messages.at(-1).role === 'user' && messages.at(-1).content.includes('主动找对方'));
   ok('主动 prompt 带入 reason/style', messages.at(-1).content.includes('很久没聊天') && messages.at(-1).content.includes('轻一点'));
   ok('主动生成同样收到 stateLayer samplingHints', opts.temperature === 0.91 && opts.maxTokens === 333);
-  ok('主动消息默认记入短期历史为 assistant', orch.history.at(-1).role === 'assistant' && orch.history.at(-1).content === msg);
+  ok('主动消息默认记入短期历史为 assistant', orch.history.at(-1).role === 'assistant' && orch.history.at(-1).content === msg.text);
 }
 
 console.log('Orchestrator A1 拍照分享 (onPhoto 投递回调 + 用户要求触发自拍)');

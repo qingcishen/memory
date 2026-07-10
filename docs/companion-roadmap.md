@@ -46,7 +46,7 @@
 
 ```
 // 编排器
-orchestrator.reply(userMessage) -> Promise<string>
+orchestrator.reply(userMessage) -> Promise<{ text: string, parts: ReplyPart[] }>
 
 // 门面(每个子系统只暴露这些)
 persona.toPrompt() -> string
@@ -75,8 +75,10 @@ appearance.shouldSendSelfie(context) -> bool
 appearance.selfie(snapshot) -> Promise<imageUrl>    // 优先查库, 缺则后台生成
 
 // LLM 封装
-llm.generateReply(messages) -> Promise<string>
+llm.generateReply(messages) -> Promise<string | { parts: ReplyPart[] } | { text: string, parts?: ReplyPart[] }>
 llm.think(context) -> Promise<string>
+
+type ReplyPart = { type: 'dialogue' | 'narration', text: string }
 ```
 
 **冻结之后,这几个子系统就能并行开发**——每个终端/每个分支负责一个,只要不碰别人的门面签名,合并时不会打架。你那套多终端并行正好用在这。

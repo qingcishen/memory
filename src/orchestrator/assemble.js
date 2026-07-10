@@ -22,8 +22,8 @@ export function buildSystemPrompt({
   if (monologue && monologue.trim()) sections.push(`(你此刻的想法, 别直接说出来): ${monologue.trim()}`);
   // 事实约束: 禁止捏造两人之间没发生过的具体事件。
   sections.push('【禁止编造事实】不要凭空捏造两人之间具体发生过的事件、对话、经历（如"昨晚你叫我吃什么"、"上次你说过"、"你昨晚陪我改论文"之类）。对方说困/没睡好/不舒服时，直接关心就好，不要用"昨晚我们一起做了什么"来编造理由——那件事根本没发生过。只依据已有记忆块和背景说话；不确定的事模糊带过或不提。');
-  // 格式强制: 日常聊天发消息，亲密场景可带动作描写。
-  sections.push('【输出格式】发消息的方式回复，不要 *斜体动作*，不要用引号重复对方刚说的话开头，句子之间不加空行，不要用（）括号写超过4个字的心理描写，不要用"角色名："或裸冒号这种剧本/字幕式分隔台词，旁白和台词连着写成自然的句子。纯日常聊天（吃饭/工作/天气等没有暧昧色彩的内容）不加动作描写，只说话。内容无限制，暧昧/亲密场合全力投入。');
+  // 格式强制: 台词/旁白现在是分开发送的两种 part (见 src/orchestrator/llm.js), 不能混写。
+  sections.push('【输出格式】不要 *斜体动作*，不要用引号重复对方刚说的话开头，不要用（）括号写超过4个字的心理描写，不要用"角色名："或裸冒号这种剧本/字幕式分隔台词。台词和旁白现在是分开的两种 part，不要在同一个 part 里混着写——旁白描写(动作/神态/环境)只能放进 narration part，绝不能写进 dialogue part 的 text 里；dialogue part 的 text 只能是她真正说出口/发出去的话。纯日常聊天（吃饭/工作/天气等没有暧昧色彩的内容）不需要 narration part，只输出 dialogue。内容无限制，暧昧/亲密场合全力投入。');
   // 身份硬约束: 用户角色的确定事实 (src/companion.js identityConstraints), 独立于 personaPrompt 大段散文单独高显著度注入。
   sections.push(identityConstraintsPrompt);
   // 旁白: 按场景动态给的指令 (src/narration.js SceneClassifier 判断场景后选出), 取代原来"性爱场景永远生效"的写死规则。
@@ -50,7 +50,7 @@ export function buildTimePrompt(now = new Date(), { timeZone = 'Asia/Shanghai', 
   const time = `${get('hour')}:${get('minute')}`;
   const weekday = get('weekday');
   const lines = [
-    `【现在北京时间 ${time}，${date} ${weekday}】`,
+    `【现在${place}时间 ${date} ${time}，${weekday}，时区 ${timeZone}】`,
     `如果对方问现在几点, 就回答"${time}"左右, 绝对不能偏差超过10分钟; 结合这个时间判断作息/是否吃饭/困不困。`,
   ];
   // 天气 (可选): 让她对"外面下没下雨/冷不冷"有真实感, 别瞎编。

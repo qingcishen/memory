@@ -19,3 +19,5 @@ build/
 .turbo/
 
 .DS_Store
+.FsSyncLocks/
+.claude/settings.local.json

@@ -26,7 +26,11 @@ cp .env.example .env   # 填入 Supabase / LLM / Embedding 凭证
 
 在 Supabase SQL Editor 执行 `sql/schema.sql`(建表 + pgvector + 检索函数)。
 
+> 不想手改 `.env`?直接 `npm run ui` 打开本地控制台,在浏览器里填密钥、测连接、启停 bot,见下方 [本地控制台](#本地控制台)。
+
 > **升级老库**:`sql/schema.sql` 是幂等的,表结构有变更时(如新增 `companion_id` 列 / `companions`、`appearance_assets` 表 / 修改 `match_memories` RPC),把整段重新执行一遍即可平滑升级,不会动到已有数据。
+
+只补知识图谱数据库时,可单独执行 `sql/knowledge-graph.sql`;它会创建实体表、关系表、遍历索引和 `match_knowledge_entities` 入口查询函数,可重复执行。
 
 LLM 用 OpenAI 兼容接口,DeepSeek 直接可用;Embedding 默认 OpenAI `text-embedding-3-small`(1536 维)。换 embedding 模型记得同步改 schema 里的 `vector(维度)`。
 
@@ -85,8 +89,9 @@ import { Orchestrator } from 'cyber-memory';
 
 const bot = new Orchestrator({ userId: 'u_123', subjectName: '诗雅', companionName: '可可' });
 
-const reply = await bot.reply(userMessage);
+const { text: reply, parts } = await bot.reply(userMessage);
 // 同步路径: persona/relationship/stateLayer/memory 的 toPrompt 拼成 system + 短期历史 + 当前消息 → 生成回复
+// parts 是按 dialogue/narration 拆好的发送片段; reply 是拼好的纯文本, 适合日志和兼容旧调用
 // 回复返回后, stateLayer.evolve / memory.observe / relationship.bump 已在后台 fire-and-forget 触发
 ```
 
@@ -112,6 +117,7 @@ const proactive = await bot.proactiveTick({
   reason: '很久没聊天',
   shouldSend: quietHoursPassed,
 });
+// proactive: null | { text, parts }
 ```
 
 需要安静时间、冷却间隔、每日上限时,用 `ProactiveScheduler` 包一层。生产环境建议用
@@ -136,6 +142,31 @@ const scheduler = new ProactiveScheduler({
 
 await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 ```
+
+## 本地控制台
+
+```bash
+npm run ui   # 打开 http://127.0.0.1:8787
+```
+
+浏览器里的管理台,零新依赖(node 内置 http + fetch),分五个页签:
+
+**配置页**:
+
+- **填配置**:Supabase / LLM / Embedding / Telegram / 天气的所有密钥和参数,表单化填写,保存直接写回 `.env`(保留注释和顺序);密钥读取时只回显末 4 位,原文不出服务端。每个密钥旁边都有"去获取 ↗"直达对应平台的生成页面。
+- **测连接**:每组配置一键体检——Supabase 会区分"key 错了"和"连上了但没建表";Embedding 会校验输出维度是否等于 schema 要求的 1536;直连不通时会提示是网络/代理问题而不是甩一句 fetch failed。
+- **执行 SQL**:Supabase 卡片里的 SQL 工具箱可以一键执行 `sql/` 目录下的建表脚本(首次接入不用开 SQL Editor),也能跑自定义 SQL 查数据。走 Supabase Management API,需要额外配一个 Personal Access Token(`sbp_` 开头,控制台 Account → Access Tokens 生成);`service_role` key 只能读写表,执行不了建表语句,所以这项是单独的凭证。
+- **启停 bot**:页面上直接启动/停止 Telegram bot 子进程,实时看运行日志,改完配置重启即生效。
+- **安全边界**:只绑定 `127.0.0.1`,不对外网开放;`.env` 写入后权限收紧到 600。
+
+**其余页签**:
+
+- **记忆**:直接浏览 memories 表——按用户筛、按内容搜,类型/主体/重要性/情绪一目了然;可选显示被新记忆取代的旧版本(划线样式)。
+- **知识图谱**:实体云 + "实体 —关系→ 实体"列表(置信度、对话依据);没建表时会引导你去 SQL 工具箱执行 `knowledge-graph.sql`。
+- **人设**:直接编辑 `companions/*.json`(名字/性格/说话风格/外貌/作息),保存前校验 JSON,也能从 default 模板新建角色。
+- **试聊**:编排器调试场,和 Telegram 完全同一条管线(人设 + 记忆 + 状态 + 世界观 + 旁白),narration/dialogue 分气泡显示。注意是真实调用:走 LLM、写记忆库;换个用户 ID 就是一段全新的关系。
+
+端口可用 `UI_PORT` 覆盖。配置项 schema 在 `src/ui/server.js` 的 `CONFIG_SCHEMA`,加字段只改那一处。
 
 ## Telegram 接入
 
@@ -237,6 +268,7 @@ Telegram 的 `chat.id` 会映射成 `userId = telegram:<chat.id>`, 因此每个�
 | `src/modal/` | 多模态 (M6): `image`(vision caption + `recallMedia` 图搜图) / `audio`(ASR + 语气→affect) |
 | `src/memory.js` | 门面类 `Memory` |
 | `src/orchestrator/` | 编排器: `Orchestrator` 门面 + 把 Memory/persona/stateLayer/relationship 适配成统一 `toPrompt` 接口, `assemble` 纯本地拼接 prompt |
+| `src/ui/` | 本地控制台 (`npm run ui`): 浏览器里填密钥写回 `.env` + 连接体检 + Telegram bot 启停; `envfile.js` 为纯逻辑可单测 |
 
 ## 测试
 

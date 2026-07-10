@@ -1,5 +1,10 @@
-// 整套系统的"性格"参数都在这里调。纯数据, 无副作用。
-export const PARAMS = {
+// 整套系统的"性格"参数都在这里调。
+// config/params.json 可由本地控制台写入少量覆盖项；缺失或损坏时安全退回默认值。
+import fs from 'node:fs';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+export const DEFAULT_PARAMS = {
   // 衰减: 每 24h 记忆强度乘以 baseDecay。越接近 1 忘得越慢。
   baseDecay: 0.99,
   // 情绪对衰减的保护: emotion=1 时衰减率向 1 靠拢的程度。
@@ -225,3 +230,30 @@ export const PARAMS = {
     knowledgePerDay: 1, // 角色知识库里每晚最多滴灌几条新的 self 事实
   },
 };
+
+function readOverrides() {
+  try {
+    const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+    const file = path.join(root, 'config', 'params.json');
+    if (!fs.existsSync(file)) return {};
+    const parsed = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
+function mergeParams(base, overrides) {
+  const out = { ...base };
+  for (const [key, value] of Object.entries(overrides ?? {})) {
+    if (!(key in base)) continue;
+    if (value && typeof value === 'object' && !Array.isArray(value) && base[key] && typeof base[key] === 'object' && !Array.isArray(base[key])) {
+      out[key] = mergeParams(base[key], value);
+    } else if (typeof value === typeof base[key] || (value === null && base[key] === null)) {
+      out[key] = value;
+    }
+  }
+  return out;
+}
+
+export const PARAMS = mergeParams(DEFAULT_PARAMS, readOverrides());

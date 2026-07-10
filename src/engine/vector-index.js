@@ -57,17 +57,26 @@ export class VectorIndex {
    */
   query(queryVec, opts = {}) {
     const k = opts.k ?? 30;
+    if (!(k > 0)) return [];
     const minSim = opts.minSim ?? -1;
     const mods = opts.modalities ?? [...this.buckets.keys()];
 
-    const scored = [];
+    const top = [];
     for (const mod of mods) {
       for (const e of this.buckets.get(mod) ?? []) {
         const sim = cosine(queryVec, e.vec);
-        if (sim >= minSim) scored.push({ ...e.mem, similarity: sim });
+        if (sim < minSim) continue;
+        insertTopK(top, { entry: e, similarity: sim }, k);
       }
     }
-    scored.sort((a, b) => b.similarity - a.similarity);
-    return scored.slice(0, k);
+    return top.map(({ entry, similarity }) => ({ ...entry.mem, similarity }));
   }
+}
+
+function insertTopK(top, item, k) {
+  let i = top.length;
+  while (i > 0 && top[i - 1].similarity < item.similarity) i--;
+  if (i >= k) return;
+  top.splice(i, 0, item);
+  if (top.length > k) top.pop();
 }
