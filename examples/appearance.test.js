@@ -1,6 +1,6 @@
 // A1 纯逻辑/骨架测试: 出图 provider(mock) + 自拍策略 + 图库命中。不连网, 注入假 read/write/provider。
 import assert from 'node:assert';
-import { MockImageProvider, HttpImageProvider } from '../src/appearance/provider.js';
+import { MockImageProvider, HttpImageProvider, OpenAIImageProvider } from '../src/appearance/provider.js';
 import { shouldSendSelfie, canSendSelfie, buildSelfiePrompt, buildScenePrompt, decidePhoto, Selfie } from '../src/appearance/selfie.js';
 
 let passed = 0;
@@ -28,6 +28,28 @@ console.log('HttpImageProvider (未配置 endpoint 时降级 mock, 不崩)');
   const h = new HttpImageProvider({});
   const r = await h.generate('test');
   ok('无 endpoint → 降级 mock url', r.url.startsWith('mock://'));
+}
+
+console.log('OpenAIImageProvider (Seedream/OpenAI 兼容图片接口)');
+{
+  let request = null;
+  const p = new OpenAIImageProvider({
+    baseURL: 'https://ark.test/api/v3/',
+    apiKey: 'secret',
+    model: 'seedream-pro',
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return new Response(JSON.stringify({ data: [{ url: 'https://cdn.test/generated.png' }] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const img = await p.generate('一个自然自拍');
+  ok('调用标准 /images/generations', request.url === 'https://ark.test/api/v3/images/generations');
+  ok('使用 Bearer 鉴权', request.options.headers.authorization === 'Bearer secret');
+  const body = JSON.parse(request.options.body);
+  ok('请求带模型和提示词', body.model === 'seedream-pro' && body.prompt === '一个自然自拍');
+  ok('读取返回图片 URL', img.url === 'https://cdn.test/generated.png');
 }
 
 console.log('shouldSendSelfie (被状态触发, 不是随机/有求必应)');

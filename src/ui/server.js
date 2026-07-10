@@ -79,18 +79,35 @@ export const CONFIG_SCHEMA = [
   },
   {
     id: 'llm',
-    title: 'LLM 对话模型',
-    hint: '负责记忆提取 / 反思 / 内心独白与回复生成。任何 OpenAI 兼容端点都行, DeepSeek 开箱即用。',
+    title: '后台基础模型',
+    hint: '负责记忆提取 / 反思 / 内心独白。建议使用稳定且成本较低的 OpenAI 兼容模型。',
     testable: true,
     fields: [
       { key: 'LLM_BASE_URL', label: 'Base URL', placeholder: 'https://api.deepseek.com' },
       { key: 'LLM_API_KEY', label: 'API Key', secret: true, placeholder: 'sk-...', link: { label: '去 DeepSeek 获取', url: 'https://platform.deepseek.com/api_keys' } },
       { key: 'LLM_MODEL', label: '基础模型 (提取/反思)', placeholder: 'deepseek-chat' },
-      { key: 'REPLY_MODEL', label: '回复模型 (可选, 留空则同基础模型)', placeholder: 'deepseek-chat' },
     ],
-    advanced: [
-      { key: 'REPLY_BASE_URL', label: '回复模型独立 Base URL (可选, 让回复走另一家"好模型")', placeholder: '留空则复用上面的 Base URL' },
-      { key: 'REPLY_API_KEY', label: '回复模型独立 API Key (可选)', secret: true, placeholder: '留空则复用上面的 API Key' },
+  },
+  {
+    id: 'reply',
+    title: '最终回复模型',
+    hint: '直接生成角色对用户说的话。推荐使用火山方舟 Doubao Seed Pro；留空时回退后台基础模型。',
+    testable: true,
+    fields: [
+      { key: 'REPLY_BASE_URL', label: 'Base URL', placeholder: 'https://ark.cn-beijing.volces.com/api/v3' },
+      { key: 'REPLY_API_KEY', label: 'API Key', secret: true, placeholder: '火山方舟 API Key；留空复用基础模型密钥' },
+      { key: 'REPLY_MODEL', label: '回复模型', placeholder: 'doubao-seed-2-1-pro-260628' },
+    ],
+  },
+  {
+    id: 'vision',
+    title: '图片理解模型',
+    hint: '负责看懂用户发来的图片并生成记忆描述。默认可以复用回复模型。',
+    testable: true,
+    fields: [
+      { key: 'VISION_BASE_URL', label: 'Base URL', placeholder: '留空则复用回复模型地址' },
+      { key: 'VISION_API_KEY', label: 'API Key', secret: true, placeholder: '留空则复用回复模型密钥' },
+      { key: 'VISION_MODEL', label: '视觉模型', placeholder: 'doubao-seed-2-1-pro-260628' },
     ],
   },
   {
@@ -107,6 +124,28 @@ export const CONFIG_SCHEMA = [
       { key: 'EMBED_BASE_URL', label: 'Base URL', placeholder: 'https://api.openai.com/v1' },
       { key: 'EMBED_API_KEY', label: 'API Key', secret: true, placeholder: '留空则复用 LLM API Key' },
       { key: 'EMBED_MODEL', label: '模型', placeholder: 'text-embedding-3-small' },
+    ],
+  },
+  {
+    id: 'asr',
+    title: '语音识别 ASR',
+    hint: '把语音转成文字后写入记忆。默认复用 OpenAI 向量模型的地址与密钥。',
+    testable: true,
+    fields: [
+      { key: 'ASR_BASE_URL', label: 'Base URL', placeholder: 'https://api.openai.com/v1' },
+      { key: 'ASR_API_KEY', label: 'API Key', secret: true, placeholder: '留空则复用 EMBED_API_KEY' },
+      { key: 'ASR_MODEL', label: '转写模型', placeholder: 'whisper-1' },
+    ],
+  },
+  {
+    id: 'image',
+    title: '图片生成',
+    hint: '用于自拍和场景照片。支持火山方舟 Seedream 等 OpenAI 兼容图片接口。',
+    testable: true,
+    fields: [
+      { key: 'IMAGE_BASE_URL', label: 'Base URL', placeholder: 'https://ark.cn-beijing.volces.com/api/v3' },
+      { key: 'IMAGE_API_KEY', label: 'API Key', secret: true, placeholder: '火山方舟 API Key' },
+      { key: 'IMAGE_MODEL', label: '图片模型', placeholder: 'doubao-seedream-5-0-pro-260628' },
     ],
   },
   {
@@ -223,23 +262,24 @@ async function testLlm(env) {
   if (!res.ok || !body?.choices?.[0]) {
     return { ok: false, ms, message: body?.error?.message ? String(body.error.message).slice(0, 160) : `HTTP ${res.status}` };
   }
-  // 回复模型走独立供应商或不同模型名时, 单独再 ping 一次, 别让"基础模型通了"掩盖"回复模型配错了"
-  const replyBase = (env.REPLY_BASE_URL || base).replace(/\/+$/, '');
-  const replyKey = env.REPLY_API_KEY || key;
-  const replyModel = env.REPLY_MODEL || model;
-  const replyDiffers = replyBase !== base || replyKey !== key || replyModel !== model;
-  if (!replyDiffers) return { ok: true, ms, message: `${model} 可用` };
-  const reply = await timedFetch(`${replyBase}/chat/completions`, {
+  return { ok: true, ms, message: `${model} 可用` };
+}
+
+async function testChatTarget(target, env) {
+  const cfg = resolveModelTarget(target, env);
+  if (!cfg?.key) return { ok: false, message: `先配置 ${cfg?.keyName || 'API Key'}` };
+  if (!cfg?.model) return { ok: false, message: `先配置 ${cfg?.modelName || '模型名'}` };
+  const reply = await timedFetch(`${cfg.base}/chat/completions`, {
     method: 'POST',
-    headers: { 'content-type': 'application/json', authorization: `Bearer ${replyKey}` },
-    body: JSON.stringify({ model: replyModel, max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] }),
-  }).catch((e) => ({ res: null, ms: 0, error: e }));
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}` },
+    body: JSON.stringify({ model: cfg.model, max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] }),
+  }, 45000).catch((e) => ({ res: null, ms: 0, error: e }));
   const replyBody = reply.res ? await reply.res.json().catch(() => null) : null;
   if (reply.res?.ok && replyBody?.choices?.[0]) {
-    return { ok: true, ms, message: `基础 ${model} 可用 · 回复 ${replyModel} 可用 (${reply.ms}ms)` };
+    return { ok: true, ms: reply.ms, message: `${cfg.model} 可用` };
   }
   const reason = replyBody?.error?.message ? String(replyBody.error.message).slice(0, 100) : reply.res ? `HTTP ${reply.res.status}` : '连接失败';
-  return { ok: false, ms, message: `基础 ${model} 可用, 但回复模型 ${replyModel} 不通: ${reason}` };
+  return { ok: false, ms: reply.ms, message: `${cfg.model} 不可用: ${reason}` };
 }
 
 async function testEmbedding(env) {
@@ -271,7 +311,26 @@ async function testTelegram(env) {
   return { ok: false, ms, message: body?.description || `HTTP ${res.status}` };
 }
 
-const TESTS = { supabase: testSupabase, llm: testLlm, embedding: testEmbedding, telegram: testTelegram };
+async function testCatalogTarget(target, env) {
+  const cfg = resolveModelTarget(target, env);
+  const catalog = await listModels(target, env);
+  if (!catalog.ok) return catalog;
+  if (cfg.model && !catalog.models.includes(cfg.model)) {
+    return { ok: false, ms: catalog.ms, message: `接口可访问，但目录里没有 ${cfg.model}` };
+  }
+  return { ok: true, ms: catalog.ms, message: `${cfg.model || '模型目录'} 可访问；实际任务将在使用时验证` };
+}
+
+const TESTS = {
+  supabase: testSupabase,
+  llm: testLlm,
+  reply: (env) => testChatTarget('reply', env),
+  vision: (env) => testChatTarget('vision', env),
+  embedding: testEmbedding,
+  asr: (env) => testCatalogTarget('asr', env),
+  image: (env) => testCatalogTarget('image', env),
+  telegram: testTelegram,
+};
 
 // ---------------------------------------------------------------
 // 模型目录: OpenAI 兼容服务通常都暴露 GET /models。
@@ -287,17 +346,29 @@ export function normalizeModelIds(payload) {
     .slice(0, 500);
 }
 
-export async function listModels(target, env) {
-  const isEmbedding = target === 'embedding';
-  if (!isEmbedding && target !== 'llm') return { ok: false, message: `未知模型类型 ${target}`, models: [] };
-  const base = (isEmbedding
-    ? env.EMBED_BASE_URL || 'https://api.openai.com/v1'
-    : env.LLM_BASE_URL || 'https://api.deepseek.com').replace(/\/+$/, '');
-  const key = isEmbedding ? env.EMBED_API_KEY || env.LLM_API_KEY || '' : env.LLM_API_KEY || '';
-  if (!key) return { ok: false, message: `先配置 ${isEmbedding ? 'EMBED_API_KEY（或可复用的 LLM_API_KEY）' : 'LLM_API_KEY'}`, models: [] };
+export function resolveModelTarget(target, env = {}) {
+  const llm = { base: env.LLM_BASE_URL || 'https://api.deepseek.com', key: env.LLM_API_KEY || '', model: env.LLM_MODEL || 'deepseek-chat', keyName: 'LLM_API_KEY', modelName: 'LLM_MODEL' };
+  const reply = { base: env.REPLY_BASE_URL || llm.base, key: env.REPLY_API_KEY || llm.key, model: env.REPLY_MODEL || llm.model, keyName: 'REPLY_API_KEY', modelName: 'REPLY_MODEL' };
+  const embedding = { base: env.EMBED_BASE_URL || 'https://api.openai.com/v1', key: env.EMBED_API_KEY || llm.key, model: env.EMBED_MODEL || 'text-embedding-3-small', keyName: 'EMBED_API_KEY', modelName: 'EMBED_MODEL' };
+  const map = {
+    llm,
+    reply,
+    vision: { base: env.VISION_BASE_URL || reply.base, key: env.VISION_API_KEY || reply.key, model: env.VISION_MODEL || reply.model, keyName: 'VISION_API_KEY', modelName: 'VISION_MODEL' },
+    embedding,
+    asr: { base: env.ASR_BASE_URL || embedding.base, key: env.ASR_API_KEY || embedding.key, model: env.ASR_MODEL || 'whisper-1', keyName: 'ASR_API_KEY', modelName: 'ASR_MODEL' },
+    image: { base: env.IMAGE_BASE_URL || reply.base, key: env.IMAGE_API_KEY || reply.key, model: env.IMAGE_MODEL || '', keyName: 'IMAGE_API_KEY', modelName: 'IMAGE_MODEL' },
+  };
+  const cfg = map[target];
+  return cfg ? { ...cfg, base: String(cfg.base).replace(/\/+$/, '') } : null;
+}
 
-  const { res, ms } = await timedFetch(`${base}/models`, {
-    headers: { authorization: `Bearer ${key}` },
+export async function listModels(target, env) {
+  const cfg = resolveModelTarget(target, env);
+  if (!cfg) return { ok: false, message: `未知模型类型 ${target}`, models: [] };
+  if (!cfg.key) return { ok: false, message: `先配置 ${cfg.keyName}`, models: [] };
+
+  const { res, ms } = await timedFetch(`${cfg.base}/models`, {
+    headers: { authorization: `Bearer ${cfg.key}` },
   });
   const body = await res.json().catch(() => null);
   if (!res.ok) {
@@ -751,7 +822,11 @@ async function getSystemHealth(env) {
     config: {
       supabase: Boolean(env.SUPABASE_URL && env.SUPABASE_KEY),
       llm: Boolean(env.LLM_API_KEY),
+      reply: Boolean((env.REPLY_API_KEY || env.LLM_API_KEY) && (env.REPLY_MODEL || env.LLM_MODEL)),
+      vision: Boolean((env.VISION_API_KEY || env.REPLY_API_KEY || env.LLM_API_KEY) && (env.VISION_MODEL || env.REPLY_MODEL || env.LLM_MODEL)),
       embedding: Boolean(env.EMBED_API_KEY || env.LLM_API_KEY),
+      asr: Boolean((env.ASR_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && (env.ASR_MODEL || 'whisper-1')),
+      image: Boolean((env.IMAGE_API_KEY || env.REPLY_API_KEY) && env.IMAGE_MODEL),
       telegram: Boolean(env.TELEGRAM_BOT_TOKEN),
       envFile: fs.existsSync(ENV_FILE),
       paramOverrides: fs.existsSync(PARAMS_FILE),

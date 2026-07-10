@@ -34,6 +34,16 @@ export const replyLlm =
       })
     : llm;
 
+// ---- 图片理解模型 (可与回复模型共用火山方舟 VLM) ----
+export const VISION_MODEL = process.env.VISION_MODEL || REPLY_MODEL;
+export const visionLlm =
+  process.env.VISION_BASE_URL || process.env.VISION_API_KEY
+    ? new OpenAI({
+        apiKey: process.env.VISION_API_KEY || process.env.REPLY_API_KEY || process.env.LLM_API_KEY || 'placeholder',
+        baseURL: process.env.VISION_BASE_URL || process.env.REPLY_BASE_URL || process.env.LLM_BASE_URL || 'https://api.deepseek.com',
+      })
+    : replyLlm;
+
 // ---- Embedding ----
 // 可与 LLM 用不同 provider。OpenAI: text-embedding-3-small (1536 维)
 export const embedder = new OpenAI({
@@ -41,3 +51,15 @@ export const embedder = new OpenAI({
   baseURL: process.env.EMBED_BASE_URL || 'https://api.openai.com/v1',
 });
 export const EMBED_MODEL = process.env.EMBED_MODEL || 'text-embedding-3-small';
+
+// ---- ASR 语音识别 (默认复用 OpenAI Embedding 的供应商与密钥) ----
+export const ASR_MODEL = process.env.ASR_MODEL || 'whisper-1';
+export const asrLlm = new OpenAI({
+  apiKey: process.env.ASR_API_KEY || process.env.EMBED_API_KEY || process.env.LLM_API_KEY || 'placeholder',
+  baseURL: process.env.ASR_BASE_URL || process.env.EMBED_BASE_URL || 'https://api.openai.com/v1',
+});
+
+// ---- 图片生成 (由 appearance/provider.js 消费) ----
+export const IMAGE_BASE_URL = process.env.IMAGE_BASE_URL || '';
+export const IMAGE_API_KEY = process.env.IMAGE_API_KEY || '';
+export const IMAGE_MODEL = process.env.IMAGE_MODEL || '';

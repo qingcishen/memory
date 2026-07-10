@@ -5,7 +5,7 @@
 //
 // 缺 vision 凭证时降级: 若调用方已给 caption, 仍可入库; 否则跳过, 不抛、不崩。
 
-import { supabase, llm, LLM_MODEL, PARAMS } from '../config.js';
+import { supabase, visionLlm, VISION_MODEL, PARAMS } from '../config.js';
 import { normalizeMemory } from '../ontology.js';
 import { storeMemories } from '../store.js';
 import { cosine } from '../engine/vector-index.js';
@@ -75,8 +75,8 @@ function toVector(v) {
 
 /** 用 vision 模型给图片生成 caption。缺凭证/失败时抛, 由 ingestImage 兜底降级。 */
 export async function captionImage(imageUrl, opts = {}) {
-  const res = await llm.chat.completions.create({
-    model: opts.model ?? LLM_MODEL,
+  const res = await visionLlm.chat.completions.create({
+    model: opts.model ?? VISION_MODEL,
     temperature: 0.3,
     messages: [
       {

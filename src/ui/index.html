@@ -1153,7 +1153,7 @@
     btn.disabled = true;
     out.innerHTML = '<span class="tag"><span class="spin"></span>测试中…</span>';
     try {
-      const wantsModels = target === 'llm' || target === 'embedding';
+      const wantsModels = ['llm', 'reply', 'vision', 'embedding', 'asr', 'image'].includes(target);
       const [r, catalog] = await Promise.all([
         api(`/api/test/${target}`, { method: 'POST' }),
         wantsModels ? api(`/api/models/${target}`) : Promise.resolve(null),
@@ -1176,12 +1176,23 @@
       return;
     }
     const models = result.models ?? [];
-    const keys = target === 'llm' ? ['LLM_MODEL', 'REPLY_MODEL'] : ['EMBED_MODEL'];
+    const modelKeys = {
+      llm: ['LLM_MODEL'],
+      reply: ['REPLY_MODEL'],
+      vision: ['VISION_MODEL'],
+      embedding: ['EMBED_MODEL'],
+      asr: ['ASR_MODEL'],
+      image: ['IMAGE_MODEL'],
+    };
+    const keys = modelKeys[target] ?? [];
     for (const key of keys) {
       const list = document.getElementById(`models_${key}`);
       if (list) list.innerHTML = models.map((m) => `<option value="${esc(m)}"></option>`).join('');
     }
-    const labels = { LLM_MODEL: '基础模型', REPLY_MODEL: '回复模型', EMBED_MODEL: '向量模型' };
+    const labels = {
+      LLM_MODEL: '基础模型', REPLY_MODEL: '回复模型', VISION_MODEL: '视觉模型',
+      EMBED_MODEL: '向量模型', ASR_MODEL: '语音识别模型', IMAGE_MODEL: '图片生成模型',
+    };
     const pickers = keys.map((key) => {
       const current = document.querySelector(`[data-key="${key}"]`)?.value ?? '';
       const options = ['<option value="">选择一个可访问模型…</option>']

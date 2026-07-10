@@ -10,7 +10,8 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .telegram-bot.lock
-logs/chat-history.json
+logs/
+config/params.json
 
 coverage/
 dist/

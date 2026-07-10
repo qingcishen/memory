@@ -2,9 +2,11 @@
 //
 // 本仓库【不内置真实出图模型】。出图是仓库外基础设施 (Stable Diffusion / ComfyUI / 某图像 API),
 // 这里只定义统一接口 + 一个不出真图的 Mock, 让上层(图库/策略/编排)能先跑通闭环。
-// 真正接出图时实现 HttpImageProvider.generate 即可; A2 (角色 LoRA 锁脸) 在仓库外训练。
+// 支持 OpenAI 兼容的 /images/generations 端点; A2 (角色 LoRA 锁脸) 在仓库外训练。
 //
 // 接口约定: generate(prompt, opts) -> Promise<{ url, seed, meta }>
+
+import { IMAGE_BASE_URL, IMAGE_API_KEY, IMAGE_MODEL } from '../config.js';
 
 /** 字符串 → 稳定十六进制短哈希 (给 mock url / seed 用, 可重现)。 */
 function hashHex(str = '') {
@@ -56,4 +58,44 @@ export class HttpImageProvider {
   }
 }
 
-export const defaultImageProvider = new MockImageProvider();
+/** 火山方舟 Seedream 等 OpenAI 兼容图片生成端点。未配置时安全降级到 Mock。 */
+export class OpenAIImageProvider {
+  constructor({ baseURL = null, apiKey = null, model = null, fetchImpl = globalThis.fetch } = {}) {
+    this.baseURL = String(baseURL ?? '').replace(/\/+$/, '');
+    this.apiKey = apiKey;
+    this.model = model;
+    this.fetchImpl = fetchImpl;
+    this._fallback = new MockImageProvider();
+  }
+
+  async generate(prompt, opts = {}) {
+    if (!this.baseURL || !this.apiKey || !this.model || typeof this.fetchImpl !== 'function') {
+      return this._fallback.generate(prompt, opts);
+    }
+    const body = {
+      model: this.model,
+      prompt,
+      response_format: 'url',
+      ...(opts.size ? { size: opts.size } : {}),
+    };
+    const res = await this.fetchImpl(`${this.baseURL}/images/generations`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
+      body: JSON.stringify(body),
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(`图片生成失败: ${data?.error?.message || `HTTP ${res.status}`}`);
+    const item = data?.data?.[0];
+    const url = item?.url || (item?.b64_json ? `data:image/png;base64,${item.b64_json}` : '');
+    if (!url) throw new Error('图片生成成功但响应里没有 url 或 b64_json');
+    return {
+      url,
+      seed: item?.seed ?? opts.seed ?? null,
+      meta: { provider: 'openai-compatible', model: this.model, prompt },
+    };
+  }
+}
+
+export const defaultImageProvider = IMAGE_BASE_URL && IMAGE_API_KEY && IMAGE_MODEL
+  ? new OpenAIImageProvider({ baseURL: IMAGE_BASE_URL, apiKey: IMAGE_API_KEY, model: IMAGE_MODEL })
+  : new MockImageProvider();

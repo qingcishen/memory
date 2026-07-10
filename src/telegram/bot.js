@@ -82,7 +82,9 @@ export function typingDelayMs(text = '') {
 class TelegramApi {
   constructor(token) {
     if (!token) throw new Error('缺少 TELEGRAM_BOT_TOKEN');
+    this.token = token;
     this.baseUrl = `https://api.telegram.org/bot${token}`;
+    this.fileBaseUrl = `https://api.telegram.org/file/bot${token}`;
   }
 
   async call(method, body = {}) {
@@ -113,6 +115,36 @@ class TelegramApi {
 
   sendChatAction(chatId, action = 'typing') {
     return this.call('sendChatAction', { chat_id: chatId, action });
+  }
+
+  sendPhoto(chatId, photo, extra = {}) {
+    return this.call('sendPhoto', { chat_id: chatId, photo, ...extra });
+  }
+
+  getFile(fileId) {
+    return this.call('getFile', { file_id: fileId });
+  }
+
+  async fileUrl(fileId) {
+    const info = await this.getFile(fileId);
+    if (!info?.file_path) throw new Error('Telegram getFile 没有返回 file_path');
+    return `${this.fileBaseUrl}/${info.file_path}`;
+  }
+
+  async downloadAsFile(fileId, { name = 'voice.ogg', type = 'audio/ogg' } = {}) {
+    const url = await this.fileUrl(fileId);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Telegram 文件下载失败: HTTP ${res.status}`);
+    const bytes = await res.arrayBuffer();
+    return new File([bytes], name, { type });
+  }
+
+  async downloadDataUrl(fileId, type = 'image/jpeg') {
+    const url = await this.fileUrl(fileId);
+    const res = await fetch(url);
+    if (!res.ok) throw new Error(`Telegram 文件下载失败: HTTP ${res.status}`);
+    const bytes = Buffer.from(await res.arrayBuffer());
+    return `data:${type};base64,${bytes.toString('base64')}`;
   }
 }
 
@@ -190,6 +222,15 @@ export class TelegramMemoryBot {
           // 世界观系统: 按 (userId, companionId) 维护各自的背景剧情线, 因此每个 chat 一个实例。
           world: new WorldDimension({ userId: telegramUserId(chatId), companionId: this.companionId }),
           narration: this.narration,
+          // Seedream 生成完成后直接投递到当前 Telegram 会话；data URL 无法走 JSON Bot API 时安全跳过。
+          onPhoto: async ({ url, kind }) => {
+            if (!/^https?:\/\//i.test(String(url ?? ''))) {
+              console.warn(`[telegram] generated ${kind || 'photo'} has no public URL, skipped delivery`);
+              return;
+            }
+            await this.api.sendPhoto(chatId, url);
+            console.log(`[telegram] photo sent chat=${chatId} kind=${kind || 'photo'}`);
+          },
         }, // 短期历史落库 + 真实天气 + 世界观 + 旁白
       });
       this.bots.set(key, orchestrator);
@@ -340,16 +381,53 @@ export class TelegramMemoryBot {
       return;
     }
 
-    // 文字优先; 图片带的 caption 也当文字用 (有上下文就能正常回应)。
-    const text = message.text?.trim() || message.caption?.trim();
+    // 文字优先；纯图片走 VISION，纯语音走 ASR，再把模型看到/听到的内容交给编排器回复。
+    let text = message.text?.trim() || message.caption?.trim() || '';
+    let mediaText = '';
+    if (Array.isArray(message.photo) && message.photo.length > 0) {
+      const photo = message.photo.at(-1);
+      const bot = this.botForChat(chatId);
+      mediaText = await this.api.downloadDataUrl(photo.file_id, 'image/jpeg')
+        .then((dataUrl) => bot.memory.seeImage({
+          url: dataUrl,
+          mediaRef: `telegram-photo:${photo.file_unique_id || photo.file_id}`,
+          subject_kind: 'user',
+        }))
+        .then((memories) => memories?.[0]?.fact_core || memories?.[0]?.content || '')
+        .catch((error) => {
+          console.error(`[telegram] image understanding failed chat=${chatId}:`, formatError(error));
+          return '';
+        });
+      if (mediaText) mediaText = `[用户发来一张图片，图片内容：${mediaText}]`;
+    } else if (message.voice || message.audio) {
+      const audio = message.voice || message.audio;
+      const bot = this.botForChat(chatId);
+      const ext = path.extname(audio.file_name || '') || (message.voice ? '.ogg' : '.mp3');
+      mediaText = await this.api.downloadAsFile(audio.file_id, {
+        name: audio.file_name || `telegram-audio${ext}`,
+        type: audio.mime_type || (message.voice ? 'audio/ogg' : 'audio/mpeg'),
+      })
+        .then((file) => bot.memory.hearVoice({
+          file,
+          mediaRef: `telegram-audio:${audio.file_unique_id || audio.file_id}`,
+          subject_kind: 'user',
+        }))
+        .then((memories) => memories?.[0]?.fact_core || memories?.[0]?.content || '')
+        .catch((error) => {
+          console.error(`[telegram] audio transcription failed chat=${chatId}:`, formatError(error));
+          return '';
+        });
+      if (mediaText) mediaText = `[用户发来一段语音，转写内容：${mediaText}]`;
+    }
+    text = [text, mediaText].filter(Boolean).join('\n');
     if (!text) {
-      // 纯图片/语音: 还没接视觉/ASR 模型, 暂时看不清/听不清, 但别冷冰冰地拒绝。
+      // 模型暂时失败时仍然友好降级，不让一条媒体消息把整个 bot 弄崩。
       if (Array.isArray(message.photo)) {
-        await this.api.sendMessage(chatId, '(看了看你发的图) 我这会儿还看不太清图里的细节，你跟我说说这是什么？');
+        await this.api.sendMessage(chatId, '(看了看你发的图) 我刚才没看清细节，你跟我说说这是什么？');
       } else if (message.voice || message.audio) {
-        await this.api.sendMessage(chatId, '收到你的语音了，不过我现在还听不太清，打字跟我说好不好？');
+        await this.api.sendMessage(chatId, '收到你的语音了，不过刚才转写失败了，打字跟我说一下好不好？');
       } else {
-        await this.api.sendMessage(chatId, '我现在先接文字哦，图片/语音你先配句话给我。');
+        await this.api.sendMessage(chatId, '我现在先接文字哦。');
       }
       return;
     }

@@ -2,7 +2,7 @@
 // 不起 http 服务、不碰真实 .env 文件。
 
 import { parseEnvText, applyEnvUpdates, formatEnvValue, maskValue } from '../src/ui/envfile.js';
-import { extractProjectRef, buildMemoriesQuery, safePersonaName, normalizeModelIds, listModels } from '../src/ui/server.js';
+import { extractProjectRef, buildMemoriesQuery, safePersonaName, normalizeModelIds, resolveModelTarget, listModels } from '../src/ui/server.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -149,6 +149,23 @@ console.log('listModels (读取当前密钥可访问模型)');
   ok('使用 Bearer 密钥', requestAuth === 'Bearer secret');
   ok('返回排序后的可访问模型', result.ok && result.models.join(',') === 'model-a,model-b');
   ok('无密钥时不发请求', !(await listModels('llm', {})).ok);
+}
+
+console.log('resolveModelTarget (多供应商模型回退链)');
+{
+  const env = {
+    LLM_BASE_URL: 'https://deepseek.test', LLM_API_KEY: 'deep-key', LLM_MODEL: 'cheap',
+    REPLY_BASE_URL: 'https://ark.test/v3/', REPLY_API_KEY: 'ark-key', REPLY_MODEL: 'pro',
+    EMBED_BASE_URL: 'https://openai.test/v1', EMBED_API_KEY: 'openai-key', EMBED_MODEL: 'embed',
+  };
+  const reply = resolveModelTarget('reply', env);
+  ok('回复模型使用独立方舟配置', reply.base === 'https://ark.test/v3' && reply.key === 'ark-key' && reply.model === 'pro');
+  const vision = resolveModelTarget('vision', env);
+  ok('视觉模型默认复用回复模型', vision.base === reply.base && vision.key === reply.key && vision.model === reply.model);
+  const asr = resolveModelTarget('asr', env);
+  ok('ASR 默认复用 OpenAI 向量凭证', asr.base === 'https://openai.test/v1' && asr.key === 'openai-key' && asr.model === 'whisper-1');
+  const image = resolveModelTarget('image', { ...env, IMAGE_MODEL: 'seedream' });
+  ok('图片生成默认复用回复供应商', image.base === reply.base && image.key === reply.key && image.model === 'seedream');
 }
 
 console.log(`\n控制台 envfile 全部 ${passed} 条断言通过`);
