@@ -163,7 +163,7 @@ npm run ui   # 打开 http://127.0.0.1:8787
 
 - **记忆**:直接浏览 memories 表——按用户筛、按内容搜,类型/主体/重要性/情绪一目了然;可选显示被新记忆取代的旧版本(划线样式)。
 - **知识图谱**:实体云 + "实体 —关系→ 实体"列表(置信度、对话依据);没建表时会引导你去 SQL 工具箱执行 `knowledge-graph.sql`。
-- **人设**:直接编辑 `companions/*.json`(名字/性格/说话风格/外貌/作息),保存前校验 JSON,也能从 default 模板新建角色。
+- **人设**:直接编辑人设文件,保存前校验 JSON,也能从 default 模板新建角色。人设支持两种格式:`companions/<角色ID>.json` 单文件,或 **`companions/<角色ID>/` 目录按功能分片**(`persona` 人格散文 / `appearance` 外貌 / `life` 作息身体 / `relationship` 关系与情绪起点 / `knowledge` 知识库 / `runtime` 运行时选项)——目录存在时优先生效,顶层键按"数组相接、对象浅合并"规则合并,改说话风格不用再滚过整个知识库。
 - **试聊**:编排器调试场,和 Telegram 完全同一条管线(人设 + 记忆 + 状态 + 世界观 + 旁白),narration/dialogue 分气泡显示。注意是真实调用:走 LLM、写记忆库;换个用户 ID 就是一段全新的关系。
 
 端口可用 `UI_PORT` 覆盖。配置项 schema 在 `src/ui/server.js` 的 `CONFIG_SCHEMA`,加字段只改那一处。

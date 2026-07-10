@@ -816,7 +816,7 @@
     <section id="view-personas" role="tabpanel" aria-label="人设" hidden>
       <div class="card">
         <div class="card-head"><h2>人设文件</h2></div>
-        <p class="card-hint">companions/&lt;角色ID&gt;.json —— 名字/性格/说话风格/外貌/作息都在这里。保存前会校验 JSON, 改完重启 bot 生效。</p>
+        <p class="card-hint">支持两种格式: companions/&lt;角色ID&gt;.json 单文件, 或 companions/&lt;角色ID&gt;/ 目录按功能分片 (persona 人格 / appearance 外貌 / life 作息 / relationship 关系起点 / knowledge 知识库 / runtime 运行时) —— 目录存在时优先生效, 改哪块编辑哪个文件。保存前会校验 JSON, 改完重启 bot 生效。</p>
         <div class="toolbar">
           <select id="persona-file" aria-label="选择人设文件"></select>
           <button class="btn" id="persona-new">新建人设</button>

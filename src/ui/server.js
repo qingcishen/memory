@@ -876,25 +876,43 @@ async function getSystemHealth(env) {
 const COMPANIONS_DIR = path.join(ROOT, 'companions');
 
 /** 人设文件名白名单: 只认 companions/ 下的一层 .json。纯函数, 供单测。 */
+/**
+ * 人设文件白名单: companions/ 下的 xxx.json (单文件) 或 <角色ID>/xxx.json (目录式分片)。
+ * 拒绝路径穿越/隐藏文件/更深层级。纯函数, 供单测。
+ */
 export function safePersonaName(name = '') {
-  const base = path.basename(String(name ?? '').trim());
-  return /^[\w.-]+\.json$/.test(base) && !base.startsWith('.') ? base : null;
+  const segs = String(name ?? '').trim().replace(/\\/g, '/').split('/').filter(Boolean);
+  if (segs.length < 1 || segs.length > 2) return null;
+  const file = segs.at(-1);
+  if (!/^[\w.-]+\.json$/.test(file) || file.startsWith('.')) return null;
+  if (segs.length === 2 && (!/^[\w-]+$/.test(segs[0]) || segs[0].startsWith('.'))) return null;
+  return segs.join('/');
 }
 
 function listPersonas() {
   if (!fs.existsSync(COMPANIONS_DIR)) return [];
-  return fs.readdirSync(COMPANIONS_DIR).filter((f) => safePersonaName(f)).sort();
+  const out = [];
+  for (const entry of fs.readdirSync(COMPANIONS_DIR, { withFileTypes: true })) {
+    if (entry.isFile() && safePersonaName(entry.name)) out.push(entry.name);
+    if (entry.isDirectory() && !entry.name.startsWith('.')) {
+      for (const f of fs.readdirSync(path.join(COMPANIONS_DIR, entry.name))) {
+        const nested = `${entry.name}/${f}`;
+        if (safePersonaName(nested)) out.push(nested);
+      }
+    }
+  }
+  return out.sort();
 }
 
 function savePersona(name, content) {
   const clean = safePersonaName(name);
-  if (!clean) return { ok: false, message: '文件名只能是 companions/ 下的 xxx.json' };
+  if (!clean) return { ok: false, message: '文件名只能是 companions/ 下的 xxx.json 或 <角色ID>/xxx.json' };
   try {
     JSON.parse(content); // 只校验合法性, 原样保存 (保留用户自己的排版)
   } catch (error) {
     return { ok: false, message: `JSON 不合法: ${error.message}` };
   }
-  fs.mkdirSync(COMPANIONS_DIR, { recursive: true });
+  fs.mkdirSync(path.dirname(path.join(COMPANIONS_DIR, clean)), { recursive: true });
   fs.writeFileSync(path.join(COMPANIONS_DIR, clean), content.endsWith('\n') ? content : `${content}\n`);
   return { ok: true, message: `已保存 companions/${clean} (bot 重启后生效)` };
 }

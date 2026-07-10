@@ -7,6 +7,7 @@
 // 校验用 zod (项目里第一个外部校验依赖; params.js 仍保持零依赖, 故 schema 单独放这里)。
 
 import fs from 'node:fs';
+import path from 'node:path';
 import { z } from 'zod';
 import { supabase } from './config.js';
 
@@ -95,12 +96,49 @@ export function personaJsonToConfig(json = {}) {
   return { config, options, life };
 }
 
-/** 从 JSON 文件读富人设并映射成 { config, options }; 文件不存在/损坏返回 null (不抛)。 */
-export function loadPersonaConfig(path) {
+/**
+ * 目录式人设的分片合并 (纯函数, 供单测)。
+ * companions/<id>/ 下每个 .json 按功能各管一块 (persona/appearance/life/relationship/knowledge/runtime),
+ * 顶层键合并规则: 数组相接、对象浅合并、标量后读覆盖 (文件按名字母序读取, 行为确定)。
+ */
+export function mergePersonaSections(sections = []) {
+  const merged = {};
+  for (const sec of sections) {
+    if (!sec || typeof sec !== 'object' || Array.isArray(sec)) continue;
+    for (const [key, value] of Object.entries(sec)) {
+      const prev = merged[key];
+      if (Array.isArray(prev) && Array.isArray(value)) merged[key] = [...prev, ...value];
+      else if (
+        prev && value &&
+        typeof prev === 'object' && typeof value === 'object' &&
+        !Array.isArray(prev) && !Array.isArray(value)
+      ) merged[key] = { ...prev, ...value };
+      else merged[key] = value;
+    }
+  }
+  return merged;
+}
+
+function readPersonaDir(dir) {
+  const files = fs.readdirSync(dir).filter((f) => f.endsWith('.json') && !f.startsWith('.')).sort();
+  const sections = files.map((f) => JSON.parse(fs.readFileSync(path.join(dir, f), 'utf8')));
+  return mergePersonaSections(sections);
+}
+
+/**
+ * 从人设文件读富人设并映射成 { config, options, life }; 不存在/损坏返回 null (不抛)。
+ * 支持两种格式:
+ * - 单文件: companions/<id>.json (旧格式, 全部塞一个文件)
+ * - 目录式: companions/<id>/ 按功能分文件 —— 目录存在时优先于同名单文件生效
+ */
+export function loadPersonaConfig(filePath) {
   try {
-    if (!path || !fs.existsSync(path)) return null;
-    const json = JSON.parse(fs.readFileSync(path, 'utf8'));
-    return personaJsonToConfig(json);
+    if (!filePath) return null;
+    const dir = String(filePath).replace(/\.json$/i, '');
+    if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) return personaJsonToConfig(readPersonaDir(dir));
+    if (!fs.existsSync(filePath)) return null;
+    if (fs.statSync(filePath).isDirectory()) return personaJsonToConfig(readPersonaDir(filePath));
+    return personaJsonToConfig(JSON.parse(fs.readFileSync(filePath, 'utf8')));
   } catch {
     return null;
   }

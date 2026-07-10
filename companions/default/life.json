@@ -1,0 +1,23 @@
+{
+  "life": {
+    "sleep": "00:30-08:00",
+    "schedule_template": [
+      {
+        "from": "09:30",
+        "to": "12:00",
+        "activity": "公司开会/看项目"
+      },
+      {
+        "from": "14:00",
+        "to": "18:00",
+        "activity": "处理公司事务"
+      },
+      {
+        "from": "20:00",
+        "to": "21:00",
+        "activity": "健身或和逸晨待着"
+      }
+    ],
+    "sick_probability": 0.02
+  }
+}

@@ -8,7 +8,12 @@ import {
   rowToConfig,
   configToRow,
   personaJsonToConfig,
+  mergePersonaSections,
+  loadPersonaConfig,
 } from '../src/companion.js';
+import fsp from 'node:fs/promises';
+import os from 'node:os';
+import nodePath from 'node:path';
 import { StateLayer } from '../src/state/stateLayer.js';
 import { LifeDimension } from '../src/state/life.js';
 import { Memory } from '../src/memory.js';
@@ -223,6 +228,43 @@ console.log('companionId 在门面/适配层落位');
   // setExtra + toPrompt: 外貌/风格补充随 persona 段一起注入
   pa.setExtra('外貌: 齐肩黑发');
   ok('PersonaAdapter.toPrompt 含 setExtra 补充', pa.toPrompt().includes('齐肩黑发'));
+}
+
+console.log('mergePersonaSections (目录式人设: 分片合并纯逻辑)');
+{
+  const merged = mergePersonaSections([
+    { persona: { name: '阿冷' }, knowledge: ['会钢琴'] },
+    { persona: { background: '住学校旁' }, knowledge: ['怕辣'] },
+    { runtime: { history_turns: 8 }, life: null },
+    null,
+  ]);
+  ok('同名对象浅合并', merged.persona.name === '阿冷' && merged.persona.background === '住学校旁');
+  ok('同名数组相接', merged.knowledge.length === 2);
+  ok('独有键保留', merged.runtime.history_turns === 8);
+  ok('null 分片安全跳过', mergePersonaSections([null, undefined, 1]).constructor === Object);
+}
+
+console.log('loadPersonaConfig (目录式人设优先于同名单文件)');
+{
+  const dir = await fsp.mkdtemp(nodePath.join(os.tmpdir(), 'persona-'));
+  // 旧单文件 + 新目录并存: 目录必须赢
+  await fsp.writeFile(nodePath.join(dir, 'coco.json'), JSON.stringify({ persona: { name: '旧文件' } }));
+  await fsp.mkdir(nodePath.join(dir, 'coco'));
+  await fsp.writeFile(nodePath.join(dir, 'coco', 'persona.json'), JSON.stringify({ meta: { display_name: '可可' }, persona: { name: '可可', personality: '爱笑' } }));
+  await fsp.writeFile(nodePath.join(dir, 'coco', 'knowledge.json'), JSON.stringify({ knowledge: ['可可养了猫'] }));
+  await fsp.writeFile(nodePath.join(dir, 'coco', 'runtime.json'), JSON.stringify({ runtime: { history_turns: 9 } }));
+
+  const loaded = loadPersonaConfig(nodePath.join(dir, 'coco.json'));
+  ok('目录式生效 (不是旧单文件)', loaded.config.name === '可可');
+  ok('分片各归其位: knowledge', loaded.config.knowledgeBank[0] === '可可养了猫');
+  ok('分片各归其位: runtime', loaded.options.historyTurns === 9);
+
+  const single = loadPersonaConfig(nodePath.join(dir, 'solo.json'));
+  ok('没有目录也没有文件 -> null', single === null);
+  await fsp.writeFile(nodePath.join(dir, 'solo.json'), JSON.stringify({ persona: { name: '单文件' } }));
+  ok('纯单文件仍兼容', loadPersonaConfig(nodePath.join(dir, 'solo.json')).config.name === '单文件');
+
+  await fsp.rm(dir, { recursive: true, force: true });
 }
 
 console.log(`\n多角色 全部 ${passed} 条断言通过`);

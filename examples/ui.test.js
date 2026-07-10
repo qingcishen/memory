@@ -112,12 +112,15 @@ console.log('buildMemoriesQuery (记忆浏览: PostgREST 查询串)');
   ok('支持最低重要性筛选', filtered.includes('importance=gte.7'));
 }
 
-console.log('safePersonaName (人设文件白名单)');
+console.log('safePersonaName (人设文件白名单: 单文件 + 目录式分片)');
 {
   ok('普通文件名放行', safePersonaName('default.json') === 'default.json');
-  ok('路径穿越被剥掉目录', safePersonaName('../../etc/passwd.json') === 'passwd.json');
+  ok('目录式分片放行', safePersonaName('default/persona.json') === 'default/persona.json');
+  ok('路径穿越拒绝', safePersonaName('../../etc/passwd.json') === null);
+  ok('目录段带穿越拒绝', safePersonaName('../default/persona.json') === null);
+  ok('超过两层拒绝', safePersonaName('a/b/c.json') === null);
   ok('非 json 拒绝', safePersonaName('bot.js') === null);
-  ok('隐藏文件拒绝', safePersonaName('.env.json') === null);
+  ok('隐藏文件拒绝', safePersonaName('.env.json') === null && safePersonaName('default/.hidden.json') === null);
   ok('空名拒绝', safePersonaName('') === null);
 }
 
