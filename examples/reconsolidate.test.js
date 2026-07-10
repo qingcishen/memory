@@ -4,7 +4,13 @@
 //     但 fact_core 一字未变
 //   - 漂移有界: 单次不超过 affectClamp; fact_locked 关不掉 fact_core 保护
 import assert from 'node:assert';
-import { reconsolidate, shouldRewriteNarrative } from '../src/memory/reconsolidate.js';
+import {
+  reconsolidate,
+  shouldRewriteNarrative,
+  anchorTarget,
+  clampToOrigin,
+  driftFromOrigin,
+} from '../src/memory/reconsolidate.js';
 import { assertFactCorePreserved } from '../src/ontology.js';
 import { PARAMS } from '../src/params.js';
 
@@ -82,5 +88,48 @@ throws('重构后强行改 fact_core → 抛错', () => {
   const [after] = reconsolidate([{ id: 'z', fact_core: '真相', affect_valence: 0 }], { mood: { valence: 1 } });
   assertFactCorePreserved(before, { ...after, fact_core: '篡改后的事实' });
 });
+
+console.log('原始情感锚: 纯助手 (anchorTarget / clampToOrigin / driftFromOrigin)');
+{
+  ok('anchorTarget pull=0 时等于心情', anchorTarget(-0.9, 0.6, 0) === -0.9);
+  ok('anchorTarget pull=1 时锁死在原始锚', anchorTarget(-0.9, 0.6, 1) === 0.6);
+  ok('anchorTarget 居中被往回拉', anchorTarget(-1, 0.6, 0.25) > -1 && anchorTarget(-1, 0.6, 0.25) < 0);
+  ok('clampToOrigin 夹在 ±maxDrift 内', Math.abs(clampToOrigin(-0.9, 0.6, 0.4) - 0.2) < 1e-9);
+  ok('clampToOrigin 不动小漂移', clampToOrigin(0.5, 0.6, 0.4) === 0.5);
+  const drift = driftFromOrigin({ affect_valence: 0.2, affect_origin_valence: 0.6, affect_intensity: 0.5, affect_origin_intensity: 0.5 });
+  ok('driftFromOrigin 算出 valence 漂移', Math.abs(drift.valence - (-0.4)) < 1e-9);
+  ok('driftFromOrigin total 是绝对值之和', Math.abs(drift.total - 0.4) < 1e-9);
+}
+
+console.log('情感锚回弹: 长期负面心情也洗不黑一条本来温暖的记忆 (核心验收)');
+{
+  const maxDrift = PARAMS.reconsolidation.maxDriftFromOrigin;
+  const ORIGIN = 0.6; // 诞生时是温暖的回忆
+  let mem = {
+    id: 'warm',
+    fact_core: '我们第一次一起看海',
+    affect_valence: ORIGIN,
+    affect_intensity: 0.6,
+    affect_origin_valence: ORIGIN,
+    affect_origin_intensity: 0.6,
+  };
+  const hurt = { mood: { valence: -0.95, arousal: 0.9 } };
+  // 在持续受伤心情下反复想起 200 次
+  for (let i = 0; i < 200; i++) [mem] = reconsolidate([mem], hurt);
+  ok('反复 recall 后 valence 确实被拉低了', mem.affect_valence < ORIGIN);
+  ok('但永不跌破 origin - maxDrift', mem.affect_valence >= ORIGIN - maxDrift - 1e-9);
+  ok('温暖记忆没被洗成负面 (仍 > 0)', mem.affect_valence > 0);
+  ok('fact_core 一字未变', mem.fact_core === '我们第一次一起看海');
+  ok('漂移审计不超过 maxDrift', Math.abs(driftFromOrigin(mem).valence) <= maxDrift + 1e-9);
+}
+
+console.log('对照: 没有原始锚 (老数据) 时退化为旧行为, 仍受单步 clamp 保护');
+{
+  // 缺 affect_origin_* 时以当前值兜底; 第一次靠拢仍发生, 只是少了硬锚
+  const mem = { id: 'old', fact_core: 'x', affect_valence: 0 };
+  const [next] = reconsolidate([mem], { mood: { valence: 1, arousal: 1 } }, { rate: 0.05 });
+  ok('老数据仍能朝心情靠拢', next.affect_valence > 0);
+  ok('老数据单步仍不超过 rate', next.affect_valence <= 0.05 + 1e-9);
+}
 
 console.log(`\nM3 全部 ${passed} 条断言通过 ✅`);

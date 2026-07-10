@@ -44,12 +44,13 @@ export function composeNarrativeInput(dyadMems, state, trajectory = null) {
 // ---- IO ----
 
 /** 取最重要的 n 条 dyad 记忆作关系底色 (给 recall 拼注入用)。 */
-export async function dyadBackdrop(userId, n = PARAMS.relationship_memory.alwaysIncludeDyad) {
+export async function dyadBackdrop(userId, companionId = 'default', n = PARAMS.relationship_memory.alwaysIncludeDyad) {
   if (n <= 0) return [];
   const { data, error } = await supabase
     .from('memories')
     .select('id, fact_core, content, narrative, importance, subject_kind, created_at')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .eq('subject_kind', 'dyad')
     .is('superseded_by', null)
     .order('importance', { ascending: false })
@@ -62,12 +63,13 @@ export async function dyadBackdrop(userId, n = PARAMS.relationship_memory.always
  * 合成"我们的故事": 拉 dyad/关系记忆 + 当前状态, LLM 写一段连贯关系叙事,
  * 作为最高层 reflection (subject_kind='dyad') 存回。
  */
-export async function synthesizeNarrative(userId, state, opts = {}) {
+export async function synthesizeNarrative(userId, companionId = 'default', state, opts = {}) {
   const lookback = opts.lookback ?? PARAMS.relationship_memory.narrativeLookback;
   const { data: mems, error } = await supabase
     .from('memories')
     .select('fact_core, content, narrative, importance, created_at')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .in('subject_kind', ['dyad'])
     .is('superseded_by', null)
     .order('created_at', { ascending: false })
@@ -80,7 +82,7 @@ export async function synthesizeNarrative(userId, state, opts = {}) {
 忠于事实, 不要编造没发生的事。严格输出 JSON: {"story":"...","importance":1-10}。`;
 
   // 拉一段状态历史, 让叙事看得到关系是怎么走过来的 (feature/state-history)。
-  const history = await readStateHistory(userId, { limit: opts.historyLimit ?? 50 }).catch(() => []);
+  const history = await readStateHistory(userId, companionId, { limit: opts.historyLimit ?? 50 }).catch(() => []);
   const trajectory = history.length ? summarizeTrajectory(history) : null;
 
   const res = await llm.chat.completions.create({
@@ -107,6 +109,7 @@ export async function synthesizeNarrative(userId, state, opts = {}) {
     .from('memories')
     .insert({
       user_id: userId,
+      companion_id: companionId,
       type: 'reflection',
       content: story,
       fact_core: story,

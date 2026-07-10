@@ -1,18 +1,20 @@
 import { supabase, PARAMS } from './config.js';
 import { embed } from './embeddings.js';
 import { rerank } from './decay.js';
+import { sanitizeForPrompt } from './promptSafety.js';
 
 /**
  * 按当前 query 检索最相关的记忆。
  * 1) 向量库拉 candidatePool 条 -> 2) similarity+recency+importance 重排
  * -> 3) 取 topK -> 4) 强化命中的记忆 (刷新 last_accessed, access_count+1)
  */
-export async function retrieveMemories(userId, query, opts = {}) {
+export async function retrieveMemories(userId, companionId = 'default', query, opts = {}) {
   const topK = opts.topK ?? PARAMS.topK;
 
   const queryEmbedding = await embed(query);
   const { data: candidates, error } = await supabase.rpc('match_memories', {
     p_user_id: userId,
+    p_companion_id: companionId,
     query_embedding: queryEmbedding,
     match_count: opts.pool ?? PARAMS.candidatePool,
   });
@@ -31,10 +33,11 @@ export async function retrieveMemories(userId, query, opts = {}) {
  * 用途: 回复层想表达"你以前不是..."、"这件事后来变了"时调用。
  * 这样既兑现"旧偏好留痕", 又不让过期事实污染日常回答。
  */
-export async function retrieveSupersededTrail(userId, query, opts = {}) {
+export async function retrieveSupersededTrail(userId, companionId = 'default', query, opts = {}) {
   const queryEmbedding = await embed(query);
   const { data: active, error } = await supabase.rpc('match_memories', {
     p_user_id: userId,
+    p_companion_id: companionId,
     query_embedding: queryEmbedding,
     match_count: opts.pool ?? PARAMS.candidatePool,
   });
@@ -87,6 +90,10 @@ function findAnchor(mem, map, anchorIds) {
   return null;
 }
 
+// 多角色不变量: 一条记忆的 superseded_by 永远指向【同 (user_id, companion_id)】的记忆
+// —— supersede 链只在 storeMemories#supersedeContradictions 里建立, candidates 来自已按
+// (user_id, companion_id) 过滤的 match_memories。因此这里沿 superseded_by 反查不带 scope 过滤
+// 也不会跨角色泄漏 (seedIds 已是 scope 化的 anchors)。
 async function fetchSupersededBy(seedIds, maxDepth) {
   const found = [];
   let frontier = seedIds;
@@ -125,8 +132,13 @@ async function reinforce(mems) {
 export function formatForPrompt(mems, subjectName = '对方') {
   if (!mems || mems.length === 0) return '';
   // 注入时优先用 narrative(她当下的解读), 没有才退回 fact_core/content
+  // sanitizeForPrompt: 记忆文本来自用户输入/LLM 提取, 不可信, 过滤可疑的 prompt 注入话术
+  // _lowConfidence (#4 不确定性表达): 相关度低/很久没强化/同话题情绪冲突 → "我记得好像..."
   const lines = mems
-    .map((m) => `- ${m.narrative || m.fact_core || m.content}`)
+    .map((m) => {
+      const text = sanitizeForPrompt(m.narrative || m.fact_core || m.content);
+      return m._lowConfidence ? `- 我记得好像${text}` : `- ${text}`;
+    })
     .join('\n');
   return `你记得关于${subjectName}的事:\n${lines}`;
 }
@@ -135,8 +147,8 @@ export function formatForPrompt(mems, subjectName = '对方') {
 export function formatSupersededTrailForPrompt(rows, subjectName = '对方') {
   if (!rows || rows.length === 0) return '';
   const lines = rows.map(({ old, replacedBy }) => {
-    const before = old.narrative || old.fact_core || old.content;
-    const after = replacedBy.narrative || replacedBy.fact_core || replacedBy.content;
+    const before = sanitizeForPrompt(old.narrative || old.fact_core || old.content);
+    const after = sanitizeForPrompt(replacedBy.narrative || replacedBy.fact_core || replacedBy.content);
     return `- 以前: ${before}; 后来更新为: ${after}`;
   });
   return `你记得${subjectName}以前说法/偏好的变化:\n${lines.join('\n')}`;

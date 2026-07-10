@@ -6,6 +6,7 @@
 import { supabase } from '../src/config.js';
 import { readState, moodLabel } from '../src/state/affect.js';
 import { scoreActivation } from '../src/engine/activation.js';
+import { driftFromOrigin } from '../src/memory/reconsolidate.js';
 
 const userId = process.argv[2];
 if (!userId) {
@@ -45,7 +46,9 @@ async function main() {
       console.log(`\n[${kind}] ${group.length} 条`);
       for (const m of group) {
         const a = m._act;
-        const tags = [m.modality !== 'text' ? m.modality : null, m.fact_locked ? '🔒' : null, m.access_count ? `×${m.access_count}` : null]
+        const drift = driftFromOrigin(m);
+        const driftTag = Math.abs(drift.valence) > 0.01 ? `漂移${drift.valence > 0 ? '+' : ''}${f(drift.valence)}` : null;
+        const tags = [m.modality !== 'text' ? m.modality : null, m.fact_locked ? '🔒' : null, m.access_count ? `×${m.access_count}` : null, driftTag]
           .filter(Boolean)
           .join(' ');
         console.log(

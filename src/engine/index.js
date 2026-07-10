@@ -2,7 +2,7 @@
 //
 // 两条用法:
 //   rankCandidates(items, state, opts)  —— 纯逻辑: 给候选集打分排序 (扩散+激活), 离线可测
-//   engineRecall(userId, query, state)  —— IO: 从 pgvector 拉候选 → embed query → rank → topK → 强化
+//   engineRecall(userId, companionId, query, state)  —— IO: 从 pgvector 拉候选 → embed query → rank → topK → 强化
 //
 // 与旧 retrieve.js 双轨并存, 验证不退化后再切默认 (见 §3 M2)。
 
@@ -31,13 +31,14 @@ export function rankCandidates(items, state, opts = {}) {
  * @param state 必传 —— 没有状态就退化成 wMood=0 (标准激活)。
  * @param opts  { topK, pool, params }
  */
-export async function engineRecall(userId, query, state = null, opts = {}) {
+export async function engineRecall(userId, companionId = 'default', query, state = null, opts = {}) {
   const topK = opts.topK ?? PARAMS.topK;
   const pool = opts.pool ?? PARAMS.candidatePool;
 
   const queryEmbedding = await embed(query);
   const { data: candidates, error } = await supabase.rpc('match_memories', {
     p_user_id: userId,
+    p_companion_id: companionId,
     query_embedding: queryEmbedding,
     match_count: pool,
   });
@@ -51,7 +52,15 @@ export async function engineRecall(userId, query, state = null, opts = {}) {
 
   // 没有状态就关掉心情门控 (退化标准激活, 与旧路径可比)
   const params = state ? opts.params : { ...opts.params, wMood: 0 };
-  const ranked = rankCandidates(normalized, state ?? {}, { ...opts, params }).slice(0, topK);
+
+  // #5 定向心情门控: 她负面情绪指向某外部话题时, 取该话题的向量, 让 directedMoodCongruence
+  // 只点亮与话题相关的负面记忆。缺凭证/无话题时降级为 null → 自动退回全局门控。
+  let topicEmbedding = opts.topicEmbedding ?? null;
+  if (!topicEmbedding && state?.relationship?.tension_target === 'external' && state.relationship.tension_topic) {
+    topicEmbedding = await embed(state.relationship.tension_topic).then(parseVector).catch(() => null);
+  }
+
+  const ranked = rankCandidates(normalized, state ?? {}, { ...opts, params, topicEmbedding }).slice(0, topK);
 
   await reinforce(ranked);
   return ranked;

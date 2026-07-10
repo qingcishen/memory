@@ -87,9 +87,10 @@ export function isExpired(item, now = Date.now(), graceHours = PARAMS.prospectiv
 // ============================================================
 
 /** 排一条预期记忆。cue 型会把 cueText 向量化存入 cue_embedding。 */
-export async function scheduleProspective(userId, item) {
+export async function scheduleProspective(userId, companionId = 'default', item) {
   const row = {
     user_id: userId,
+    companion_id: companionId,
     content: item.content,
     trigger_kind: item.trigger_kind,
     trigger_at: item.trigger_at ?? null,
@@ -102,21 +103,22 @@ export async function scheduleProspective(userId, item) {
 }
 
 /** observe 阶段顺手识别并排程未来意图; 没识别到返回 null。 */
-export async function scheduleFromTurns(userId, turns, now = Date.now(), subjectName = '对方') {
+export async function scheduleFromTurns(userId, companionId = 'default', turns, now = Date.now(), subjectName = '对方') {
   const p = detectProspective(turns, now, subjectName);
   if (!p) return null;
-  return scheduleProspective(userId, p);
+  return scheduleProspective(userId, companionId, p);
 }
 
 /**
  * 查当前该主动提起的预期记忆。先扫过期的降级, 再返回 due 列表。
  * @param ctx { query } —— 给 cue 型做语境匹配 (会 embed query)
  */
-export async function dueProspectives(userId, ctx = {}, now = Date.now()) {
+export async function dueProspectives(userId, companionId = 'default', ctx = {}, now = Date.now()) {
   const { data: pending, error } = await supabase
     .from('prospective')
     .select('*')
     .eq('user_id', userId)
+    .eq('companion_id', companionId)
     .eq('status', 'pending');
   if (error) throw error;
   if (!pending || pending.length === 0) return [];

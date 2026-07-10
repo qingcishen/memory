@@ -4,7 +4,7 @@
 //
 // 缺 ASR 凭证时降级: 调用方给了 transcript 仍可入库; 否则跳过, 不抛、不崩。
 
-import { llm } from '../config.js';
+import { asrLlm, ASR_MODEL } from '../config.js';
 import { normalizeMemory } from '../ontology.js';
 import { storeMemories } from '../store.js';
 
@@ -49,8 +49,8 @@ export function buildAudioMemory(opts = {}) {
 
 /** ASR 转写。缺凭证/失败时抛, 由 ingestAudio 兜底降级。 */
 export async function transcribeAudio(audioFile, opts = {}) {
-  const res = await llm.audio.transcriptions.create({
-    model: opts.model ?? 'whisper-1',
+  const res = await asrLlm.audio.transcriptions.create({
+    model: opts.model ?? ASR_MODEL,
     file: audioFile,
   });
   return String(res.text ?? '').trim();
@@ -61,14 +61,14 @@ export async function transcribeAudio(audioFile, opts = {}) {
  * @param opts { file?, transcript?, prosody?, mediaRef?, subjectName?, ... }
  * @returns 存入的记忆数组 (失败/无转写时返回 [], 不抛)
  */
-export async function ingestAudio(userId, opts = {}) {
+export async function ingestAudio(userId, companionId = 'default', opts = {}) {
   let transcript = opts.transcript;
   if (!transcript && opts.file) transcript = await transcribeAudio(opts.file).catch(() => null);
   if (!transcript) return []; // 降级: 转不出文字就不记, 不崩
 
   const mem = buildAudioMemory({ ...opts, transcript });
   if (!mem) return [];
-  return storeMemories(userId, [mem]);
+  return storeMemories(userId, companionId, [mem]);
 }
 
 function clamp(x, lo, hi) {

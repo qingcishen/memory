@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "ui",
+      "runtimeExecutable": "node",
+      "runtimeArgs": ["src/ui/server.js"],
+      "port": 8787
+    }
+  ]
+}

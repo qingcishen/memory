@@ -14,6 +14,13 @@
 
 v0.1 是个**干净的标准 RAG 记忆**,正是我们要超越的"标准方案"。它的检索、存储管线**复用为基座**,但记忆的**本体模型**要被替换。
 
+### K1 · 结构化知识图谱数据库地基
+
+数据库结构已收口到 `sql/schema.sql`,同时提供可独立部署的 `sql/knowledge-graph.sql`。它包含按
+`(user_id, companion_id)` 隔离的 `knowledge_entities` / `knowledge_relations`、实体向量索引、关系双向遍历索引、来源记忆追踪,以及入口实体召回 RPC `match_knowledge_entities`。
+
+应用层已接入(`src/knowledge/`):`observe` 并发分支里用便宜模型抽"实体—关系→实体"三元组(`extract.js`,归一化/去重/自环过滤为纯逻辑),幂等 upsert 进两张表(`store.js`);`recall` 时嵌入当前消息 → `match_knowledge_entities` 找入口实体 → 一次拉全该 scope 的活跃边、进程内有界多跳 BFS(`recall.js`,纯逻辑可单测)→ 格式化注入 prompt。全链路失败安全降级(未建表/关闭 `PARAMS.knowledge.enabled` 时零干扰)。纯逻辑测试 `examples/knowledge.test.js`(30 断言)。
+
 ---
 
 ## 1. 核心理念:活体记忆(本项目的全部创新所在)
@@ -119,8 +126,8 @@ alter table memories add column if not exists access_log     jsonb default '[]':
 **门面**:写入与读取都带新字段;旧 `content` 暂保留为兼容视图
 
 **验收**
-- [ ] 提取一段对话,正确分出 fact_core 与 affect,且 dyad 记忆被识别("我们一起…")
-- [ ] **不变式测试:任何写路径都不改已存在记忆的 `fact_core`**(锁定测试)
+- [x] 提取一段对话,正确分出 fact_core 与 affect,且 dyad 记忆被识别("我们一起…")
+- [x] **不变式测试:任何写路径都不改已存在记忆的 `fact_core`**(锁定测试,见 `examples/ontology.test.js` `assertFactCorePreserved`)
 
 ---
 
@@ -253,9 +260,11 @@ create table if not exists prospective (
 - [x] 发图→caption 入库 (modality=image),进 content/embedding 可被文本召回 — `buildImageMemory`
 - [x] 发语音→转写进 content 且语气进 affect (哭着说"没事" vs 笑着说 affect 不同) — `prosodyToAffect`/`buildAudioMemory`
 - [x] 缺凭证降级纯文本不崩 — `ingestImage/ingestAudio` 无输入返回 `[]`,不抛
+- [x] 图搜图: 按 `media_embedding` 余弦相似度召回 — `rankByMediaSimilarity`/`recallMedia` (#6 工程债)
 
-> **已实现** (`src/modal/{image,audio,index}.js` + schema `modality/media_embedding/media_ref` + `examples/modal.test.js`, 18 断言):
+> **已实现** (`src/modal/{image,audio,index}.js` + schema `modality/media_embedding/media_ref` + `examples/modal.test.js`, 29 断言):
 > 图片走 vision caption → image 记忆 (caption 进文本召回, 可选 CLIP `media_embedding`);语音走 ASR 转写 + 语气→affect。统一复用 M0~M3 本体/状态/重构/引擎 (`ontology.normalizeMemory`/`store` 已加 modality/media 字段,`VectorIndex` 早已按 modality 分桶)。facade 新增 `seeImage/hearVoice`,缺凭证全程降级不崩。
+> **媒体向量闭环** (#6 工程债,✅ 已补): `rankByMediaSimilarity` 纯逻辑按 `media_embedding` 余弦相似度排序 (跳过没存向量的候选), `recallMedia(userId, queryEmbedding, opts)` 拉该用户带 `media_embedding` 的记忆做进程内 brute-force 排序 + 强化 (同 M2 VectorIndex 思路, 省一次 SQL 函数)。本项目不内置视觉 embedding 模型 —— `queryEmbedding` 由调用方用 CLIP 等模型算好传入。facade 暴露为 `Memory.recallMedia(queryEmbedding, opts)`。`PARAMS.modal.mediaTopK` 控制默认返回条数。
 
 ---
 
@@ -279,21 +288,21 @@ M0-M7 打通后,系统已经有"像人"的骨架,但还有几处卖点与实现�
 
 1. **翻旧账检索**:已补第一刀。普通 `recall` 继续只取 `superseded_by is null` 的当前事实;新增 `retrieveSupersededTrail` / `Memory.recallHistory()` / `Memory.recallHistoryAsPrompt()` 显式沿 superseded 链捞旧版本。这样"你以前不是讨厌香菜吗"有数据路径,但不会污染日常事实回答。SQL 同步新增 `match_memory_history` 作为包含历史版本的辅助检索函数。
 2. **状态历史表**:✅ 已补 (`feature/state-history`)。新增 `affective_state_history` 表;`updateFromTurn` 在状态变化总幅度 ≥ `state.snapshotMinDelta` 时追加一条快照,并用 `labelStateEvent` 贴事件标签(吵架/和好/变亲密…)。纯逻辑 `stateDelta`/`summarizeTrajectory`/`formatTrajectory` 概括走向(亲密/信任趋势、紧张峰值、和好次数),`composeNarrativeInput` 与 `synthesizeNarrative` 已读取轨迹,`Memory.stateHistory()` 暴露查询。M1 测试 +14(29→43)。
-3. **情感锚回弹**:待补。重构已有单次 clamp,但缺原始情感锚。下一步给 `memories` 增加 `affect_origin_valence/intensity` 与漂移审计字段,让长期负面 mood 下反复 recall 不会把所有旧记忆单调染黑。
+3. **情感锚回弹**:✅ 已补 (`feature/affect-origin-anchor`)。`memories` 增加不可变的 `affect_origin_valence/intensity`(诞生时写入,像 fact_core 一样不再改)。重构时目标 = 当下心情与原始锚的加权(`originPull`),且结果硬夹在「距锚 ±`maxDriftFromOrigin`」内 —— 长期负面 mood 反复 recall 也洗不黑一条本来温暖的记忆。纯逻辑 `anchorTarget`/`clampToOrigin`/`driftFromOrigin`(漂移审计,已接入 `inspect`);`match_memories` 回传 origin 供 recall 命中时回弹。M3 测试 +14(15→29)。
 
 ### P1 · 认知质量
 
-4. **不确定性表达**:待补。召回结果现在都是确定口吻;应把 similarity/activation/冲突状态合成 `confidence`,低置信时输出"我记得好像..."。
-5. **情绪指向性**:待补。当前 tension 是 per-user 单值,不知道"为考试焦虑"还是"对我生气"。应给状态 delta 加 target/topic,检索门控只点亮同指向负面记忆。
-6. **媒体向量闭环**:待补。`media_embedding vector(512)` 已入 schema,但还没有图搜图/跨图检索 API。要么补 `recallMedia` 与 CLIP 查询向量,要么在 README 降级说明"图片目前靠 caption 文本召回"。
+4. **不确定性表达**:✅ 已补。新增 `src/confidence.js`:`memoryConfidence` 把 similarity(查询相关度,缺失按中性 0.5)+ recency/强化(`decay.recencyScore`,缺 `last_accessed` 按 1)按 `confidence.weights` 加权,命中 `detectConflicts`(同批候选里 embedding 余弦相似度 ≥ `confidence.conflict.similarityThreshold` 但 `affect_valence` 符号相反且差值 ≥ `conflict.valenceGap`,即"同一件事但当时感受截然相反")再扣 `conflictPenalty`;低于 `confidence.lowThreshold` 标记 `_lowConfidence`。`Memory.recall()` 统一在引擎/双轨/dyad-backdrop 三路结果上调用 `attachConfidence`;`formatForPrompt` 据此把"- XXX"改成"- 我记得好像XXX"。新增 `examples/confidence.test.js`(20 断言,全局 365→385)。
+5. **情绪指向性**:✅ 已补。`affective_state.relationship` 增 `tension_target`(user/external)+ `tension_topic`(启发式 `detectTensionTarget` + LLM 双产出,仅 tension 上升时采纳、缓和回基线后清空)。消费三处:`emotion.moodToEmotion` 在指向外部时按 `externalTensionWarmthFactor` 弱化对用户 warmth 的拉冷;`formatRelationshipPrompt` 措辞区分"为外部事烦"vs"对你有情绪";`engine/activation.directedMoodCongruence` 用话题向量做定向门控,只点亮与紧张话题语义相关的负面记忆,缺话题/指向用户时退化为全局门控(回归安全)。state/emotion/engine 测试 +多条。
+6. **媒体向量闭环**:✅ 已补。`src/modal/image.js` 新增 `rankByMediaSimilarity`(纯逻辑,余弦排序,跳过没存 `media_embedding` 的候选)与 `recallMedia(userId, queryEmbedding, opts)`(IO,拉该用户带 `media_embedding` 的记忆做进程内排序 + 强化,同 M2 VectorIndex 思路)。`queryEmbedding` 由调用方用 CLIP 等模型算好传入,本项目不内置视觉 embedding 模型。`PARAMS.modal.mediaTopK` 控制默认条数,facade 暴露为 `Memory.recallMedia(queryEmbedding, opts)`。M6 测试 +11(18→29)。
 
 ### P2 · 工程与安全债
 
-7. **observe 异步化**:待补。状态更新、extract、矛盾判断、prospective 排程仍串行 await;应把非阻塞路径拆成任务队列或 Promise 并发,并保留失败隔离。
-8. **近义去重**:待补。`dedup_hash` 只挡精确规范化重复;需加入 embedding 近邻判重,把"讨厌香菜/不爱吃香菜"强化为同一条。
-9. **主动遗忘与 prompt 注入防护**:待补。需要 forget-by-request API;注入 prompt 前要过滤/转义记忆里的指令型文本,避免"忽略以上指令"被当事实长期注入。
-10. **事务与并发写入**:待补。`storeMemories` 插入、判矛盾、supersede 是多步非事务,并发 observe 可能重复插入或错乱 supersede。应下沉到 RPC/事务或加唯一约束+乐观重试。
-11. **端到端场景评测**:待补。现有都是单元断言;需要 N 轮对话→状态轨迹→召回质量的回归,并把引擎 vs pgvector 对照从"可切换"升级为实际断言。
+7. **observe 异步化**:✅ 已补。`Memory.observe` 里互不依赖的状态更新 (`updateFromTurn`)、记忆提取 (`extractMemories`)、M5 预期记忆排程 (`scheduleFromTurns`) 改为 `Promise.all` 并发执行,各自 `.catch` 做失败隔离(任一失败退化为空结果,不拖垮其它两路);落库 (依赖提取结果 + 心情位移加成) 仍在并发结果之后顺序执行。
+8. **近义去重**:✅ 已补。`storeMemories` 插入前先用新记忆的 embedding 查 `match_memories`,候选相似度 ≥ `dedup.nearDuplicateThreshold`(默认 0.96,明显高于矛盾判断的 0.82)就视为"同一件事换了说法"(如"讨厌香菜"/"不爱吃香菜"),强化命中的旧记忆而非新增;这批候选随后复用于矛盾检测,不再多查一次。纯逻辑 `dedup.isNearDuplicate`/`findNearDuplicate`。M7 测试 +7(9→16)。
+9. **主动遗忘与 prompt 注入防护**:✅ 已补。新增 `src/promptSafety.js`:`looksLikeInjection` 用正则启发式识别"忽略以上指令"/"ignore previous instructions"/伪造 `system:`/`###` 角色头与标题(含换行后藏的);`sanitizeForPrompt` 先在原文上判断注入(命中则整条替换为占位串 `[内容含可疑指令片段, 已过滤]`),否则折叠空白/换行,接入 `formatForPrompt`/`formatSupersededTrailForPrompt`(retrieve.js)与 `formatPersonaBlock`(persona.js)。新增 `forget.similarityThreshold`(默认 0.75,低于矛盾判断的 0.82)+ `selectForgettable`/`forgetByQuery`(reflect.js,纯逻辑部分可单测),`fact_locked` 默认不删,暴露为 `Memory.forget(query, opts)`。新增 `examples/safety.test.js`(独立 Safety 套件,25 断言,全局 340→365)。
+10. **事务与并发写入**:✅ 已补(常见情形)。`memories_dedup_unique_idx`(`(user_id, dedup_hash)`,`dedup_hash is not null and superseded_by is null`,唯一)防止两个并发 `observe()` 都在 `fetchByHashes` 里没看到对方、都判定 fresh 而重复插入同一指纹:后到的 insert 抛 `23505`,`store.js` 捕获后用 `resolveInsertConflict` 退化为强化先到的那条(乐观重试),不再抛错丢掉整轮提取。`supersedeContradictions` 的更新加 `.is('superseded_by', null)`,两个并发新记忆都想取代同一条旧记忆时, 先到的生效、后到的影响 0 行, 取代链不会被乱序覆写。新增 `examples/store.test.js`(Concurrency 套件, 9 断言,全局 410→419)。**仍是已知残余**:近义去重(embedding 相似度)路径上的并发竞争未加锁, 极端时序下可能短暂出现两条"当前事实", 留给下一轮近义去重清理。
+11. **端到端场景评测**:✅ 已补。新增 `examples/scenario.test.js`(纯逻辑, 不连网): 用 `inferHeuristicDeltas`/`applyDeltas` 推演 5 轮对话(吵架→和好→升温)的真实状态轨迹, `summarizeTrajectory`/`formatTrajectory` 概括走向; 用 `moodShiftMagnitude` + `applyMoodShiftBoost` 验证"吵架的那一轮"记忆 importance 被加成(emotion-design.md §8); 同一份候选记忆池在轨迹的"受伤态"与"升温后"两个时间点分别跑 `rankCandidates`(M2 引擎,心情门控)与 `rerank`(旧 pgvector 路径,不感知心情)——断言引擎召回集合随轨迹漂移(吵架记忆 → 温馨记忆), 而旧路径不漂移, 把 §3 提到的"双轨对照"从"可切换"坐实成实际断言; 最后用一对同话题情绪相反的记忆验证 `attachConfidence`(#4)标记 `_lowConfidence` 并在 `formatForPrompt` 里改口"我记得好像"。Scenario 套件 19 断言, 全局 419→438。
 
 **建议顺序**:先完成 P0 的 #2 状态历史表与 #3 情感锚,因为它们会同时增强"我们的故事"和重构稳定性;随后补 #7/#9 处理延迟与安全。#6/#8 属于半成品闭环,可穿插完成。
 
