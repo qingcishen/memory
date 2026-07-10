@@ -59,6 +59,17 @@ export const asrLlm = new OpenAI({
   baseURL: process.env.ASR_BASE_URL || process.env.EMBED_BASE_URL || 'https://api.openai.com/v1',
 });
 
+// ---- TTS 语音合成 (她给你发语音; 见 src/modal/speech.js) ----
+// 显式配置 TTS_MODEL (或独立地址/密钥) 才开启 —— opt-in, 不配则永远纯文字回复;
+// 凭证缺省逐级回退 ASR -> Embedding 的 OpenAI 侧, 与 asrLlm 同族。
+export const TTS_MODEL = process.env.TTS_MODEL || '';
+export const TTS_VOICE = process.env.TTS_VOICE || 'nova';
+export const TTS_CONFIGURED = Boolean(process.env.TTS_MODEL);
+export const ttsLlm = new OpenAI({
+  apiKey: process.env.TTS_API_KEY || process.env.ASR_API_KEY || process.env.EMBED_API_KEY || process.env.LLM_API_KEY || 'placeholder',
+  baseURL: process.env.TTS_BASE_URL || process.env.ASR_BASE_URL || process.env.EMBED_BASE_URL || 'https://api.openai.com/v1',
+});
+
 // ---- 图片生成 (由 appearance/provider.js 消费) ----
 export const IMAGE_BASE_URL = process.env.IMAGE_BASE_URL || '';
 export const IMAGE_API_KEY = process.env.IMAGE_API_KEY || '';

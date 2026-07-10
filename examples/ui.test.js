@@ -166,6 +166,9 @@ console.log('resolveModelTarget (多供应商模型回退链)');
   ok('ASR 默认复用 OpenAI 向量凭证', asr.base === 'https://openai.test/v1' && asr.key === 'openai-key' && asr.model === 'whisper-1');
   const image = resolveModelTarget('image', { ...env, IMAGE_MODEL: 'seedream' });
   ok('图片生成默认复用回复供应商', image.base === reply.base && image.key === reply.key && image.model === 'seedream');
+  const tts = resolveModelTarget('tts', { ...env, TTS_MODEL: 'tts-1' });
+  ok('TTS 默认复用 ASR 链路凭证', tts.base === 'https://openai.test/v1' && tts.key === 'openai-key' && tts.model === 'tts-1');
+  ok('TTS 未配模型时 model 为空 (opt-in)', resolveModelTarget('tts', env).model === '');
 }
 
 console.log(`\n控制台 envfile 全部 ${passed} 条断言通过`);

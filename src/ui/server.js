@@ -138,6 +138,18 @@ export const CONFIG_SCHEMA = [
     ],
   },
   {
+    id: 'tts',
+    title: '语音合成 TTS',
+    hint: '配置合成模型后, 对方发语音时她会用语音条回复 (台词合成语音, 旁白仍走文字); 留空 TTS_MODEL 则永远纯文字。默认复用 ASR 的 OpenAI 凭证。',
+    testable: true,
+    fields: [
+      { key: 'TTS_BASE_URL', label: 'Base URL', placeholder: '留空则复用 ASR 的地址' },
+      { key: 'TTS_API_KEY', label: 'API Key', secret: true, placeholder: '留空则复用 ASR/EMBED 的密钥' },
+      { key: 'TTS_MODEL', label: '合成模型 (配置即开启语音回复)', placeholder: 'tts-1 或 gpt-4o-mini-tts' },
+      { key: 'TTS_VOICE', label: '音色', placeholder: 'nova' },
+    ],
+  },
+  {
     id: 'image',
     title: '图片生成',
     hint: '用于自拍和场景照片。支持火山方舟 Seedream 等 OpenAI 兼容图片接口。',
@@ -321,6 +333,25 @@ async function testCatalogTarget(target, env) {
   return { ok: true, ms: catalog.ms, message: `${cfg.model || '模型目录'} 可访问；实际任务将在使用时验证` };
 }
 
+/** TTS 测试: 真合成一句两个字的语音, 验证模型/音色/密钥整条链路 (开销极小)。 */
+async function testTts(env) {
+  const cfg = resolveModelTarget('tts', env);
+  if (!cfg.model) return { ok: false, message: '先配置 TTS_MODEL (配置即开启"对方发语音时她用语音回")' };
+  if (!cfg.key) return { ok: false, message: `先配置 ${cfg.keyName} (或先配好 ASR/Embedding 密钥复用)` };
+  const { res, ms } = await timedFetch(`${cfg.base}/audio/speech`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}` },
+    body: JSON.stringify({ model: cfg.model, voice: env.TTS_VOICE || 'nova', input: '你好', response_format: 'opus' }),
+  }, 45000);
+  if (res.ok) {
+    const bytes = (await res.arrayBuffer()).byteLength;
+    if (bytes > 0) return { ok: true, ms, message: `${cfg.model} 可用, 合成 ${bytes} 字节 opus (音色 ${env.TTS_VOICE || 'nova'})` };
+    return { ok: false, ms, message: '服务返回了空音频' };
+  }
+  const body = await res.json().catch(() => null);
+  return { ok: false, ms, message: body?.error?.message ? String(body.error.message).slice(0, 160) : `HTTP ${res.status}` };
+}
+
 const TESTS = {
   supabase: testSupabase,
   llm: testLlm,
@@ -328,6 +359,7 @@ const TESTS = {
   vision: (env) => testChatTarget('vision', env),
   embedding: testEmbedding,
   asr: (env) => testCatalogTarget('asr', env),
+  tts: testTts,
   image: (env) => testCatalogTarget('image', env),
   telegram: testTelegram,
 };
@@ -350,12 +382,14 @@ export function resolveModelTarget(target, env = {}) {
   const llm = { base: env.LLM_BASE_URL || 'https://api.deepseek.com', key: env.LLM_API_KEY || '', model: env.LLM_MODEL || 'deepseek-chat', keyName: 'LLM_API_KEY', modelName: 'LLM_MODEL' };
   const reply = { base: env.REPLY_BASE_URL || llm.base, key: env.REPLY_API_KEY || llm.key, model: env.REPLY_MODEL || llm.model, keyName: 'REPLY_API_KEY', modelName: 'REPLY_MODEL' };
   const embedding = { base: env.EMBED_BASE_URL || 'https://api.openai.com/v1', key: env.EMBED_API_KEY || llm.key, model: env.EMBED_MODEL || 'text-embedding-3-small', keyName: 'EMBED_API_KEY', modelName: 'EMBED_MODEL' };
+  const asr = { base: env.ASR_BASE_URL || embedding.base, key: env.ASR_API_KEY || embedding.key, model: env.ASR_MODEL || 'whisper-1', keyName: 'ASR_API_KEY', modelName: 'ASR_MODEL' };
   const map = {
     llm,
     reply,
     vision: { base: env.VISION_BASE_URL || reply.base, key: env.VISION_API_KEY || reply.key, model: env.VISION_MODEL || reply.model, keyName: 'VISION_API_KEY', modelName: 'VISION_MODEL' },
     embedding,
-    asr: { base: env.ASR_BASE_URL || embedding.base, key: env.ASR_API_KEY || embedding.key, model: env.ASR_MODEL || 'whisper-1', keyName: 'ASR_API_KEY', modelName: 'ASR_MODEL' },
+    asr,
+    tts: { base: env.TTS_BASE_URL || asr.base, key: env.TTS_API_KEY || asr.key, model: env.TTS_MODEL || '', keyName: 'TTS_API_KEY', modelName: 'TTS_MODEL' },
     image: { base: env.IMAGE_BASE_URL || reply.base, key: env.IMAGE_API_KEY || reply.key, model: env.IMAGE_MODEL || '', keyName: 'IMAGE_API_KEY', modelName: 'IMAGE_MODEL' },
   };
   const cfg = map[target];

@@ -221,6 +221,7 @@ Telegram 的 `chat.id` 会映射成 `userId = telegram:<chat.id>`, 因此每个�
 | `modal.mediaTopK` | 图搜图: `recallMedia` 默认返回几条最相似的图/视频 | 调高则一次给更多候选, 但 prompt 更长 |
 | `knowledge.enabled` | K1 知识图谱: observe 抽实体关系 + recall 多跳注入 | 关 false 则零额外 LLM/DB 调用 |
 | `knowledge.maxHops` / `maxFacts` | 图谱召回的展开跳数 / 注入事实上限 | 调高则关联带得更远更多, 但 prompt 更长 |
+| `tts.maxSpeakChars` | 语音回复: 台词总长超过它就不合成、回退文字 | 调高则更长的回复也会被念出来 |
 
 ## 数据流
 
@@ -267,7 +268,7 @@ Telegram 的 `chat.id` 会映射成 `userId = telegram:<chat.id>`, 因此每个�
 | `src/memory/reconsolidate.js` | 重构性记忆 (M3): 想起时按当下情绪重写情感层, 永不改 fact_core |
 | `src/persona.js` / `src/narrative.js` | self 人格域隔离 / dyad 共同记忆 + 关系叙事 (M4) |
 | `src/memory/prospective.js` | 预期记忆 (M5): 识别未来意图 → 到点/语境主动提起 |
-| `src/modal/` | 多模态 (M6): `image`(vision caption + `recallMedia` 图搜图) / `audio`(ASR + 语气→affect) |
+| `src/modal/` | 多模态 (M6): `image`(vision caption + `recallMedia` 图搜图) / `audio`(ASR + 语气→affect) / `speech`(TTS 语音回复: 语音进语音出, 台词合成语音条、旁白仍走文字) |
 | `src/knowledge/` | K1 结构化知识图谱: `extract`(对话→实体关系三元组) / `store`(幂等 upsert) / `recall`(入口实体向量召回 + 有界多跳展开 + 注入格式化); observe/recall 自动参与, 失败安全降级 |
 | `src/memory.js` | 门面类 `Memory` |
 | `src/orchestrator/` | 编排器: `Orchestrator` 门面 + 把 Memory/persona/stateLayer/relationship 适配成统一 `toPrompt` 接口, `assemble` 纯本地拼接 prompt |

@@ -230,6 +230,11 @@ export const DEFAULT_PARAMS = {
     knowledgePerDay: 1, // 角色知识库里每晚最多滴灌几条新的 self 事实
   },
 
+  // ---- TTS 语音回复 (src/modal/speech.js): 对方发语音且配置了 TTS_MODEL 时才开口 ----
+  tts: {
+    maxSpeakChars: 120, // 台词总长超过它就不合成 (长回复念出来很怪), 回退纯文字
+  },
+
   // ---- K1 结构化知识图谱 (src/knowledge/, 表见 sql/knowledge-graph.sql) ----
   // 与 engine/graph.js 的临时相似图分工: 相似图管联想扩散, 本图持久化可解释的
   // "实体 —关系→ 实体" 客观事实 (小王在腾讯上班 / 妈妈住在武汉)。

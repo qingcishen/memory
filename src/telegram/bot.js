@@ -11,6 +11,8 @@ import { makeScheduleActivityFn, parseSleepWindow } from '../state/activity.js';
 import { WeatherProvider } from '../world/weather.js';
 import { WorldDimension } from '../world/index.js';
 import { SceneClassifier } from '../narration.js';
+import { pickSpeakableText, shouldReplyWithVoice, synthesizeSpeech } from '../modal/speech.js';
+import { TTS_CONFIGURED } from '../config.js';
 
 dotenv.config();
 
@@ -119,6 +121,18 @@ class TelegramApi {
 
   sendPhoto(chatId, photo, extra = {}) {
     return this.call('sendPhoto', { chat_id: chatId, photo, ...extra });
+  }
+
+  /** 语音条上传 (multipart, 与 postJson 的纯 JSON 通道分开)。buffer 需为 ogg/opus。 */
+  async sendVoice(chatId, buffer, extra = {}) {
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    form.append('voice', new Blob([buffer], { type: 'audio/ogg' }), 'voice.ogg');
+    for (const [k, v] of Object.entries(extra)) form.append(k, String(v));
+    const res = await fetch(`${this.baseUrl}/sendVoice`, { method: 'POST', body: form });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) throw new Error(`Telegram sendVoice failed: ${data?.description || `HTTP ${res.status}`}`);
+    return data.result;
   }
 
   getFile(fileId) {
@@ -253,6 +267,33 @@ export class TelegramMemoryBot {
       await this.api.sendMessage(chatId, msg.text);
     }
     return outgoing;
+  }
+
+  /**
+   * 语音进语音出: 对方刚发的是语音且配置了 TTS_MODEL 时, 台词合成一条语音条发回
+   * (旁白仍走文字先行, 念第三人称描写很怪); 台词太长/合成失败都回退纯文字 sendParts。
+   */
+  async deliverReply(chatId, parts, { incomingVoice = false } = {}) {
+    const speakable = pickSpeakableText(parts);
+    if (shouldReplyWithVoice({ incomingVoice, configured: TTS_CONFIGURED, speakable })) {
+      try {
+        const audio = await synthesizeSpeech(speakable);
+        const narrations = buildOutgoingMessages((parts ?? []).filter((p) => p?.type === 'narration'));
+        for (const msg of narrations) {
+          await this.api.sendChatAction(chatId, 'typing').catch(() => {});
+          await sleep(typingDelayMs(msg.text));
+          await this.api.sendMessage(chatId, msg.text);
+        }
+        await this.api.sendChatAction(chatId, 'record_voice').catch(() => {});
+        await sleep(typingDelayMs(speakable));
+        await this.api.sendVoice(chatId, audio);
+        console.log(`[telegram] voice reply chat=${chatId} chars=${speakable.length} bytes=${audio.length}`);
+        return [...narrations, { type: 'voice', text: speakable }];
+      } catch (error) {
+        console.error(`[telegram] tts failed chat=${chatId}, 回退文字:`, formatError(error));
+      }
+    }
+    return this.sendParts(chatId, parts);
   }
 
   /** 给一个 chat 起后台"活着"循环: 维护(心情回落/作息/生病/夜间反思) + 主动消息(投递回这个 chat)。 */
@@ -458,7 +499,7 @@ export class TelegramMemoryBot {
     console.log(`[telegram] replying chat=${chatId} timeoutMs=${this.replyTimeoutMs}`);
     try {
       const { text: reply, parts } = await withTimeout(bot.reply(text), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
-      const sent = await this.sendParts(chatId, parts);
+      const sent = await this.deliverReply(chatId, parts, { incomingVoice: Boolean(message.voice || message.audio) });
       console.log(`[telegram] replied chat=${chatId} chars=${reply.length} parts=${sent.length}`);
     } catch (error) {
       console.error(`[telegram] reply failed chat=${chatId}:`, formatError(error));
