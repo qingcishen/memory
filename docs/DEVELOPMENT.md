@@ -19,7 +19,7 @@ v0.1 是个**干净的标准 RAG 记忆**,正是我们要超越的"标准方案"
 数据库结构已收口到 `sql/schema.sql`,同时提供可独立部署的 `sql/knowledge-graph.sql`。它包含按
 `(user_id, companion_id)` 隔离的 `knowledge_entities` / `knowledge_relations`、实体向量索引、关系双向遍历索引、来源记忆追踪,以及入口实体召回 RPC `match_knowledge_entities`。
 
-这部分只代表数据库地基完整;实体关系提取、写入和多跳召回仍需在当前分支恢复应用层接入后,知识图谱才会参与实际对话。
+应用层已接入(`src/knowledge/`):`observe` 并发分支里用便宜模型抽"实体—关系→实体"三元组(`extract.js`,归一化/去重/自环过滤为纯逻辑),幂等 upsert 进两张表(`store.js`);`recall` 时嵌入当前消息 → `match_knowledge_entities` 找入口实体 → 一次拉全该 scope 的活跃边、进程内有界多跳 BFS(`recall.js`,纯逻辑可单测)→ 格式化注入 prompt。全链路失败安全降级(未建表/关闭 `PARAMS.knowledge.enabled` 时零干扰)。纯逻辑测试 `examples/knowledge.test.js`(30 断言)。
 
 ---
 

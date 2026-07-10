@@ -229,6 +229,18 @@ export const DEFAULT_PARAMS = {
   training: {
     knowledgePerDay: 1, // 角色知识库里每晚最多滴灌几条新的 self 事实
   },
+
+  // ---- K1 结构化知识图谱 (src/knowledge/, 表见 sql/knowledge-graph.sql) ----
+  // 与 engine/graph.js 的临时相似图分工: 相似图管联想扩散, 本图持久化可解释的
+  // "实体 —关系→ 实体" 客观事实 (小王在腾讯上班 / 妈妈住在武汉)。
+  knowledge: {
+    enabled: true, // observe 抽取实体关系 + recall 多跳召回; 关掉则零额外 LLM/DB 调用
+    entryTopK: 3, // 入口实体召回条数 (match_knowledge_entities)
+    entryMinSimilarity: 0.35, // 入口实体最低相似度, 低于它视为"这句话跟图谱无关", 不注入
+    maxHops: 2, // 有界多跳展开跳数
+    maxFacts: 8, // 注入 prompt 的关系事实上限
+    minConfidence: 0.45, // 低于该置信度的关系不参与注入
+  },
 };
 
 function readOverrides() {

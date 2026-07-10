@@ -32,7 +32,7 @@ cp .env.example .env   # 填入 Supabase / LLM / Embedding 凭证
 
 只补知识图谱数据库时,可单独执行 `sql/knowledge-graph.sql`;它会创建实体表、关系表、遍历索引和 `match_knowledge_entities` 入口查询函数,可重复执行。
 
-LLM 用 OpenAI 兼容接口,DeepSeek 直接可用;Embedding 默认 OpenAI `text-embedding-3-small`(1536 维)。换 embedding 模型记得同步改 schema 里的 `vector(维度)`。
+LLM 用 OpenAI 兼容接口,DeepSeek 直接可用;Embedding 默认 OpenAI `text-embedding-3-small`(1536 维)。换 embedding 模型记得同步改 schema 里的 `vector(维度)`。回复模型可走**独立供应商**(`REPLY_BASE_URL` / `REPLY_API_KEY`,如 OpenRouter 上的更强模型)——"回复用好模型,提取/反思等后台杂活用便宜模型";不配置则回复与后台共用同一端点。
 
 ## 用法
 
@@ -219,6 +219,8 @@ Telegram 的 `chat.id` 会映射成 `userId = telegram:<chat.id>`, 因此每个�
 | `confidence.lowThreshold` | 不确定性表达: confidence 低于它时改口"我记得好像..." | 调高则更多记忆带上不确定语气, 显得更"人"但也更含糊 |
 | `forget.similarityThreshold` | 主动遗忘: query 召回候选相似度高于它才纳入删除范围 | 调低则"忘记那件事"更容易扩大误删范围 |
 | `modal.mediaTopK` | 图搜图: `recallMedia` 默认返回几条最相似的图/视频 | 调高则一次给更多候选, 但 prompt 更长 |
+| `knowledge.enabled` | K1 知识图谱: observe 抽实体关系 + recall 多跳注入 | 关 false 则零额外 LLM/DB 调用 |
+| `knowledge.maxHops` / `maxFacts` | 图谱召回的展开跳数 / 注入事实上限 | 调高则关联带得更远更多, 但 prompt 更长 |
 
 ## 数据流
 
@@ -266,6 +268,7 @@ Telegram 的 `chat.id` 会映射成 `userId = telegram:<chat.id>`, 因此每个�
 | `src/persona.js` / `src/narrative.js` | self 人格域隔离 / dyad 共同记忆 + 关系叙事 (M4) |
 | `src/memory/prospective.js` | 预期记忆 (M5): 识别未来意图 → 到点/语境主动提起 |
 | `src/modal/` | 多模态 (M6): `image`(vision caption + `recallMedia` 图搜图) / `audio`(ASR + 语气→affect) |
+| `src/knowledge/` | K1 结构化知识图谱: `extract`(对话→实体关系三元组) / `store`(幂等 upsert) / `recall`(入口实体向量召回 + 有界多跳展开 + 注入格式化); observe/recall 自动参与, 失败安全降级 |
 | `src/memory.js` | 门面类 `Memory` |
 | `src/orchestrator/` | 编排器: `Orchestrator` 门面 + 把 Memory/persona/stateLayer/relationship 适配成统一 `toPrompt` 接口, `assemble` 纯本地拼接 prompt |
 | `src/ui/` | 本地控制台 (`npm run ui`): 浏览器里填密钥写回 `.env` + 连接体检 + Telegram bot 启停; `envfile.js` 为纯逻辑可单测 |

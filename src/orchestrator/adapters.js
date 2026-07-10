@@ -46,11 +46,11 @@ export class MemoryAdapter {
     this._life = life;
   }
 
-  /** 输入当前用户消息, 返回可直接注入 system prompt 的记忆块。 */
+  /** 输入当前用户消息, 返回可直接注入 system prompt 的记忆块 (含 K1 知识图谱事实)。 */
   async recall(query, opts = {}) {
     if (opts.debug) {
-      const hits = await this._mem.recall(query, opts);
-      return { block: this._mem.toPrompt(hits), hits };
+      const { hits, knowledge, block } = await this._mem.recallDetailed(query, opts);
+      return { block, hits, knowledge };
     }
     return this._mem.recallAsPrompt(query, opts);
   }

@@ -49,6 +49,10 @@ const PARAM_SCHEMA = [
   { path: 'queue.maxAttempts', label: '任务最大重试次数', min: 1, max: 20, step: 1, group: '任务队列' },
   { path: 'queue.batchSize', label: '任务批处理数量', min: 1, max: 100, step: 1, group: '任务队列' },
   { path: 'training.knowledgePerDay', label: '每日知识滴灌条数', min: 0, max: 20, step: 1, group: '训练' },
+  { path: 'knowledge.maxHops', label: '图谱多跳展开跳数', min: 1, max: 4, step: 1, group: '知识图谱' },
+  { path: 'knowledge.maxFacts', label: '图谱注入事实上限', min: 1, max: 20, step: 1, group: '知识图谱' },
+  { path: 'knowledge.entryMinSimilarity', label: '图谱入口相似度门槛', min: 0, max: 1, step: 0.05, group: '知识图谱' },
+  { path: 'knowledge.minConfidence', label: '图谱注入置信度门槛', min: 0, max: 1, step: 0.05, group: '知识图谱' },
 ];
 
 const BACKUP_TABLES = [
@@ -83,6 +87,10 @@ export const CONFIG_SCHEMA = [
       { key: 'LLM_API_KEY', label: 'API Key', secret: true, placeholder: 'sk-...', link: { label: '去 DeepSeek 获取', url: 'https://platform.deepseek.com/api_keys' } },
       { key: 'LLM_MODEL', label: '基础模型 (提取/反思)', placeholder: 'deepseek-chat' },
       { key: 'REPLY_MODEL', label: '回复模型 (可选, 留空则同基础模型)', placeholder: 'deepseek-chat' },
+    ],
+    advanced: [
+      { key: 'REPLY_BASE_URL', label: '回复模型独立 Base URL (可选, 让回复走另一家"好模型")', placeholder: '留空则复用上面的 Base URL' },
+      { key: 'REPLY_API_KEY', label: '回复模型独立 API Key (可选)', secret: true, placeholder: '留空则复用上面的 API Key' },
     ],
   },
   {
@@ -212,11 +220,26 @@ async function testLlm(env) {
     body: JSON.stringify({ model, max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] }),
   });
   const body = await res.json().catch(() => null);
-  if (res.ok && body?.choices?.[0]) {
-    const extra = env.REPLY_MODEL && env.REPLY_MODEL !== model ? ` (回复模型 ${env.REPLY_MODEL} 未单独测试)` : '';
-    return { ok: true, ms, message: `${model} 可用${extra}` };
+  if (!res.ok || !body?.choices?.[0]) {
+    return { ok: false, ms, message: body?.error?.message ? String(body.error.message).slice(0, 160) : `HTTP ${res.status}` };
   }
-  return { ok: false, ms, message: body?.error?.message ? String(body.error.message).slice(0, 160) : `HTTP ${res.status}` };
+  // 回复模型走独立供应商或不同模型名时, 单独再 ping 一次, 别让"基础模型通了"掩盖"回复模型配错了"
+  const replyBase = (env.REPLY_BASE_URL || base).replace(/\/+$/, '');
+  const replyKey = env.REPLY_API_KEY || key;
+  const replyModel = env.REPLY_MODEL || model;
+  const replyDiffers = replyBase !== base || replyKey !== key || replyModel !== model;
+  if (!replyDiffers) return { ok: true, ms, message: `${model} 可用` };
+  const reply = await timedFetch(`${replyBase}/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: `Bearer ${replyKey}` },
+    body: JSON.stringify({ model: replyModel, max_tokens: 8, messages: [{ role: 'user', content: 'ping' }] }),
+  }).catch((e) => ({ res: null, ms: 0, error: e }));
+  const replyBody = reply.res ? await reply.res.json().catch(() => null) : null;
+  if (reply.res?.ok && replyBody?.choices?.[0]) {
+    return { ok: true, ms, message: `基础 ${model} 可用 · 回复 ${replyModel} 可用 (${reply.ms}ms)` };
+  }
+  const reason = replyBody?.error?.message ? String(replyBody.error.message).slice(0, 100) : reply.res ? `HTTP ${reply.res.status}` : '连接失败';
+  return { ok: false, ms, message: `基础 ${model} 可用, 但回复模型 ${replyModel} 不通: ${reason}` };
 }
 
 async function testEmbedding(env) {
@@ -719,7 +742,8 @@ async function getSystemHealth(env) {
   const required = ['memories', 'affective_state', 'life_state', 'prospective', 'chat_history', 'world_state', 'jobs'];
   const optional = ['knowledge_entities', 'knowledge_relations', 'appearance_assets', 'companions'];
   const results = await Promise.all([...required, ...optional].map(async (table) => {
-    const r = await supabaseRest(env, `${table}?select=*&limit=1`).catch((error) => ({ ok: false, message: error?.message }));
+    const r = await supabaseRequest(env, `${table}?select=*&limit=1`, { timeoutMs: 30000 })
+      .catch((error) => ({ ok: false, message: error?.message }));
     return { table, required: required.includes(table), ok: r.ok, message: r.ok ? '就绪' : r.missingTable ? '缺表' : r.message };
   }));
   return {

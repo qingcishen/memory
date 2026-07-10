@@ -1,18 +1,10 @@
 <!doctype html>
-<!--
-  Cyber Memory 本地控制台 (patina · 陶土暖阳)
-  概念句: AI 伴侣的后台 styled as 她房间里的梳妆台抽屉: signature = 拱形窗徽标 + 会呼吸的心跳灯 + 陶土贴纸标签。
-  表单结构完全由 GET /api/config 返回的 schema 驱动, 加配置项只需要改 server.js 的 CONFIG_SCHEMA。
--->
+<!-- Cyber Memory 本地控制台。表单结构由 GET /api/config 返回的 schema 驱动。 -->
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
 <title>Cyber Memory · 控制台</title>
-<link rel="preconnect" href="https://fonts.googleapis.com" />
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
-<!-- 字体是渐进增强: 断网时回退到 Georgia/宋体/PingFang, 页面不阻塞 (display=swap) -->
-<link href="https://fonts.googleapis.com/css2?family=Lora:wght@500;600&family=Noto+Serif+SC:wght@500;600&family=Nunito+Sans:opsz,wght@6..12,400..800&family=IBM+Plex+Mono:wght@400;500&display=swap" rel="stylesheet" />
 <style>
   :root {
     --cream: oklch(0.958 0.02 85);
@@ -551,107 +543,107 @@
     .card-toggle { order: 2; }
   }
 
-  /* ---------- 视觉精修: 暖陶工作台 ----------
-     结构 (布局/尺寸/圆角/响应式) 沿用工作台化改版; 皮肤回到陶土暖阳:
-     暖纸底 + 衬线标题 (Lora/思源宋) + 陶土红主色, 拒绝冷灰 SaaS 均值脸。 */
+  /* ---------- 视觉精修: 现代控制台 ---------- */
   :root {
-    --cream: #f7f4ee;
-    --sand: #fffdf8;
-    --sand-deep: #f1ebe1;
-    --clay-line: #e4dccd;
-    --espresso: #322d24;
-    --espresso-2: #6e675a;
-    --terracotta: #c65a3a;
-    --terracotta-deep: #a94829;
-    --sage: #4e9b72;
-    --sage-ink: #276343;
-    --sage-fill: #e4f2e8;
-    --rust: #b04432;
-    --rust-fill: #f9e9e2;
-    --marigold: #e7a83e;
-    --cocoa: #221e17;
-    --cocoa-text: #ded6c6;
-    --font-display: "Lora", "Noto Serif SC", Georgia, "Songti SC", "STSong", serif;
-    --font-body: "Nunito Sans", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif;
-    --shadow-card: 0 1px 2px rgb(80 62 40 / .04), 0 8px 24px rgb(80 62 40 / .06);
-    --shadow-raise: 0 3px 8px rgb(80 62 40 / .07), 0 18px 38px rgb(80 62 40 / .1);
+    --cream: #f5f7fb;
+    --sand: #ffffff;
+    --sand-deep: #eef1f7;
+    --clay-line: #e2e7ef;
+    --espresso: #172033;
+    --espresso-2: #647087;
+    --terracotta: #5b6cf9;
+    --terracotta-deep: #4556e8;
+    --sage: #22a06b;
+    --sage-ink: #177a52;
+    --sage-fill: #e7f7f0;
+    --rust: #c94444;
+    --rust-fill: #fcebec;
+    --marigold: #d99b23;
+    --cocoa: #151a27;
+    --cocoa-text: #dce3f2;
+    --font-display: -apple-system, BlinkMacSystemFont, "SF Pro Display", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-body: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+    --font-mono: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+    --shadow-card: 0 1px 2px rgb(23 32 51 / .03), 0 8px 24px rgb(23 32 51 / .055);
+    --shadow-raise: 0 4px 12px rgb(23 32 51 / .07), 0 22px 48px rgb(23 32 51 / .1);
   }
   body {
-    font-size: 14px; line-height: 1.6;
+    font-size: 14px; line-height: 1.58;
     background:
-      radial-gradient(circle at 12% -4%, rgb(198 90 58 / .09), transparent 26rem),
-      radial-gradient(circle at 94% 10%, rgb(78 155 114 / .07), transparent 28rem),
-      linear-gradient(180deg, #f9f6f0, var(--cream) 40rem);
-    border-top: 3px solid var(--terracotta);   /* 陶器口沿的一道釉线 */
+      radial-gradient(circle at 8% -12%, rgb(91 108 249 / .10), transparent 30rem),
+      radial-gradient(circle at 100% 0%, rgb(80 185 216 / .07), transparent 32rem),
+      var(--cream);
+    border-top: 0;
   }
-  /* 纸纹颗粒保留但压到 2%: 是"纸", 不是"雪花屏" */
-  body::before { opacity: .02; }
-  h1, h2, h3 { font-family: var(--font-display); font-weight: 600; letter-spacing: -.005em; }
+  body::before { display: none; }
+  h1, h2, h3 { font-family: var(--font-display); font-weight: 700; letter-spacing: -.025em; }
   header.site { max-width: 1480px; padding: 20px 28px 14px; gap: 13px; }
   .emblem {
-    width: 44px; height: 50px; border-radius: 999px 999px 12px 12px;  /* 签名拱形窗, 不改方圆角 */
-    box-shadow: 0 8px 20px rgb(198 90 58 / .22);
+    width: 44px; height: 44px; border-radius: 13px;
+    background: linear-gradient(145deg, #7180ff, #4657e8);
+    box-shadow: 0 8px 22px rgb(91 108 249 / .22);
   }
-  .site-title h1 { font-size: 24px; line-height: 1.25; }
+  .site-title h1 { font-size: 23px; line-height: 1.25; }
   .site-title p { margin-top: 3px; font-size: 12.5px; }
-  .header-kicker { margin-bottom: 5px; font-size: 9.5px; letter-spacing: .17em; color: var(--terracotta-deep); }
+  .header-kicker { margin-bottom: 4px; font-size: 9.5px; letter-spacing: .15em; color: var(--terracotta-deep); }
   main#app-shell { max-width: 1480px; padding-top: 10px; gap: 16px; }
-  .workspace-nav { border-radius: 18px; background: rgb(255 253 248 / .8); backdrop-filter: blur(12px); -webkit-backdrop-filter: blur(12px); border-color: var(--clay-line); box-shadow: var(--shadow-card); }
-  .nav-rail-title, .nav-section-label { color: #99907e; }
+  .workspace-nav { border-radius: 16px; background: rgb(255 255 255 / .86); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px); border-color: var(--clay-line); box-shadow: var(--shadow-card); }
+  .nav-rail-title, .nav-section-label { color: #8b96aa; }
   nav.tabs button { border-radius: 11px; min-height: 42px; font-size: 13.5px; font-weight: 700; }
-  nav.tabs button[aria-selected="true"] { background: var(--terracotta); color: #fdf6ee; box-shadow: 0 7px 16px rgb(198 90 58 / .28); }
-  nav.tabs button[aria-selected="true"] .nav-icon { color: #fbdccd; }
-  .nav-icon { color: #99907e; font-size: 16px; }
-  .nav-caption { color: #99907e; }
-  .scope-switcher { background: rgb(255 253 248 / .8); border-color: var(--clay-line); border-radius: 12px; box-shadow: 0 3px 12px rgb(80 62 40 / .05); }
+  nav.tabs button[aria-selected="true"] { background: #20283a; color: #fff; box-shadow: 0 7px 16px rgb(23 32 51 / .18); }
+  nav.tabs button[aria-selected="true"] .nav-icon { color: #aeb7ff; }
+  .nav-icon { color: #8b96aa; font-size: 16px; }
+  .nav-caption { color: #8b96aa; }
+  .scope-switcher { background: rgb(255 255 255 / .9); border-color: var(--clay-line); border-radius: 12px; box-shadow: 0 3px 12px rgb(23 32 51 / .045); }
   .scope-switcher button { background: var(--sand-deep); }
   .tag { padding: 3px 9px; font-size: 11.5px; border-color: var(--clay-line); }
   .page-intro { margin-bottom: 16px; }
-  .page-intro h2 { font-size: 23px; }
+  .page-intro h2 { font-size: 22px; }
   .page-intro p { font-size: 13.5px; }
-  .card { background: rgb(255 253 248 / .9); border-color: var(--clay-line); border-radius: 15px; box-shadow: var(--shadow-card); padding: 19px; }
+  .card { background: rgb(255 255 255 / .94); border-color: var(--clay-line); border-radius: 15px; box-shadow: var(--shadow-card); padding: 19px; }
   .card::before { top: 20px; bottom: 20px; width: 2px; opacity: .8; }
-  .card:hover { box-shadow: 0 2px 5px rgb(80 62 40 / .05), 0 12px 30px rgb(80 62 40 / .09); }
+  .card:hover { box-shadow: 0 2px 5px rgb(23 32 51 / .045), 0 12px 30px rgb(23 32 51 / .075); }
   .card-head h2 { font-size: 17.5px; letter-spacing: -.005em; }
   .card-hint { font-size: 12.5px; }
   .card-toggle, .nav-collapse, .panel-minimize { background: var(--sand-deep); border-color: var(--clay-line); }
   .kpi-grid { gap: 10px; }
-  .kpi { border-radius: 14px; padding: 14px 15px; box-shadow: none; background: rgb(255 253 248 / .88); }
+  .kpi { border-radius: 14px; padding: 14px 15px; box-shadow: none; background: rgb(255 255 255 / .92); }
   .kpi small { font-size: 11.5px; }
-  .kpi strong { font-family: var(--font-display); font-size: 25px; font-weight: 600; letter-spacing: -.01em; color: var(--terracotta-deep); }
+  .kpi strong { font-family: var(--font-display); font-size: 25px; font-weight: 750; letter-spacing: -.02em; color: var(--terracotta-deep); }
   .kpi .kpi-note { font-size: 10.5px; }
-  .metric-control, .status-row, .detail-block { background: #f8f4ec; border-color: #e9e1d2; }
+  .metric-control, .status-row, .detail-block { background: #f8f9fc; border-color: #e8ebf2; }
   .metric-control { border-radius: 11px; }
   .btn { min-height: 40px; padding: 8px 16px; border-radius: 10px; font-size: 13px; background: var(--sand); }
   .btn-primary { background: var(--terracotta); color: #fdf6ee; }
   .btn-primary:hover { background: var(--terracotta-deep); }
   input[type="text"], input[type="password"], input[type="datetime-local"], input[type="number"], select, textarea.sql-input, textarea.persona-editor {
-    min-height: 42px; border-radius: 10px; background: #faf7f0; border-color: #e4dccd; font-size: 13px;
+    min-height: 42px; border-radius: 10px; background: #fbfcfe; border-color: #dfe4ed; font-size: 13px;
   }
   input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible { outline-color: var(--terracotta); }
-  .action-tile { background: #f8f4ec; border-color: #e7dfd0; border-radius: 12px; }
-  .action-tile:hover { border-color: var(--terracotta); box-shadow: 0 5px 14px rgb(80 62 40 / .07); }
-  .bot-card { background: rgb(255 253 248 / .9); border-color: var(--clay-line); border-radius: 999px 999px 20px 20px; padding-top: 26px; }
+  .action-tile { background: #f8f9fc; border-color: #e5e9f1; border-radius: 12px; }
+  .action-tile:hover { border-color: var(--terracotta); box-shadow: 0 5px 14px rgb(23 32 51 / .07); }
+  .bot-card { background: rgb(255 255 255 / .94); border-color: var(--clay-line); border-radius: 18px; padding-top: 22px; }
   .bot-card h2 { font-size: 18px; }
   .log-panel { border-radius: 12px; }
   .save-bar { border-radius: 14px; background: var(--sand); }
-  .side-drawer { background: #f8f4ec; }
+  .side-drawer { background: #f6f8fc; }
   .drawer-head h2 { font-size: 22px; }
 
   @media (prefers-color-scheme: dark) {
     :root {
-      --cream: #1c1813; --sand: #262119; --sand-deep: #2e281f; --clay-line: #3e362a;
-      --espresso: #f0e9dc; --espresso-2: #b1a893; --sage-fill: #24382b; --sage-ink: #a4d6b6;
-      --rust-fill: #41261e; --rust: #f19c85; --cocoa: #15120d;
-      --terracotta: #d96a45; --terracotta-deep: #c25a37;
+      --cream: #111521; --sand: #191e2c; --sand-deep: #222938; --clay-line: #2d3547;
+      --espresso: #eef2fb; --espresso-2: #9ca8bd; --sage-fill: #17372b; --sage-ink: #83d6b1;
+      --rust-fill: #412326; --rust: #ff9da3; --cocoa: #0d1018;
+      --terracotta: #7c89ff; --terracotta-deep: #9aa4ff;
     }
-    body { background: radial-gradient(circle at 12% -4%, rgb(217 106 69 / .12), transparent 26rem), var(--cream); }
-    .workspace-nav, .scope-switcher, .card, .kpi, .bot-card { background: rgb(38 33 25 / .92); }
-    .metric-control, .status-row, .detail-block, .action-tile, input[type="text"], input[type="password"], input[type="datetime-local"], input[type="number"], select, textarea.sql-input, textarea.persona-editor { background: #2b251c; border-color: #3e362a; }
-    .btn, .card-toggle, .nav-collapse, .panel-minimize { background: #2e281f; }
-    .btn-primary, nav.tabs button[aria-selected="true"] { background: var(--terracotta); color: #fff4e9; }
-    .kpi strong { color: #f0b28f; }
-    .side-drawer { background: #211c15; }
+    body { background: radial-gradient(circle at 8% -12%, rgb(124 137 255 / .13), transparent 30rem), var(--cream); }
+    .workspace-nav, .scope-switcher, .card, .kpi, .bot-card { background: rgb(25 30 44 / .94); }
+    .metric-control, .status-row, .detail-block, .action-tile, input[type="text"], input[type="password"], input[type="datetime-local"], input[type="number"], select, textarea.sql-input, textarea.persona-editor { background: #202635; border-color: #30384a; }
+    .btn, .card-toggle, .nav-collapse, .panel-minimize { background: #222938; }
+    .btn-primary { background: var(--terracotta); color: #fff; }
+    nav.tabs button[aria-selected="true"] { background: #eef2ff; color: #1e2637; }
+    .kpi strong { color: #aab3ff; }
+    .side-drawer { background: #171c29; }
   }
 
   @media (max-width: 700px) {
@@ -674,7 +666,7 @@
     .card { padding: 16px 15px 14px; }
   }
 
-  ::selection { background: rgb(198 90 58 / .25); }
+  ::selection { background: rgb(91 108 249 / .22); }
 
   @media (prefers-reduced-motion: reduce) {
     *, *::before, *::after { animation-duration: 0.01ms !important; animation-iteration-count: 1 !important; transition-duration: 0.01ms !important; }

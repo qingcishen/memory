@@ -110,6 +110,7 @@ async function main() {
             importance: h.importance, lowConfidence: Boolean(h._lowConfidence), created_at: h.created_at,
           }));
           trace.promptParts.memoryBlock = r.block;
+          if (r.knowledge) trace.promptParts.knowledge = r.knowledge;
           return r.block;
         },
       }),

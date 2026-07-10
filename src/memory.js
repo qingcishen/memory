@@ -16,6 +16,7 @@ import { scheduleFromTurns, dueProspectives, markFired } from './memory/prospect
 import { ingestImage, ingestAudio, recallMedia } from './modal/index.js';
 import { attachConfidence } from './confidence.js';
 import { dailyTraining } from './training.js';
+import { observeKnowledge, recallKnowledge } from './knowledge/index.js';
 import { PARAMS } from './config.js';
 
 /**
@@ -49,18 +50,22 @@ export class Memory {
     const coupling = life ? await life.evolve(turns).catch(() => null) : null;
     const extraDeltas = coupling ? couplingToDelta(coupling) : opts.extraDeltas;
 
-    const [{ before, after }, extracted, scheduled] = await Promise.all([
+    const [{ before, after }, extracted, scheduled, knowledge] = await Promise.all([
       updateFromTurn(this.userId, this.companionId, turns, { ...opts, extraDeltas }).catch(() => ({ before: null, after: null })),
       extractMemories(turns, this.subjectName, this.companionName).catch(() => []),
       // M5: 顺手识别"未来意图"("我明天面试") 并排一条预期记忆。
       opts.prospective === false ? null : scheduleFromTurns(this.userId, this.companionId, turns, opts.now, this.subjectName).catch(() => null),
+      // K1: 抽取"实体—关系→实体"结构化事实进知识图谱 (失败隔离, 不拖垮主链路)。
+      opts.knowledge === false
+        ? null
+        : observeKnowledge(this.userId, this.companionId, turns, { subjectName: this.subjectName, companionName: this.companionName }).catch(() => null),
     ]);
     // 情绪 → 记忆重要性 (emotion-design.md §8): 这一轮心情位移大, 说明发生了要紧的事。
     let boosted = before && after ? applyMoodShiftBoost(extracted, moodShiftMagnitude(before, after)) : extracted;
     // L4: 这次"生病被照顾"作为一条 dyad 共同记忆存下来(她会记得你照顾过她)。
     if (coupling?.careEvent) boosted = [...boosted, buildCareMemory(this.subjectName, coupling.careEvent)];
     const stored = boosted.length === 0 ? [] : await storeMemories(this.userId, this.companionId, boosted);
-    return { state: after, stored, scheduled, coupling };
+    return { state: after, stored, scheduled, coupling, knowledge };
   }
 
   /**
@@ -173,10 +178,23 @@ export class Memory {
     return formatForPrompt(mems, this.subjectName);
   }
 
-  /** 一步到位: 检索 + 直接给出可注入串 */
+  /**
+   * 检索 + 知识图谱召回一次拿全: { hits, knowledge, block }。
+   * knowledge 是 K1 图谱的多跳事实块 (无命中/未建表/关掉开关都为空串, 安全降级);
+   * block = 记忆块 + 知识块 拼好的最终注入串。
+   */
+  async recallDetailed(query, opts = {}) {
+    const [hits, knowledge] = await Promise.all([
+      this.recall(query, opts),
+      opts.knowledge === false ? '' : recallKnowledge(this.userId, this.companionId, query),
+    ]);
+    const block = [this.toPrompt(hits), knowledge].filter(Boolean).join('\n\n');
+    return { hits, knowledge, block };
+  }
+
+  /** 一步到位: 检索 (+ 知识图谱) + 直接给出可注入串 */
   async recallAsPrompt(query, opts = {}) {
-    const hits = await this.recall(query, opts);
-    return this.toPrompt(hits);
+    return (await this.recallDetailed(query, opts)).block;
   }
 
   /** 显式翻旧账: 返回与 query 相关的"旧版本 → 当前版本"变化轨迹。 */
