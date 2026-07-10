@@ -3,7 +3,7 @@
 // generateReply 用"好模型"(REPLY_MODEL), think 用便宜模型(LLM_MODEL) —— 见编排器设计方案 §7.3。
 // 缺凭证时 import 不报错 (config.js 已有占位默认值), 真正调用才需要真实凭证。
 
-import { llm, LLM_MODEL, REPLY_MODEL } from '../config.js';
+import { llm, replyLlm, LLM_MODEL, REPLY_MODEL } from '../config.js';
 import { recordLlmCall } from '../metrics.js';
 
 const REPLY_PART_TYPES = ['dialogue', 'narration'];
@@ -78,10 +78,10 @@ export class DefaultLLM {
     };
     let res;
     try {
-      res = await llm.chat.completions.create({ ...payload, response_format: { type: 'json_object' } });
+      res = await replyLlm.chat.completions.create({ ...payload, response_format: { type: 'json_object' } });
     } catch (error) {
       if (!looksLikeUnsupportedResponseFormat(error)) throw error;
-      res = await llm.chat.completions.create(payload);
+      res = await replyLlm.chat.completions.create(payload);
     }
     recordLlmCall('reply', res.usage);
     let content = res.choices[0].message.content;
@@ -89,7 +89,7 @@ export class DefaultLLM {
     // 空回复绝不能变成 "..." 发给用户: 退回普通模式重试一次; 若返回的是散文,
     // parseReplyParts 会兜底把它整段当 dialogue part, 消息照样发得出去。
     if (!content || !String(content).trim()) {
-      res = await llm.chat.completions.create(payload);
+      res = await replyLlm.chat.completions.create(payload);
       recordLlmCall('reply', res.usage);
       content = res.choices[0].message.content;
     }

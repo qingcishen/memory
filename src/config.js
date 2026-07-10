@@ -22,6 +22,18 @@ export const LLM_MODEL = process.env.LLM_MODEL || 'deepseek-chat';
 // 编排器回复模型 (好模型, 可与 LLM_MODEL 不同 provider); 未配置时退回 LLM_MODEL。
 export const REPLY_MODEL = process.env.REPLY_MODEL || LLM_MODEL;
 
+// ---- 回复模型独立供应商 (可选) ----
+// 路线图约定"回复用好模型, 后台杂活用便宜模型"。REPLY_BASE_URL / REPLY_API_KEY
+// 任配其一即启用独立客户端 (缺的一项回退主 LLM 的对应值); 都不配则复用主 LLM 客户端,
+// 此时 REPLY_MODEL 只是同一供应商下换个模型名 —— 与旧行为完全一致。
+export const replyLlm =
+  process.env.REPLY_BASE_URL || process.env.REPLY_API_KEY
+    ? new OpenAI({
+        apiKey: process.env.REPLY_API_KEY || process.env.LLM_API_KEY || 'placeholder',
+        baseURL: process.env.REPLY_BASE_URL || process.env.LLM_BASE_URL || 'https://api.deepseek.com',
+      })
+    : llm;
+
 // ---- Embedding ----
 // 可与 LLM 用不同 provider。OpenAI: text-embedding-3-small (1536 维)
 export const embedder = new OpenAI({
