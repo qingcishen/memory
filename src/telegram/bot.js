@@ -81,6 +81,19 @@ export function typingDelayMs(text = '') {
   return Math.min(4000, Math.max(600, String(text ?? '').length * 40));
 }
 
+/** data URL -> { mime, buffer }; 不是合法 base64 data URL 返回 null。纯函数。
+ *  GPT Image 系列只回 base64 (没有公网 URL), 走 multipart 上传 Telegram 时用。 */
+export function parseDataUrl(url = '') {
+  const m = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(String(url ?? '').trim());
+  if (!m) return null;
+  try {
+    const buffer = Buffer.from(m[2], 'base64');
+    return buffer.length > 0 ? { mime: m[1].toLowerCase(), buffer } : null;
+  } catch {
+    return null;
+  }
+}
+
 class TelegramApi {
   constructor(token) {
     if (!token) throw new Error('缺少 TELEGRAM_BOT_TOKEN');
@@ -121,6 +134,19 @@ class TelegramApi {
 
   sendPhoto(chatId, photo, extra = {}) {
     return this.call('sendPhoto', { chat_id: chatId, photo, ...extra });
+  }
+
+  /** 图片二进制上传 (multipart)。GPT Image 只回 base64、没有公网 URL 时走这条。 */
+  async sendPhotoUpload(chatId, buffer, { mime = 'image/png', ...extra } = {}) {
+    const ext = mime.includes('jpeg') ? 'jpg' : mime.includes('webp') ? 'webp' : 'png';
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    form.append('photo', new Blob([buffer], { type: mime }), `photo.${ext}`);
+    for (const [k, v] of Object.entries(extra)) form.append(k, String(v));
+    const res = await fetch(`${this.baseUrl}/sendPhoto`, { method: 'POST', body: form });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) throw new Error(`Telegram sendPhoto upload failed: ${data?.description || `HTTP ${res.status}`}`);
+    return data.result;
   }
 
   /** 语音条上传 (multipart, 与 postJson 的纯 JSON 通道分开)。buffer 需为 ogg/opus。 */
@@ -238,11 +264,19 @@ export class TelegramMemoryBot {
           narration: this.narration,
           // Seedream 生成完成后直接投递到当前 Telegram 会话；data URL 无法走 JSON Bot API 时安全跳过。
           onPhoto: async ({ url, kind }) => {
-            if (!/^https?:\/\//i.test(String(url ?? ''))) {
-              console.warn(`[telegram] generated ${kind || 'photo'} has no public URL, skipped delivery`);
-              return;
+            const raw = String(url ?? '');
+            if (/^https?:\/\//i.test(raw)) {
+              // Seedream 等返回公网 URL: 直接让 Telegram 拉取
+              await this.api.sendPhoto(chatId, raw);
+            } else {
+              // GPT Image 系列只回 base64 data URL: 走 multipart 上传
+              const parsed = parseDataUrl(raw);
+              if (!parsed) {
+                console.warn(`[telegram] generated ${kind || 'photo'} is neither public URL nor data URL, skipped delivery`);
+                return;
+              }
+              await this.api.sendPhotoUpload(chatId, parsed.buffer, { mime: parsed.mime });
             }
-            await this.api.sendPhoto(chatId, url);
             console.log(`[telegram] photo sent chat=${chatId} kind=${kind || 'photo'}`);
           },
         }, // 短期历史落库 + 真实天气 + 世界观 + 旁白

@@ -17,6 +17,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseEnvText, applyEnvUpdates, maskValue } from './envfile.js';
 import { DEFAULT_PARAMS } from '../params.js';
+import { OpenAIImageProvider } from '../appearance/provider.js';
+import { listReferenceImages, saveReferenceImage, deleteReferenceImage, referenceFilePath, readReferenceById } from '../appearance/references.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -152,12 +154,17 @@ export const CONFIG_SCHEMA = [
   {
     id: 'image',
     title: '图片生成',
-    hint: '用于自拍和场景照片。支持火山方舟 Seedream 等 OpenAI 兼容图片接口。',
+    hint: '用于自拍和场景照片。支持 OpenAI GPT Image 与火山方舟 Seedream 等兼容接口。',
     testable: true,
     fields: [
-      { key: 'IMAGE_BASE_URL', label: 'Base URL', placeholder: 'https://ark.cn-beijing.volces.com/api/v3' },
-      { key: 'IMAGE_API_KEY', label: 'API Key', secret: true, placeholder: '火山方舟 API Key' },
-      { key: 'IMAGE_MODEL', label: '图片模型', placeholder: 'doubao-seedream-5-0-pro-260628' },
+      { key: 'IMAGE_BASE_URL', label: 'Base URL', placeholder: 'https://api.openai.com/v1' },
+      { key: 'IMAGE_API_KEY', label: 'API Key', secret: true, placeholder: '留空则复用 EMBED_API_KEY' },
+      { key: 'IMAGE_MODEL', label: '图片模型', placeholder: 'gpt-image-2' },
+      { key: 'IMAGE_SIZE', label: '尺寸', placeholder: '1024x1536' },
+      { key: 'IMAGE_QUALITY', label: '画质', options: ['high', 'medium', 'low', 'auto'], placeholder: 'high' },
+      { key: 'IMAGE_BACKGROUND', label: '背景', options: ['opaque', 'transparent', 'auto'], placeholder: 'opaque' },
+      { key: 'IMAGE_OUTPUT_FORMAT', label: '输出格式', options: ['png', 'webp', 'jpeg'], placeholder: 'png' },
+      { key: 'IMAGE_OUTPUT_COMPRESSION', label: '输出质量/压缩率 (0-100)', type: 'number', min: 0, max: 100, placeholder: '100' },
     ],
   },
   {
@@ -390,7 +397,7 @@ export function resolveModelTarget(target, env = {}) {
     embedding,
     asr,
     tts: { base: env.TTS_BASE_URL || asr.base, key: env.TTS_API_KEY || asr.key, model: env.TTS_MODEL || '', keyName: 'TTS_API_KEY', modelName: 'TTS_MODEL' },
-    image: { base: env.IMAGE_BASE_URL || reply.base, key: env.IMAGE_API_KEY || reply.key, model: env.IMAGE_MODEL || '', keyName: 'IMAGE_API_KEY', modelName: 'IMAGE_MODEL' },
+    image: { base: env.IMAGE_BASE_URL || embedding.base, key: env.IMAGE_API_KEY || embedding.key, model: env.IMAGE_MODEL || '', keyName: 'IMAGE_API_KEY', modelName: 'IMAGE_MODEL' },
   };
   const cfg = map[target];
   return cfg ? { ...cfg, base: String(cfg.base).replace(/\/+$/, '') } : null;
@@ -770,6 +777,36 @@ async function getGallery(env, scope) {
   return r.ok ? { ok: true, assets: r.data } : r;
 }
 
+function publicReference(item) {
+  return { id: item.id, name: item.name, mime: item.mime, bytes: item.bytes, createdAt: item.createdAt, url: `/api/image-references/${item.id}/file` };
+}
+
+function imageProviderFromEnv(env) {
+  return new OpenAIImageProvider({
+    baseURL: env.IMAGE_BASE_URL || env.EMBED_BASE_URL || 'https://api.openai.com/v1',
+    apiKey: env.IMAGE_API_KEY || env.EMBED_API_KEY || '', model: env.IMAGE_MODEL || 'gpt-image-2',
+    defaults: {
+      size: env.IMAGE_SIZE || '1024x1536', quality: env.IMAGE_QUALITY || 'high',
+      background: env.IMAGE_BACKGROUND || 'opaque', output_format: env.IMAGE_OUTPUT_FORMAT || 'png',
+      output_compression: Number.parseInt(env.IMAGE_OUTPUT_COMPRESSION || '100', 10), input_fidelity: 'high',
+    },
+  });
+}
+
+async function generateUiImage(env, scope, body) {
+  const provider = imageProviderFromEnv(env);
+  const refs = listReferenceImages(scope.userId, scope.companionId || 'default');
+  const selected = Array.isArray(body.referenceIds) && body.referenceIds.length
+    ? refs.filter((x) => body.referenceIds.includes(x.id)) : refs;
+  const inputs = selected.map((x) => ({ path: referenceFilePath(x), mime: x.mime, name: x.name }));
+  const prompt = String(body.prompt || '').trim();
+  if (!prompt) return { ok: false, message: '请输入生成提示词' };
+  const opts = { size: body.size || env.IMAGE_SIZE || '1024x1536', quality: body.quality || env.IMAGE_QUALITY || 'high', input_fidelity: body.inputFidelity || 'high' };
+  if (body.mask?.data) opts.mask = { buffer: Buffer.from(body.mask.data, 'base64'), name: body.mask.name || 'mask.png' };
+  const result = inputs.length ? await provider.edit(prompt, inputs, opts) : await provider.generate(prompt, opts);
+  return { ok: true, image: result.url, meta: result.meta, message: inputs.length ? `已使用 ${inputs.length} 张参考图生成` : '图片生成完成' };
+}
+
 function getPathValue(obj, dotted) {
   return dotted.split('.').reduce((cur, key) => cur?.[key], obj);
 }
@@ -860,7 +897,7 @@ async function getSystemHealth(env) {
       vision: Boolean((env.VISION_API_KEY || env.REPLY_API_KEY || env.LLM_API_KEY) && (env.VISION_MODEL || env.REPLY_MODEL || env.LLM_MODEL)),
       embedding: Boolean(env.EMBED_API_KEY || env.LLM_API_KEY),
       asr: Boolean((env.ASR_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && (env.ASR_MODEL || 'whisper-1')),
-      image: Boolean((env.IMAGE_API_KEY || env.REPLY_API_KEY) && env.IMAGE_MODEL),
+      image: Boolean((env.IMAGE_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && env.IMAGE_MODEL),
       telegram: Boolean(env.TELEGRAM_BOT_TOKEN),
       envFile: fs.existsSync(ENV_FILE),
       paramOverrides: fs.existsSync(PARAMS_FILE),
@@ -1091,7 +1128,7 @@ async function readBody(req) {
   let raw = '';
   for await (const chunk of req) {
     raw += chunk;
-    if (raw.length > 25_000_000) throw new Error('body too large');
+    if (raw.length > 70_000_000) throw new Error('body too large');
   }
   return raw ? JSON.parse(raw) : {};
 }
@@ -1192,6 +1229,33 @@ async function handle(req, res) {
     return json(res, 200, await saveWorld(readEnvValues(), body.scope ?? {}, body.world ?? {}));
   }
   if (route === 'GET /api/gallery') return json(res, 200, await getGallery(readEnvValues(), Object.fromEntries(url.searchParams)));
+  if (route === 'GET /api/image-references') {
+    const scope = Object.fromEntries(url.searchParams);
+    return json(res, 200, { ok: true, items: listReferenceImages(scope.userId, scope.companionId || 'default').map(publicReference) });
+  }
+  if (route === 'POST /api/image-references') {
+    const body = await readBody(req);
+    if (!body?.scope?.userId) return json(res, 400, { ok: false, message: '请先选择用户和角色' });
+    const item = saveReferenceImage({ ...body, ...body.scope });
+    return json(res, 200, { ok: true, item: publicReference(item), message: '参考图已保存' });
+  }
+  if (req.method === 'GET' && /^\/api\/image-references\/[^/]+\/file$/.test(url.pathname)) {
+    const item = readReferenceById(url.pathname.split('/')[3]);
+    if (!item) return json(res, 404, { ok: false, message: '图片不存在' });
+    res.writeHead(200, { 'content-type': item.mime, 'content-length': item.bytes, 'cache-control': 'private, max-age=3600' });
+    fs.createReadStream(referenceFilePath(item)).pipe(res);
+    return;
+  }
+  if (req.method === 'DELETE' && url.pathname.startsWith('/api/image-references/')) {
+    const scope = Object.fromEntries(url.searchParams);
+    const ok = deleteReferenceImage(url.pathname.slice('/api/image-references/'.length), scope.userId, scope.companionId || 'default');
+    return json(res, ok ? 200 : 404, { ok, message: ok ? '参考图已删除' : '参考图不存在' });
+  }
+  if (route === 'POST /api/images/generate') {
+    const body = await readBody(req);
+    try { return json(res, 200, await generateUiImage(readEnvValues(), body.scope || {}, body)); }
+    catch (error) { return json(res, 200, { ok: false, message: describeNetworkError(error) }); }
+  }
   if (route === 'GET /api/params') return json(res, 200, paramPayload());
   if (route === 'PUT /api/params') return json(res, 200, saveParams((await readBody(req)).values ?? {}));
   if (route === 'POST /api/actions') {

@@ -7,6 +7,7 @@
 
 import { supabase, PARAMS } from '../config.js';
 import { defaultImageProvider } from './provider.js';
+import { listReferenceImages, referenceFilePath } from './references.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -185,7 +186,11 @@ export class Selfie {
     const hit = await this.read(this.userId, this.companionId, { tags }).catch(() => null);
     if (hit) return { url: hit.url, tags, kind, cached: true, seed: hit.seed ?? null };
 
-    const img = await this.provider.generate(prompt, { seed: opts.seed });
+    const references = listReferenceImages(this.userId, this.companionId)
+      .map((item) => ({ path: referenceFilePath(item), mime: item.mime, name: item.name }));
+    const img = references.length && typeof this.provider.edit === 'function'
+      ? await this.provider.edit(prompt, references, { seed: opts.seed })
+      : await this.provider.generate(prompt, { seed: opts.seed });
     await this.write(this.userId, this.companionId, { url: img.url, tags, prompt, seed: img.seed, meta: { ...img.meta, kind } }).catch(() => {});
     return { url: img.url, tags, kind, cached: false, seed: img.seed };
   }

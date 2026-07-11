@@ -52,6 +52,52 @@ console.log('OpenAIImageProvider (Seedream/OpenAI 兼容图片接口)');
   ok('读取返回图片 URL', img.url === 'https://cdn.test/generated.png');
 }
 
+console.log('OpenAIImageProvider (GPT Image Base64 响应)');
+{
+  let requestBody = null;
+  const p = new OpenAIImageProvider({
+    baseURL: 'https://api.openai.test/v1',
+    apiKey: 'openai-secret',
+    model: 'gpt-image-2',
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const img = await p.generate('角色自拍', {
+    size: '1536x1536', quality: 'high', background: 'opaque',
+    output_format: 'webp', output_compression: 100,
+  });
+  ok('GPT Image 不发送 response_format=url', !('response_format' in requestBody));
+  ok('GPT Image 传递全部输出参数', requestBody.size === '1536x1536' && requestBody.quality === 'high'
+    && requestBody.background === 'opaque' && requestBody.output_format === 'webp'
+    && requestBody.output_compression === 100);
+  ok('GPT Image Base64 使用正确 MIME', img.url === 'data:image/webp;base64,aW1hZ2U=');
+}
+
+console.log('OpenAIImageProvider (多参考图编辑接口)');
+{
+  let request = null;
+  const p = new OpenAIImageProvider({
+    baseURL: 'https://api.openai.test/v1', apiKey: 'secret', model: 'gpt-image-2',
+    defaults: { size: '1024x1536', quality: 'high', output_format: 'png', input_fidelity: 'high' },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }], usage: { total_tokens: 123 } }), { status: 200 });
+    },
+  });
+  const img = await p.edit('保持人物特征，生成手机竖图', [
+    { buffer: Buffer.from('one'), mime: 'image/png', name: 'one.png' },
+    { buffer: Buffer.from('two'), mime: 'image/jpeg', name: 'two.jpg' },
+  ]);
+  ok('调用 /images/edits', request.url.endsWith('/images/edits'));
+  ok('multipart 包含两张参考图', request.options.body.getAll('image[]').length === 2);
+  ok('编辑参数默认最高一致性与竖图', request.options.body.get('input_fidelity') === 'high' && request.options.body.get('size') === '1024x1536');
+  ok('编辑响应带 usage 元数据', img.meta.referenceCount === 2 && img.meta.usage.total_tokens === 123);
+}
+
 console.log('shouldSendSelfie (被状态触发, 不是随机/有求必应)');
 {
   const happyClose = { emotion: { valence: 0.5, warmth: 0.8 }, life: { current_activity: '在追剧' } };

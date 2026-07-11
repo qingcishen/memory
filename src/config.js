@@ -72,5 +72,11 @@ export const ttsLlm = new OpenAI({
 
 // ---- 图片生成 (由 appearance/provider.js 消费) ----
 export const IMAGE_BASE_URL = process.env.IMAGE_BASE_URL || '';
-export const IMAGE_API_KEY = process.env.IMAGE_API_KEY || '';
+// OpenAI 图片模型可直接复用已经配置好的 Embedding API Key，避免同一密钥保存两份。
+export const IMAGE_API_KEY = process.env.IMAGE_API_KEY || process.env.EMBED_API_KEY || '';
 export const IMAGE_MODEL = process.env.IMAGE_MODEL || '';
+export const IMAGE_SIZE = process.env.IMAGE_SIZE || '1024x1536';
+export const IMAGE_QUALITY = process.env.IMAGE_QUALITY || 'high';
+export const IMAGE_BACKGROUND = process.env.IMAGE_BACKGROUND || 'opaque';
+export const IMAGE_OUTPUT_FORMAT = process.env.IMAGE_OUTPUT_FORMAT || 'png';
+export const IMAGE_OUTPUT_COMPRESSION = Number.parseInt(process.env.IMAGE_OUTPUT_COMPRESSION || '100', 10);

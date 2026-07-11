@@ -6,7 +6,10 @@
 //
 // 接口约定: generate(prompt, opts) -> Promise<{ url, seed, meta }>
 
-import { IMAGE_BASE_URL, IMAGE_API_KEY, IMAGE_MODEL } from '../config.js';
+import {
+  IMAGE_BASE_URL, IMAGE_API_KEY, IMAGE_MODEL, IMAGE_SIZE, IMAGE_QUALITY,
+  IMAGE_BACKGROUND, IMAGE_OUTPUT_FORMAT, IMAGE_OUTPUT_COMPRESSION,
+} from '../config.js';
 
 /** 字符串 → 稳定十六进制短哈希 (给 mock url / seed 用, 可重现)。 */
 function hashHex(str = '') {
@@ -60,10 +63,11 @@ export class HttpImageProvider {
 
 /** 火山方舟 Seedream 等 OpenAI 兼容图片生成端点。未配置时安全降级到 Mock。 */
 export class OpenAIImageProvider {
-  constructor({ baseURL = null, apiKey = null, model = null, fetchImpl = globalThis.fetch } = {}) {
+  constructor({ baseURL = null, apiKey = null, model = null, defaults = {}, fetchImpl = globalThis.fetch } = {}) {
     this.baseURL = String(baseURL ?? '').replace(/\/+$/, '');
     this.apiKey = apiKey;
     this.model = model;
+    this.defaults = defaults;
     this.fetchImpl = fetchImpl;
     this._fallback = new MockImageProvider();
   }
@@ -72,11 +76,20 @@ export class OpenAIImageProvider {
     if (!this.baseURL || !this.apiKey || !this.model || typeof this.fetchImpl !== 'function') {
       return this._fallback.generate(prompt, opts);
     }
+    const isGptImage = /^gpt-image-/i.test(this.model);
+    const settings = { ...this.defaults, ...opts };
     const body = {
       model: this.model,
       prompt,
-      response_format: 'url',
-      ...(opts.size ? { size: opts.size } : {}),
+      // GPT Image 系列直接返回 b64_json；Seedream 等兼容端点可以请求 URL。
+      ...(!isGptImage ? { response_format: 'url' } : {}),
+      ...(settings.size ? { size: settings.size } : {}),
+      ...(isGptImage && settings.quality ? { quality: settings.quality } : {}),
+      ...(isGptImage && settings.background ? { background: settings.background } : {}),
+      ...(isGptImage && settings.output_format ? { output_format: settings.output_format } : {}),
+      ...(isGptImage && settings.output_format !== 'png' && Number.isFinite(settings.output_compression)
+        ? { output_compression: Math.max(0, Math.min(100, settings.output_compression)) }
+        : {}),
     };
     const res = await this.fetchImpl(`${this.baseURL}/images/generations`, {
       method: 'POST',
@@ -86,16 +99,60 @@ export class OpenAIImageProvider {
     const data = await res.json().catch(() => null);
     if (!res.ok) throw new Error(`图片生成失败: ${data?.error?.message || `HTTP ${res.status}`}`);
     const item = data?.data?.[0];
-    const url = item?.url || (item?.b64_json ? `data:image/png;base64,${item.b64_json}` : '');
+    const mime = settings.output_format === 'jpeg' ? 'image/jpeg' : settings.output_format === 'webp' ? 'image/webp' : 'image/png';
+    const url = item?.url || (item?.b64_json ? `data:${mime};base64,${item.b64_json}` : '');
     if (!url) throw new Error('图片生成成功但响应里没有 url 或 b64_json');
     return {
       url,
       seed: item?.seed ?? opts.seed ?? null,
-      meta: { provider: 'openai-compatible', model: this.model, prompt },
+      meta: { provider: 'openai-compatible', model: this.model, prompt, settings },
     };
+  }
+
+  async edit(prompt, referenceImages = [], opts = {}) {
+    if (!this.baseURL || !this.apiKey || !this.model || !referenceImages.length) return this.generate(prompt, opts);
+    const settings = { ...this.defaults, ...opts };
+    const form = new FormData();
+    form.set('model', this.model);
+    form.set('prompt', prompt);
+    form.set('input_fidelity', settings.input_fidelity || 'high');
+    for (const ref of referenceImages.slice(0, 16)) {
+      const bytes = ref.buffer ?? await import('node:fs/promises').then((m) => m.readFile(ref.path));
+      form.append('image[]', new Blob([bytes], { type: ref.mime || 'image/png' }), ref.name || 'reference.png');
+    }
+    if (settings.mask?.buffer) {
+      form.set('mask', new Blob([settings.mask.buffer], { type: 'image/png' }), settings.mask.name || 'mask.png');
+    }
+    for (const key of ['size', 'quality', 'background', 'output_format']) {
+      if (settings[key]) form.set(key, String(settings[key]));
+    }
+    if (settings.output_format !== 'png' && Number.isFinite(settings.output_compression)) {
+      form.set('output_compression', String(Math.max(0, Math.min(100, settings.output_compression))));
+    }
+    const res = await this.fetchImpl(`${this.baseURL}/images/edits`, {
+      method: 'POST', headers: { authorization: `Bearer ${this.apiKey}` }, body: form,
+    });
+    const data = await res.json().catch(() => null);
+    if (!res.ok) throw new Error(`参考图生成失败: ${data?.error?.message || `HTTP ${res.status}`}`);
+    const item = data?.data?.[0];
+    const mime = settings.output_format === 'jpeg' ? 'image/jpeg' : settings.output_format === 'webp' ? 'image/webp' : 'image/png';
+    const url = item?.url || (item?.b64_json ? `data:${mime};base64,${item.b64_json}` : '');
+    if (!url) throw new Error('参考图生成成功但响应里没有图片');
+    return { url, seed: item?.seed ?? null, meta: { provider: 'openai-compatible-edit', model: this.model, prompt, settings, referenceCount: referenceImages.length, usage: data?.usage } };
   }
 }
 
 export const defaultImageProvider = IMAGE_BASE_URL && IMAGE_API_KEY && IMAGE_MODEL
-  ? new OpenAIImageProvider({ baseURL: IMAGE_BASE_URL, apiKey: IMAGE_API_KEY, model: IMAGE_MODEL })
+  ? new OpenAIImageProvider({
+      baseURL: IMAGE_BASE_URL,
+      apiKey: IMAGE_API_KEY,
+      model: IMAGE_MODEL,
+      defaults: {
+        size: IMAGE_SIZE,
+        quality: IMAGE_QUALITY,
+        background: IMAGE_BACKGROUND,
+        output_format: IMAGE_OUTPUT_FORMAT,
+        output_compression: IMAGE_OUTPUT_COMPRESSION,
+      },
+    })
   : new MockImageProvider();

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { LocalJsonHistoryStore } from '../src/orchestrator/historyStore.js';
-import { parseAllowedChatIds, isAllowedChat, telegramUserId, chunkMessage, buildOutgoingMessages, typingDelayMs } from '../src/telegram/bot.js';
+import { parseAllowedChatIds, isAllowedChat, telegramUserId, chunkMessage, buildOutgoingMessages, typingDelayMs, parseDataUrl } from '../src/telegram/bot.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -56,6 +56,17 @@ console.log('buildOutgoingMessages / typingDelayMs (parts -> Telegram 消息)');
   ok('dialogue 会清理长括号旁白', out[1].text === '嗯，我在。');
   ok('空 part 被跳过', out.every((m) => m.text));
   ok('typingDelayMs 有上下限', typingDelayMs('短') >= 600 && typingDelayMs('a'.repeat(1000)) <= 4000);
+}
+
+console.log('parseDataUrl (GPT Image base64 -> multipart 上传用的 buffer)');
+{
+  const png = parseDataUrl('data:image/png;base64,' + Buffer.from('fake-png').toString('base64'));
+  ok('合法 data URL 解析出 mime + buffer', png.mime === 'image/png' && png.buffer.toString() === 'fake-png');
+  const webp = parseDataUrl('data:image/webp;base64,' + Buffer.from('x').toString('base64'));
+  ok('webp mime 保留', webp.mime === 'image/webp');
+  ok('公网 URL 不是 data URL', parseDataUrl('https://example.com/a.png') === null);
+  ok('mock 地址返回 null', parseDataUrl('mock://selfie/abc.png') === null);
+  ok('空串/空 base64 返回 null', parseDataUrl('') === null && parseDataUrl('data:image/png;base64,') === null);
 }
 
 console.log('LocalJsonHistoryStore (本地短期历史持久化)');
