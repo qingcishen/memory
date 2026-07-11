@@ -12,6 +12,7 @@ pnpm-debug.log*
 .telegram-bot.lock
 logs/
 config/params.json
+config/reference-images/
 
 coverage/
 dist/
