@@ -25,6 +25,14 @@ console.log('buildNarrationPrompt / NARRATION_DIRECTIVES (纯逻辑)');
   ok('intimate 是硬性规则', buildNarrationPrompt('intimate').includes('【性爱/亲密场景·硬性规则】'));
   ok('未知场景类型 -> 空串', buildNarrationPrompt('not-a-scene') === '');
   ok('每种场景类型在映射表里都有一条(可能为空)', SCENE_TYPES.every((t) => typeof NARRATION_DIRECTIVES[t] === 'string'));
+  ok('通用默认不含角色专属名字', !Object.values(NARRATION_DIRECTIVES).some((d) => /清词|逸晨/.test(d)));
+
+  // 角色人设覆盖 (companions/<id>/narration.json -> CompanionConfig.narrationDirectives)
+  const overrides = { romantic: '角色专属的暧昧旁白写法', intimate: '   ' };
+  ok('人设覆盖优先于通用默认', buildNarrationPrompt('romantic', overrides) === '角色专属的暧昧旁白写法');
+  ok('空白覆盖回退通用默认', buildNarrationPrompt('intimate', overrides).includes('【性爱/亲密场景·硬性规则】'));
+  ok('未覆盖的场景走通用默认', buildNarrationPrompt('tense', overrides).includes('【旁白提示】'));
+  ok('overrides 为 null 安全', buildNarrationPrompt('romantic', null).includes('【旁白提示】'));
 }
 
 console.log('parseSceneLabel (纯逻辑)');

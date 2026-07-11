@@ -1160,7 +1160,7 @@
     <section id="view-personas" role="tabpanel" aria-label="人设" hidden>
       <div class="card">
         <div class="card-head"><h2>人设文件</h2></div>
-        <p class="card-hint">支持两种格式: companions/&lt;角色ID&gt;.json 单文件, 或 companions/&lt;角色ID&gt;/ 目录按功能分片 (persona 人格 / appearance 外貌 / life 作息 / relationship 关系起点 / knowledge 知识库 / runtime 运行时) —— 目录存在时优先生效, 改哪块编辑哪个文件。保存前会校验 JSON, 改完重启 bot 生效。</p>
+        <p class="card-hint">支持两种格式: companions/&lt;角色ID&gt;.json 单文件, 或 companions/&lt;角色ID&gt;/ 目录按功能分片 (persona 人格 / appearance 外貌 / life 作息 / relationship 关系起点 / knowledge 知识库 / narration 旁白指令 / runtime 运行时) —— 目录存在时优先生效, 改哪块编辑哪个文件。保存前会校验 JSON, 改完重启 bot 生效。</p>
         <div class="toolbar">
           <select id="persona-file" aria-label="选择人设文件"></select>
           <button class="btn" id="persona-new">新建人设</button>
@@ -1712,7 +1712,7 @@
     root.innerHTML = '<div class="skeleton"></div><div class="skeleton"></div>';
     const r = await api('/api/state?' + scopeSearch()).catch(() => ({ ok: false, message: '读取失败' }));
     if (!r.ok) { root.innerHTML = `<div class="load-error">${esc(r.message)}</div>`; return; }
-    const a = r.affect ?? {}, mood = a.mood ?? {}, rel = a.relationship ?? {}, life = r.life ?? {};
+    const a = r.affect ?? {}, mood = a.mood ?? {}, rel = a.relationship ?? {}, desires = a.desires ?? {}, life = r.life ?? {};
     root.innerHTML = `
       <div class="card"><div class="card-head"><h2>情绪与关系</h2></div>
         <div class="metric-grid">
@@ -1724,6 +1724,14 @@
           ${stateRange('和好债', 'affect.relationship.repair_debt', rel.repair_debt, 0, 1, .01)}
         </div>
         <div class="field-grid" style="margin-top:14px"><div class="field"><label>紧张指向</label><select data-state-path="affect.relationship.tension_target"><option value="user" ${rel.tension_target !== 'external' ? 'selected' : ''}>对用户</option><option value="external" ${rel.tension_target === 'external' ? 'selected' : ''}>外部事件</option></select></div><div class="field"><label>紧张话题</label><input type="text" data-state-path="affect.relationship.tension_topic" value="${esc(rel.tension_topic || '')}" /></div></div>
+      </div>
+      <div class="card"><div class="card-head"><h2>内在需求</h2></div>
+        <div class="metric-grid">
+          ${stateRange('被关注', 'affect.desires.attention', desires.attention, 0, 1, .01)}
+          ${stateRange('分享欲', 'affect.desires.sharing', desires.sharing, 0, 1, .01)}
+          ${stateRange('被安慰', 'affect.desires.comfort', desires.comfort, 0, 1, .01)}
+          ${stateRange('安全感缺口', 'affect.desires.security', desires.security, 0, 1, .01)}
+        </div>
       </div>
       <div class="card"><div class="card-head"><h2>身体与作息</h2></div>
         <div class="metric-grid">${stateRange('精力', 'life.energy', life.energy, 0, 1, .01)}${stateRange('饱腹', 'life.satiety', life.satiety, 0, 1, .01)}${stateRange('健康', 'life.health', life.health, 0, 1, .01)}</div>
@@ -2355,7 +2363,7 @@
     const panel = $('#chat-debug-panel'), root = $('#chat-debug-root');
     panel.hidden = false; panel.open = true;
     const sections = [
-      ['召回记忆', debug.memoryHits ?? []], ['状态快照', { state: debug.stateSnapshot, relationship: debug.relationshipState, world: debug.worldSnapshot, sceneType: debug.sceneType }],
+      ['召回记忆', debug.memoryHits ?? []], ['状态快照', { state: debug.stateSnapshot, relationship: debug.relationshipState, emotionLabel: debug.emotionLabel, behaviorPolicy: debug.behaviorPolicy, world: debug.worldSnapshot, sceneType: debug.sceneType }],
       ['Prompt 分段', debug.promptParts ?? {}], ['最终 Messages', debug.messages ?? []], ['采样参数', debug.samplingHints ?? {}], ['内心独白', debug.monologue ?? ''],
       ['LLM 用量', debug.metrics ?? {}],
     ];

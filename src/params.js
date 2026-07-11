@@ -72,6 +72,48 @@ export const DEFAULT_PARAMS = {
     externalTensionWarmthFactor: 0.25,
   },
 
+  // ---- D1 需求驱力 ----
+  desire: {
+    halfLifeHours: { attention: 24, sharing: 36, comfort: 48, security: 72 },
+    growthPerHour: { attention: 0.012, sharing: 0.008, comfort: 0.006, security: 0.004 },
+    promptThreshold: 0.55,
+    thoughtfulMinChars: 12,
+    thoughtfulAttentionRelief: 0.55,
+    replyAttentionRelief: 0.22,
+    thoughtfulSharingRelief: 0.35,
+    careComfortRelief: 0.6,
+    reassuranceSecurityRelief: 0.6,
+    dismissiveAttentionGain: 0.08,
+    dismissiveSecurityGain: 0.06,
+  },
+
+  // ---- B2 情绪行为策略 ----
+  behavior: {
+    maxReplyDelayMs: 10 * 60 * 1000,
+    stonewallPerDay: 1,
+    stonewallTensionThreshold: 0.85,
+    stonewallRepairDebtThreshold: 0.65,
+    repairedDebtThreshold: 0.05,
+    repairedTensionThreshold: 0.1,
+    repairedMaxDelayMs: 1500,
+    policies: {
+      平静: { replyDelayMs: [200, 1200], partsBudget: 2, lengthHint: 'normal', proactiveBias: 0 },
+      开心: { replyDelayMs: [0, 500], partsBudget: 4, lengthHint: 'chatty', proactiveBias: 0.2 },
+      委屈: { replyDelayMs: [1000, 15000], partsBudget: 1, lengthHint: 'terse', proactiveBias: -0.1 },
+      吃醋: { replyDelayMs: [500, 6000], partsBudget: 2, lengthHint: 'terse', proactiveBias: 0.05 },
+      生气: { replyDelayMs: [30000, 600000], partsBudget: 1, lengthHint: 'terse', proactiveBias: -0.35 },
+      失落: { replyDelayMs: [3000, 20000], partsBudget: 1, lengthHint: 'terse', proactiveBias: -0.15 },
+      撒娇: { replyDelayMs: [0, 800], partsBudget: 3, lengthHint: 'chatty', proactiveBias: 0.15 },
+      心疼: { replyDelayMs: [0, 800], partsBudget: 3, lengthHint: 'normal', proactiveBias: 0.2 },
+    },
+  },
+
+  // ---- S2 连续生活叙事 ----
+  story: {
+    beatsPerDay: 1,
+    maxActiveLines: 2,
+  },
+
   // ---- M2 自研激活引擎 + 心情门控检索 ----
   engine: {
     forgetRate: 0.5, // ACT-R base-level 衰减指数 d: 越大越快忘 (新近/频次)
@@ -213,6 +255,11 @@ export const DEFAULT_PARAMS = {
     },
     // 睡前: 提前多少分钟想跟对方说晚安
     bedtimeLeadMinutes: 60,
+    desire: {
+      triggerThreshold: 0.45,
+      highThreshold: 0.8,
+      minCooldownFactor: 0.35,
+    },
   },
 
   // ---- M5 扛量 · 持久化任务队列 (src/queue/jobs.js) ----

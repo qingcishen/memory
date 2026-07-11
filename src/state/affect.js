@@ -456,7 +456,7 @@ export async function updateFromTurn(userId, companionId = 'default', turns, opt
     await appendStateHistory(userId, companionId, after, labelStateEvent(cur, after)).catch(() => {});
     snapshot = true;
   }
-  return { before: cur, after, deltas, snapshot };
+  return { before: cur, after, deltas, desireDeltas: deltas.desires ?? null, snapshot };
 }
 
 /**
@@ -467,8 +467,9 @@ export async function inferDeltasLLM(turns = []) {
   const transcript = turns.map((t) => `${t.role === 'user' ? '对方' : 'AI'}: ${t.content}`).join('\n');
   const sys = `你在维护一个 AI 伴侣的情绪与关系状态。读这段对话, 只输出本轮带来的【增量】(不是绝对值)。
 数值范围都是 -1..1, 没有变化就给 0。严格输出 JSON, 不要其它内容:
-{"mood":{"valence":0,"arousal":0},"relationship":{"closeness":0,"tension":0,"repair_debt":0,"trust":0,"tension_target":"user","tension_topic":""}}
+{"mood":{"valence":0,"arousal":0},"relationship":{"closeness":0,"tension":0,"repair_debt":0,"trust":0,"tension_target":"user","tension_topic":""},"desires":{"attention":0,"sharing":0,"comfort":0,"security":0}}
 含义: valence 心情正负, arousal 激动程度, closeness 亲密, tension 紧张/积怨, repair_debt 待和好的债 (吵架升、和好降), trust 信任。
+desires 也是增量: 被认真关注时 attention 降；她有事想说时 sharing 升、说完降；难过/生病时 comfort 升、被关心时降；冷落/争吵时 security 升、承诺/道歉时降。
 tension_target: 仅当 tension 增量>0 时填 —— 这股紧张是冲着"对方/用户"(吵架、对你不满) 填 "user"; 还是为外部的事 (考试/工作/家里) 焦虑、不是冲你来的, 填 "external"; 拿不准填 "user"。
 tension_topic: tension_target 为 external 时, 用≤10字概括为什么紧张 (如 "考试"、"工作压力"); 否则给 ""。`;
 
@@ -495,6 +496,7 @@ tension_topic: tension_target 为 external 时, 用≤10字概括为什么紧张
       tension_target: TENSION_TARGETS.includes(target) ? target : undefined,
       tension_topic: topic ? String(topic) : undefined,
     },
+    desires: Object.fromEntries(['attention', 'sharing', 'comfort', 'security'].map((key) => [key, num(parsed?.desires?.[key])])),
   };
 }
 
@@ -515,5 +517,6 @@ function mergeDeltas(a, b) {
   return {
     mood: { valence: num(a.mood?.valence) + num(b.mood?.valence), arousal: num(a.mood?.arousal) + num(b.mood?.arousal) },
     relationship,
+    desires: Object.fromEntries(['attention', 'sharing', 'comfort', 'security'].map((key) => [key, num(a.desires?.[key]) + num(b.desires?.[key])])),
   };
 }

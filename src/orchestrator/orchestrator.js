@@ -13,6 +13,10 @@ import { getCompanion } from '../companion.js';
 import { Selfie, decidePhoto } from '../appearance/index.js';
 import { buildNarrationPrompt } from '../narration.js';
 import { PARAMS } from '../params.js';
+import { inferEmotionLabel } from '../state/emotionLabel.js';
+import { behaviorPolicy, behaviorToPrompt } from '../state/behavior.js';
+import { StoryEngine } from '../story/index.js';
+import { buildConversationGoals, goalsToPrompt } from './goals.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
@@ -46,7 +50,8 @@ export class Orchestrator {
     // 共用同一个 life 实例 (L4: 生病/被照顾由 memory.observe 统一演变, 避免双写 life_state)。
     this.stateLayer = deps.stateLayer ?? new StateLayerAdapter(userId, companionId, null, { activityFn, lifeConfig });
     const sharedLife = this.stateLayer?.stateLayer?.life ?? null;
-    this.memory = deps.memory ?? new MemoryAdapter({ userId, companionId, subjectName, companionName, life: sharedLife });
+    const sharedDesire = this.stateLayer?.stateLayer?.desire ?? null;
+    this.memory = deps.memory ?? new MemoryAdapter({ userId, companionId, subjectName, companionName, life: sharedLife, desire: sharedDesire });
     this.relationship = deps.relationship ?? new RelationshipAdapter(userId, companionId);
     this.persona = deps.persona ?? new PersonaAdapter({ userId, companionId, subjectName: companionName });
     this.llm = deps.llm ?? new DefaultLLM();
@@ -62,6 +67,9 @@ export class Orchestrator {
     this.world = deps.world ?? null;
     // 旁白系统 (可选): 注入 SceneClassifier 才按场景动态给旁白指令; 默认 null → 离线安全, 不额外调 LLM。
     this.narration = deps.narration ?? null;
+    this.story = deps.story ?? null;
+    this._storyProvided = Object.prototype.hasOwnProperty.call(deps, 'story');
+    this._storySeeded = false;
 
     this.history = [];
     this._personaLoadedAt = 0;
@@ -96,8 +104,19 @@ export class Orchestrator {
         if (typeof this.relationship?.seedIfNew === 'function') {
           await this.relationship.seedIfNew(this._config);
         }
+        if (!this._storyProvided && (this._config.storyCast?.length || this._config.storylines?.length)) {
+          this.story = new StoryEngine({
+            userId: this.userId, companionId: this.companionId, companionName: this.companionName,
+            cast: this._config.storyCast, lines: this._config.storylines, memory: this.memory,
+            desire: this.stateLayer?.stateLayer?.desire ?? null,
+          });
+        }
       }
       this._configLoaded = true;
+    }
+    if (this.story && !this._storySeeded && typeof this.story.seed === 'function') {
+      await this.story.seed().catch(() => {});
+      this._storySeeded = true;
     }
     if (!this._personaLoadedAt || now - this._personaLoadedAt >= this.options.personaRefreshMs) {
       if (typeof this.persona.load === 'function') await this.persona.load().catch(() => {});
@@ -106,6 +125,10 @@ export class Orchestrator {
     if (!this._historyLoaded) {
       await this.loadHistory().catch(() => {});
       this._historyLoaded = true;
+    }
+    if (!this._anniversariesEnsured && typeof this.memory.ensureAnniversaries === 'function') {
+      await this.memory.ensureAnniversaries().catch(() => {});
+      this._anniversariesEnsured = true;
     }
     return this;
   }
@@ -155,12 +178,14 @@ export class Orchestrator {
     }
     this._lastUserMessageAt = Date.now();
 
-    const [stateSnapshot, relState, memoryResult, weather, worldSnapshot, sceneType, lastUserMessageAt] = await Promise.all([
+    const [stateSnapshot, relState, memoryResult, weather, worldSnapshot, storySnapshot, dueItems, sceneType, lastUserMessageAt] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(userMessage, { debug: Boolean(opts.debug) }).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
+      this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
+      typeof this.memory.checkProspective === 'function' ? this.memory.checkProspective({ query: userMessage }).catch(() => []) : Promise.resolve([]),
       // 场景分类 (旁白系统): 用最近历史 + 这句话判断当前场景, 决定这一轮用哪条旁白指令。
       this.narration ? this.narration.classify({ userMessage, history: this.history }).catch(() => 'daily') : Promise.resolve('daily'),
       // 时间跳跃感: 取"对方上次说话"的时间(早于本轮, 因为本轮还没 recordHistory) -> 距今多久。
@@ -171,16 +196,33 @@ export class Orchestrator {
     const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
     const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
     const gapHours = lastUserMessageAt != null ? hoursSince(lastUserMessageAt) : null;
+    const emotionLabel = inferEmotionLabel(
+      { ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} },
+      stateSnapshot?.desires,
+      [...this.history.slice(-4), { role: 'user', content: userMessage }]
+    );
+    const behavior = behaviorPolicy(emotionLabel, { relationship: relState?.relationship ?? relState ?? {}, ...(opts.behaviorState ?? {}) });
+    const goals = buildConversationGoals({ dueItems, desires: stateSnapshot?.desires, storyBeat: storySnapshot?.today });
+
+    // B3: Telegram 明确要求执行 stonewall 时，不生成一条永远不会送达的假回复，也不把它写进历史。
+    if (opts.executeStonewall && behavior.stonewall) {
+      this.recordHistory([{ role: 'user', content: userMessage }]);
+      this._lastAfterReply = this.afterReply(userMessage, '');
+      return { text: '', parts: [], emotionLabel, behaviorPolicy: behavior };
+    }
 
     const promptParts = {
       timePrompt: buildTimePrompt(new Date(), { weather, gapHours }),
       personaPrompt: this.persona.toPrompt() ?? '',
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
+      storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
-      statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
+      statePrompt: [this.stateLayer.toPrompt(stateSnapshot), behaviorToPrompt(behavior)].filter(Boolean).join('\n\n'),
+      goalsPrompt: goalsToPrompt(goals),
       memoryBlock: memoryBlock ?? '',
-      narrationPrompt: this.narration ? buildNarrationPrompt(sceneType) : '',
+      // 旁白指令: 角色人设的按场景覆盖优先 (companions/<id>/narration.json), 缺省用通用默认
+      narrationPrompt: this.narration ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives) : '',
     };
 
     let monologue = '';
@@ -217,7 +259,11 @@ export class Orchestrator {
       stateSnapshot,
       relationshipState: relState,
       worldSnapshot,
+      storySnapshot,
       sceneType,
+      emotionLabel,
+      behaviorPolicy: behavior,
+      goals,
       memoryHits: memoryHits.map(({ embedding, media_embedding, ...m }) => m),
       promptParts,
       monologue,
@@ -225,7 +271,7 @@ export class Orchestrator {
       samplingHints,
       historyTurns: this.options.historyTurns,
     } : undefined;
-    return { text: reply, parts, ...(debug ? { debug } : {}) };
+    return { text: reply, parts, emotionLabel, behaviorPolicy: behavior, goals, ...(debug ? { debug } : {}) };
   }
 
   /**
@@ -243,18 +289,20 @@ export class Orchestrator {
     if (!shouldSend) return null;
 
     const seed = ctx.query ?? ctx.memoryQuery ?? ctx.reason ?? '想主动找对方聊一句';
-    const [stateSnapshot, relState, memoryBlock, weather, worldSnapshot] = await Promise.all([
+    const [stateSnapshot, relState, memoryBlock, weather, worldSnapshot, storySnapshot] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(seed).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
+      this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
     ]);
 
     const promptParts = {
       timePrompt: buildTimePrompt(new Date(), { weather }),
       personaPrompt: this.persona.toPrompt() ?? '',
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
+      storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
@@ -320,11 +368,16 @@ export class Orchestrator {
     if (typeof this.stateLayer.tickActivity === 'function') tasks.push(this.stateLayer.tickActivity());
     if (nightly) {
       if (typeof this.memory.reflect === 'function') tasks.push(this.memory.reflect());
+      if (typeof this.memory.updateUserProfile === 'function') tasks.push(this.memory.updateUserProfile());
       if (typeof this.memory.story === 'function') tasks.push(this.memory.story());
       if (typeof this.memory.dedupe === 'function') tasks.push(this.memory.dedupe());
       if (typeof this.memory.train === 'function') tasks.push(this.trainNightly());
     }
     const results = await Promise.allSettled(tasks);
+    // S2 故事拍在基础 settle 完成后再推进，避免两条 affect 写路径并发覆盖。
+    if (nightly && typeof this.story?.tick === 'function') {
+      results.push(...await Promise.allSettled([this.story.tick({ now })]));
+    }
     for (const r of results) if (r.status === 'rejected') console.error('[maintain]', r.reason);
     return results;
   }

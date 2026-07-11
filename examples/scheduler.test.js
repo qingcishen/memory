@@ -10,6 +10,7 @@ import {
   normalizeRateLimitState,
   pickSilenceTier,
   pickBedtimeTier,
+  desireUrgency,
 } from '../src/orchestrator/index.js';
 
 let passed = 0;
@@ -131,6 +132,70 @@ console.log('pickSilenceTier / pickBedtimeTier (P1 分级主动性, 纯逻辑)')
   const notBed = pickBedtimeTier(new Date(2026, 5, 14, 20, 0).getTime(), sleepWindow);
   ok('离睡觉还早 → 不触发', notBed === null);
   ok('无 sleepWindow → 不触发', pickBedtimeTier(new Date(2026, 5, 14, 23, 45).getTime(), null) === null);
+}
+
+console.log('desireUrgency (D3 需求驱动主动性)');
+{
+  const oneDay = desireUrgency({ attention: 0.5 });
+  ok('一天量级 attention 使用想念口吻', oneDay.urgent && oneDay.need === 'attention' && oneDay.tone.includes('想你了'));
+  const threeDays = desireUrgency({ attention: 0.88 });
+  ok('三天量级 attention 语气升级', threeDays.tone.includes('把我忘了'));
+  ok('需求越高冷却越短', threeDays.cooldownFactor < oneDay.cooldownFactor);
+  ok('已消解需求不触发', desireUrgency({ attention: 0.1 }).urgent === false);
+  ok('从四项中选择最强需求', desireUrgency({ attention: 0.5, sharing: 0.8 }).need === 'sharing');
+}
+
+console.log('ProactiveScheduler.tick D3 需求通道');
+{
+  const makeDesireOrchestrator = (desires) => ({
+    ...makeOrchestrator(),
+    stateLayer: { async snapshot() { return { desires }; } },
+  });
+  const high = makeDesireOrchestrator({ attention: 0.88 });
+  const scheduler = new ProactiveScheduler({ orchestrator: high, stateStore: new MemoryRateLimitStore(), policy, clock: () => utc('2026-06-14T12:00:00Z') });
+  const result = await scheduler.tick();
+  ok('高需求自然触发主动消息', result.sent && result.urgency.need === 'attention');
+  ok('高 attention 的风格传给编排器', high.calls[0].style.includes('把我忘了'));
+
+  const settled = makeDesireOrchestrator({ attention: 0.1, sharing: 0, comfort: 0, security: 0 });
+  const quietScheduler = new ProactiveScheduler({ orchestrator: settled, stateStore: new MemoryRateLimitStore(), policy, clock: () => utc('2026-06-14T12:00:00Z') });
+  const quiet = await quietScheduler.tick();
+  ok('需求消解且无其他动机时当天不再主动', !quiet.sent && quiet.reason === 'no_trigger');
+
+  const hardLimit = new ProactiveScheduler({ orchestrator: high, stateStore: new MemoryRateLimitStore({ sentAt: ['2026-06-14T09:00:00Z', '2026-06-14T10:00:00Z'] }), policy, clock: () => utc('2026-06-14T12:00:00Z') });
+  ok('高需求不能突破每日上限', (await hardLimit.tick()).reason === 'daily_limit');
+}
+
+console.log('ProactiveScheduler B3 proactiveBias');
+{
+  const angry = makeOrchestrator();
+  angry.stateLayer = { async snapshot() { return { emotion: { valence: -0.8, warmth: 0.2 }, desires: {} }; } };
+  angry.relationship = { async current() { return { relationship: { closeness: 0.7, tension: 0.9, repair_debt: 0.8 } }; } };
+  angry.history = [{ role: 'user', content: '我们刚吵架了，别理我' }];
+  const scheduler = new ProactiveScheduler({
+    orchestrator: angry,
+    stateStore: new MemoryRateLimitStore({ sentAt: ['2026-06-14T09:00:00Z'] }),
+    policy,
+    clock: () => utc('2026-06-14T12:00:00Z'),
+  });
+  const result = await scheduler.tick({ reason: '测试主动意愿' });
+  ok('生气的负 proactiveBias 延长冷却但不永久禁用', !result.sent && result.reason === 'cooldown' && result.nextAt);
+}
+
+console.log('ProactiveScheduler S3 故事分享通道');
+{
+  const orch = makeOrchestrator();
+  let marked = null;
+  orch.stateLayer = { async snapshot() { return { emotion: { valence: 0.2, warmth: 0.8 }, desires: { sharing: 0.9 } }; } };
+  orch.relationship = { async current() { return { relationship: { closeness: 0.8, tension: 0, repair_debt: 0 } }; } };
+  orch.story = {
+    async pendingShare() { return { storylineId: 'project', title: '新项目', content: '周姐在评审时指出了风险。', sharing: 0.8 }; },
+    async markShared(beat) { marked = beat; },
+  };
+  const scheduler = new ProactiveScheduler({ orchestrator: orch, stateStore: new MemoryRateLimitStore(), policy, clock: () => utc('2026-06-14T12:00:00Z') });
+  const result = await scheduler.tick();
+  ok('高分享欲主动消息围绕当天新拍子', result.sent && result.reason.includes('周姐在评审') && orch.calls[0].query.includes('周姐'));
+  ok('投递成功后标记该拍已分享', marked?.storylineId === 'project');
 }
 
 console.log('ProactiveScheduler.tick 分级主动性优先级链 (P1)');

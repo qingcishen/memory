@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { LocalJsonHistoryStore } from '../src/orchestrator/historyStore.js';
-import { parseAllowedChatIds, isAllowedChat, telegramUserId, chunkMessage, buildOutgoingMessages, typingDelayMs, parseDataUrl } from '../src/telegram/bot.js';
+import { TelegramMemoryBot, parseAllowedChatIds, isAllowedChat, telegramUserId, chunkMessage, buildOutgoingMessages, typingDelayMs, parseDataUrl, pickPolicyDelay, applyPartsBudget, simulateBehaviorDelay } from '../src/telegram/bot.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -67,6 +67,37 @@ console.log('parseDataUrl (GPT Image base64 -> multipart 上传用的 buffer)');
   ok('公网 URL 不是 data URL', parseDataUrl('https://example.com/a.png') === null);
   ok('mock 地址返回 null', parseDataUrl('mock://selfie/abc.png') === null);
   ok('空串/空 base64 返回 null', parseDataUrl('') === null && parseDataUrl('data:image/png;base64,') === null);
+}
+
+console.log('B3 behavior delivery helpers');
+{
+  ok('策略延迟可确定取最小/最大值', pickPolicyDelay({ replyDelayMs: [1000, 5000] }, () => 0) === 1000 && pickPolicyDelay({ replyDelayMs: [1000, 5000] }, () => 1) === 5000);
+  const limited = applyPartsBudget([{ type: 'narration', text: '她抬眼。' }, { type: 'dialogue', text: '一' }, { type: 'dialogue', text: '二' }], 1);
+  ok('partsBudget 只截台词并保留旁白', limited.length === 2 && limited[0].type === 'narration' && limited[1].text === '一');
+  const actions = [], waits = [];
+  await simulateBehaviorDelay({ sendChatAction: async (_id, action) => actions.push(action) }, 1, 7000, async (ms) => waits.push(ms));
+  ok('延迟期间 typing 状态会闪烁', actions.length >= 2 && actions.every((a) => a === 'typing'));
+  ok('模拟延迟总时长准确', waits.reduce((a, b) => a + b, 0) === 7000);
+}
+
+console.log('TelegramMemoryBot.deliverReply B3 stonewall/台阶');
+{
+  const sent = [], saved = [], selfEvents = [];
+  const api = { sendChatAction: async () => {}, sendMessage: async (_id, text) => sent.push(text) };
+  const behaviorStore = { load: async () => ({ stonewallAt: [], mustGiveRepairStep: false }), save: async (state) => { saved.push(state); return state; } };
+  const delivery = new TelegramMemoryBot({ api, behaviorStore, sleepFn: async () => {}, rng: () => 0, personaFile: '/not-found.json' });
+  const memoryBot = { memory: { recordSelfEvent: async (text) => selfEvents.push(text) } };
+  const stonewalled = await delivery.deliverReply(42, [{ type: 'dialogue', text: '不发出去' }], {
+    policy: { replyDelayMs: [0, 0], partsBudget: 1, stonewall: true }, behaviorState: { stonewallAt: [], mustGiveRepairStep: false }, bot: memoryBot,
+  });
+  ok('stonewall 不发送消息并写 self 行为记忆', stonewalled.length === 0 && sent.length === 0 && selfEvents.length === 1);
+  ok('stonewall 后持久化下一轮给台阶', saved.at(-1).mustGiveRepairStep === true && saved.at(-1).stonewallAt.length === 1);
+
+  await delivery.deliverReply(42, [{ type: 'dialogue', text: '给你一个台阶' }, { type: 'dialogue', text: '多余第二条' }], {
+    policy: { replyDelayMs: [0, 0], partsBudget: 1, stonewall: false }, behaviorState: saved.at(-1), bot: memoryBot,
+  });
+  ok('下一轮正常回复且执行 partsBudget', sent.join('') === '给你一个台阶');
+  ok('正常回复后清除强制台阶标志', saved.at(-1).mustGiveRepairStep === false);
 }
 
 console.log('LocalJsonHistoryStore (本地短期历史持久化)');

@@ -45,6 +45,24 @@ const PARAM_SCHEMA = [
   { path: 'relationship_memory.alwaysIncludeDyad', label: '固定带入共同记忆数', min: 0, max: 10, step: 1, group: '关系' },
   { path: 'prospective.cueThreshold', label: '语境提醒触发阈值', min: 0.4, max: 1, step: 0.01, group: '主动性' },
   { path: 'prospective.graceHours', label: '提醒过期宽限小时', min: 1, max: 168, step: 1, group: '主动性' },
+  { path: 'desire.promptThreshold', label: '需求进入 Prompt 门槛', min: 0, max: 1, step: 0.05, group: '需求' },
+  { path: 'desire.halfLifeHours.attention', label: '关注需求饱和时长', min: 1, max: 240, step: 1, group: '需求' },
+  { path: 'desire.halfLifeHours.sharing', label: '分享需求饱和时长', min: 1, max: 240, step: 1, group: '需求' },
+  { path: 'desire.halfLifeHours.comfort', label: '安慰需求饱和时长', min: 1, max: 240, step: 1, group: '需求' },
+  { path: 'desire.halfLifeHours.security', label: '安全需求饱和时长', min: 1, max: 240, step: 1, group: '需求' },
+  { path: 'desire.growthPerHour.attention', label: '关注需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
+  { path: 'desire.growthPerHour.sharing', label: '分享需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
+  { path: 'desire.growthPerHour.comfort', label: '安慰需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
+  { path: 'desire.growthPerHour.security', label: '安全需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
+  { path: 'proactive.desire.triggerThreshold', label: '需求主动消息门槛', min: 0, max: 1, step: 0.05, group: '主动性' },
+  { path: 'proactive.desire.highThreshold', label: '需求语气升级门槛', min: 0, max: 1, step: 0.05, group: '主动性' },
+  { path: 'proactive.desire.minCooldownFactor', label: '高需求最短冷却比例', min: 0.1, max: 1, step: 0.05, group: '主动性' },
+  { path: 'behavior.maxReplyDelayMs', label: '行为回复延迟硬上限(ms)', min: 0, max: 600000, step: 1000, group: '行为' },
+  { path: 'behavior.stonewallPerDay', label: '每日最多已读不回次数', min: 0, max: 1, step: 1, group: '行为' },
+  { path: 'behavior.stonewallTensionThreshold', label: '已读不回紧张门槛', min: 0, max: 1, step: 0.05, group: '行为' },
+  { path: 'behavior.stonewallRepairDebtThreshold', label: '已读不回关系债门槛', min: 0, max: 1, step: 0.05, group: '行为' },
+  { path: 'story.beatsPerDay', label: '每条故事线每日节拍数', min: 0, max: 4, step: 1, group: '叙事' },
+  { path: 'story.maxActiveLines', label: '最大并行故事线', min: 1, max: 6, step: 1, group: '叙事' },
   { path: 'appearance.minClosenessForSelfie', label: '主动自拍亲密度门槛', min: 0, max: 1, step: 0.05, group: '照片' },
   { path: 'appearance.selfie.minIntervalMinutes', label: '照片冷却分钟', min: 10, max: 10080, step: 10, group: '照片' },
   { path: 'appearance.selfie.maxPerDay', label: '每日最多照片数', min: 0, max: 12, step: 1, group: '照片' },
@@ -59,8 +77,8 @@ const PARAM_SCHEMA = [
 
 const BACKUP_TABLES = [
   'memories', 'affective_state', 'life_state', 'affective_state_history', 'prospective',
-  'proactive_rate_limits', 'companions', 'appearance_assets', 'jobs', 'chat_history',
-  'world_state', 'knowledge_entities', 'knowledge_relations',
+  'proactive_rate_limits', 'behavior_state', 'companions', 'appearance_assets', 'jobs', 'chat_history',
+  'world_state', 'story_lines', 'knowledge_entities', 'knowledge_relations',
 ];
 
 // ---------------------------------------------------------------
@@ -624,11 +642,11 @@ async function getScopes(env) {
 async function getStateBundle(env, scope) {
   if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
   const [affect, life, history] = await Promise.all([
-    supabaseRest(env, scopedPath('affective_state', { select: 'mood,relationship,updated_at', limit: '1' }, scope)),
+    supabaseRest(env, scopedPath('affective_state', { select: 'mood,relationship,desires,updated_at', limit: '1' }, scope)),
     supabaseRest(env, scopedPath('life_state', { select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day,updated_at', limit: '1' }, scope)),
     supabaseRest(env, scopedPath('affective_state_history', { select: 'mood,relationship,event,created_at', order: 'created_at.desc', limit: '80' }, scope)),
   ]);
-  const defaultAffect = { mood: { valence: 0, arousal: 0.3 }, relationship: { closeness: 0.5, tension: 0, repair_debt: 0, trust: 0.5 }, updated_at: null };
+  const defaultAffect = { mood: { valence: 0, arousal: 0.3 }, relationship: { closeness: 0.5, tension: 0, repair_debt: 0, trust: 0.5 }, desires: { attention: 0, sharing: 0, comfort: 0, security: 0 }, updated_at: null };
   const defaultLife = { energy: 0.6, satiety: 0.6, health: 1, current_activity: null, last_slept_at: null, sick_until: null, late_night_streak: 0, last_late_night_day: null, updated_at: null };
   return {
     ok: affect.ok || life.ok,
@@ -692,6 +710,11 @@ async function saveStateBundle(env, scope, input = {}) {
         tension_target: ['user', 'external'].includes(input.affect.relationship?.tension_target) ? input.affect.relationship.tension_target : 'user',
         tension_topic: String(input.affect.relationship?.tension_topic || '').slice(0, 80) || null,
       },
+      ...(input.affect.desires ? { desires: {
+        attention: clamp(input.affect.desires.attention), sharing: clamp(input.affect.desires.sharing),
+        comfort: clamp(input.affect.desires.comfort), security: clamp(input.affect.desires.security),
+        updated_at: new Date().toISOString(),
+      } } : {}),
       updated_at: new Date().toISOString(),
     };
     results.push(await supabaseRequest(env, 'affective_state?on_conflict=user_id,companion_id', { method: 'POST', body: row, headers: { prefer: 'resolution=merge-duplicates,return=representation' } }));
@@ -869,7 +892,7 @@ async function importScope(env, payload = {}) {
       if (table === 'chat_history') delete clean.id;
       return clean;
     });
-    const conflict = table === 'chat_history' ? '' : table === 'affective_state' || table === 'life_state' || table === 'proactive_rate_limits' || table === 'companions' || table === 'world_state' ? 'user_id,companion_id' : 'id';
+    const conflict = table === 'chat_history' ? '' : table === 'affective_state' || table === 'life_state' || table === 'proactive_rate_limits' || table === 'behavior_state' || table === 'companions' || table === 'world_state' ? 'user_id,companion_id' : 'id';
     const target = conflict ? `${table}?on_conflict=${conflict}` : table;
     const r = await supabaseRequest(env, target, {
       method: 'POST', body: cleanRows, headers: { prefer: 'resolution=merge-duplicates,return=minimal' }, timeoutMs: 120000,
@@ -881,7 +904,7 @@ async function importScope(env, payload = {}) {
 }
 
 async function getSystemHealth(env) {
-  const required = ['memories', 'affective_state', 'life_state', 'prospective', 'chat_history', 'world_state', 'jobs'];
+  const required = ['memories', 'affective_state', 'life_state', 'prospective', 'chat_history', 'world_state', 'story_lines', 'jobs', 'behavior_state'];
   const optional = ['knowledge_entities', 'knowledge_relations', 'appearance_assets', 'companions'];
   const results = await Promise.all([...required, ...optional].map(async (table) => {
     const r = await supabaseRequest(env, `${table}?select=*&limit=1`, { timeoutMs: 30000 })

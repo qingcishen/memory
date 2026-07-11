@@ -13,6 +13,7 @@ import { WorldDimension } from '../world/index.js';
 import { SceneClassifier } from '../narration.js';
 import { pickSpeakableText, shouldReplyWithVoice, synthesizeSpeech } from '../modal/speech.js';
 import { TTS_CONFIGURED } from '../config.js';
+import { BehaviorStateStore, normalizeBehaviorState } from '../state/behavior.js';
 
 dotenv.config();
 
@@ -79,6 +80,35 @@ export function buildOutgoingMessages(parts = []) {
 /** 按文字长度估一个"打字用了多久"的延迟, 让连续发消息不是瞬间刷屏。纯函数。 */
 export function typingDelayMs(text = '') {
   return Math.min(4000, Math.max(600, String(text ?? '').length * 40));
+}
+
+export function pickPolicyDelay(policy = {}, rng = Math.random) {
+  const [rawMin, rawMax] = Array.isArray(policy.replyDelayMs) ? policy.replyDelayMs : [0, 0];
+  const min = Math.max(0, Number(rawMin) || 0);
+  const max = Math.max(min, Number(rawMax) || 0);
+  return Math.round(min + (max - min) * Math.min(1, Math.max(0, Number(rng()) || 0)));
+}
+
+/** partsBudget 只限制台词条数，旁白作为场景信息保留。 */
+export function applyPartsBudget(parts = [], budget = Infinity) {
+  const cap = Math.max(1, Math.floor(Number(budget) || 1));
+  let dialogues = 0;
+  return (parts ?? []).filter((part) => part?.type === 'narration' || ++dialogues <= cap);
+}
+
+export async function simulateBehaviorDelay(api, chatId, delayMs, sleepFn = sleep) {
+  let remaining = Math.max(0, Number(delayMs) || 0);
+  while (remaining > 0) {
+    await api.sendChatAction(chatId, 'typing').catch(() => {});
+    const typingFor = Math.min(2500, remaining);
+    await sleepFn(typingFor);
+    remaining -= typingFor;
+    if (remaining > 0) {
+      const pause = Math.min(1000, remaining);
+      await sleepFn(pause); // typing 状态短暂停下，形成“打了又删”的感觉
+      remaining -= pause;
+    }
+  }
 }
 
 /** data URL -> { mime, buffer }; 不是合法 base64 data URL 返回 null。纯函数。
@@ -202,8 +232,14 @@ export class TelegramMemoryBot {
     // 默认 companions/<companionId>.json; 缺失则只用名字 (退化为通用人设)。
     personaFile = process.env.TELEGRAM_PERSONA_FILE || `companions/${companionId}.json`,
     api = new TelegramApi(token),
+    behaviorStore = new BehaviorStateStore(),
+    sleepFn = sleep,
+    rng = Math.random,
   } = {}) {
     this.api = api;
+    this.behaviorStore = behaviorStore;
+    this.sleepFn = sleepFn;
+    this.rng = rng;
     this.allowedChatIds = allowedChatIds;
     this.companionId = companionId;
     this.companionName = companionName;
@@ -307,12 +343,27 @@ export class TelegramMemoryBot {
    * 语音进语音出: 对方刚发的是语音且配置了 TTS_MODEL 时, 台词合成一条语音条发回
    * (旁白仍走文字先行, 念第三人称描写很怪); 台词太长/合成失败都回退纯文字 sendParts。
    */
-  async deliverReply(chatId, parts, { incomingVoice = false } = {}) {
-    const speakable = pickSpeakableText(parts);
+  async deliverReply(chatId, parts, { incomingVoice = false, policy = null, behaviorState = null, bot = null } = {}) {
+    const userId = telegramUserId(chatId);
+    const scope = { userId, companionId: this.companionId };
+    const current = normalizeBehaviorState(behaviorState ?? await this.behaviorStore.load(scope).catch(() => ({})));
+    const delay = pickPolicyDelay(policy, this.rng);
+    await simulateBehaviorDelay(this.api, chatId, delay, this.sleepFn);
+
+    if (policy?.stonewall && !current.mustGiveRepairStep) {
+      const next = { stonewallAt: [...current.stonewallAt, new Date().toISOString()], mustGiveRepairStep: true };
+      await this.behaviorStore.save(next, scope).catch((e) => console.error('[behaviorStore.save]', e));
+      await Promise.resolve(bot?.memory?.recordSelfEvent?.('她看到了对方这条消息，但因为还在气头上，这一轮没有回复。', { importance: 5, valence: -0.45, intensity: 0.7 })).catch(() => {});
+      console.log(`[telegram] stonewall chat=${chatId} label=生气`);
+      return [];
+    }
+
+    const limitedParts = applyPartsBudget(parts, policy?.partsBudget ?? Infinity);
+    const speakable = pickSpeakableText(limitedParts);
     if (shouldReplyWithVoice({ incomingVoice, configured: TTS_CONFIGURED, speakable })) {
       try {
         const audio = await synthesizeSpeech(speakable);
-        const narrations = buildOutgoingMessages((parts ?? []).filter((p) => p?.type === 'narration'));
+        const narrations = buildOutgoingMessages((limitedParts ?? []).filter((p) => p?.type === 'narration'));
         for (const msg of narrations) {
           await this.api.sendChatAction(chatId, 'typing').catch(() => {});
           await sleep(typingDelayMs(msg.text));
@@ -322,12 +373,16 @@ export class TelegramMemoryBot {
         await sleep(typingDelayMs(speakable));
         await this.api.sendVoice(chatId, audio);
         console.log(`[telegram] voice reply chat=${chatId} chars=${speakable.length} bytes=${audio.length}`);
-        return [...narrations, { type: 'voice', text: speakable }];
+        const sent = [...narrations, { type: 'voice', text: speakable }];
+        if (current.mustGiveRepairStep) await this.behaviorStore.save({ ...current, mustGiveRepairStep: false }, scope).catch(() => {});
+        return sent;
       } catch (error) {
         console.error(`[telegram] tts failed chat=${chatId}, 回退文字:`, formatError(error));
       }
     }
-    return this.sendParts(chatId, parts);
+    const sent = await this.sendParts(chatId, limitedParts);
+    if (current.mustGiveRepairStep) await this.behaviorStore.save({ ...current, mustGiveRepairStep: false }, scope).catch(() => {});
+    return sent;
   }
 
   /** 给一个 chat 起后台"活着"循环: 维护(心情回落/作息/生病/夜间反思) + 主动消息(投递回这个 chat)。 */
@@ -532,8 +587,9 @@ export class TelegramMemoryBot {
     const bot = this.botForChat(chatId);
     console.log(`[telegram] replying chat=${chatId} timeoutMs=${this.replyTimeoutMs}`);
     try {
-      const { text: reply, parts } = await withTimeout(bot.reply(text), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
-      const sent = await this.deliverReply(chatId, parts, { incomingVoice: Boolean(message.voice || message.audio) });
+      const behaviorState = await this.behaviorStore.load({ userId: telegramUserId(chatId), companionId: this.companionId }).catch(() => ({}));
+      const { text: reply, parts, behaviorPolicy: policy } = await withTimeout(bot.reply(text, { executeStonewall: true, behaviorState: { ...behaviorState, stonewallUsedToday: behaviorState.stonewallAt?.length ?? 0 } }), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
+      const sent = await this.deliverReply(chatId, parts, { incomingVoice: Boolean(message.voice || message.audio), policy, behaviorState, bot });
       console.log(`[telegram] replied chat=${chatId} chars=${reply.length} parts=${sent.length}`);
     } catch (error) {
       console.error(`[telegram] reply failed chat=${chatId}:`, formatError(error));

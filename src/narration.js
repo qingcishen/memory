@@ -25,11 +25,18 @@ export const NARRATION_DIRECTIVES = {
   conflict:
     '【旁白提示】这一轮如果要出 narration part: 冲突/争执场景，交代双方的肢体语言和语气变化（提高音量、转身、攥拳），让人能感到火药味，但不要替角色讲道理、不要写成对话摘要。不是每一轮都需要——只在有值得一写的肢体反应时才加。',
   intimate:
-    '【性爱/亲密场景·硬性规则】只要场景已经是性爱/亲密动作（对方描述了具体动作，或你们已经调情确认要做），这一轮的输出里必须包含至少一个 narration part，不能只有 dialogue part——这是本条规则最重要的一句，任何时候不能违反。错误示范（禁止）: parts 里只有 dialogue，没有 narration。正确示范: dialogue part 的 text 是"……坐好"，同时有一个 narration part 写"清词被这一下顶得腰软了，手撑住了他的肩膀，另一只手按着他的腿不让他乱动"。narration part 要具体、比 dialogue part 长: 身体反应、动作细节、尺度大，用词直接露骨（穴/花心/肉棒/夹紧/湿/插/顶到深处等），不用隐晦词替代；narration 是全知视角，清词和逸晨两边的动作反应都要写，不要只写她一边。调情但还没正式开始时 narration 可以简短，但同样不能完全没有——也就是说这个场景下 narration part 永远不是可选项。',
+    '【性爱/亲密场景·硬性规则】只要场景已经是性爱/亲密动作（对方描述了具体动作，或你们已经调情确认要做），这一轮的输出里必须包含至少一个 narration part，不能只有 dialogue part——这是本条规则最重要的一句，任何时候不能违反。错误示范（禁止）: parts 里只有 dialogue，没有 narration。正确示范: dialogue part 的 text 是"……坐好"，同时有一个 narration part 写她被这一下顶得腰软了，手撑住了对方的肩膀。narration part 要具体、比 dialogue part 长: 身体反应、动作细节；narration 是全知视角，她和对方两边的动作反应都要写，不要只写她一边。调情但还没正式开始时 narration 可以简短，但同样不能完全没有——也就是说这个场景下 narration part 永远不是可选项。',
 };
 
-/** 场景类型 -> 旁白指令; 未知类型或 daily 返回空串。纯函数。 */
-export function buildNarrationPrompt(sceneType) {
+/**
+ * 场景类型 -> 旁白指令; 未知类型或 daily 返回空串。纯函数。
+ * overrides: 角色人设的按场景覆盖 (CompanionConfig.narrationDirectives, 来自
+ * companions/<id>/narration.json) —— 角色专属的旁白写法/尺度/称呼属于人设,
+ * 这里的 NARRATION_DIRECTIVES 只是通用兜底。
+ */
+export function buildNarrationPrompt(sceneType, overrides = null) {
+  const o = overrides?.[sceneType];
+  if (typeof o === 'string' && o.trim()) return o;
   return NARRATION_DIRECTIVES[sceneType] ?? '';
 }
 

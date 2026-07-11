@@ -5,6 +5,8 @@
 
 import { supabase, PARAMS } from '../config.js';
 import { minutesInRange, shanghaiWallClock } from '../state/activity.js';
+import { inferEmotionLabel } from '../state/emotionLabel.js';
+import { behaviorPolicy } from '../state/behavior.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
@@ -170,6 +172,25 @@ export function pickBedtimeTier(now, sleepWindow, leadMinutes = PARAMS.proactive
   return { tier: 'bedtime', reason: '快到自己要睡觉的时间了, 想在睡前跟对方说一句晚安' };
 }
 
+/** D3: 从四项需求里选出当前最强驱力，并给主动消息提供口吻与冷却系数。 */
+export function desireUrgency(desires = {}, policy = PARAMS.proactive.desire) {
+  const labels = { attention: 'attention', sharing: 'sharing', comfort: 'comfort', security: 'security' };
+  const entries = Object.keys(labels).map((key) => [key, Math.min(1, Math.max(0, Number(desires?.[key]) || 0))]);
+  const [need, score] = entries.sort((a, b) => b[1] - a[1])[0];
+  const trigger = Number(policy?.triggerThreshold ?? 0.45);
+  if (!(score >= trigger)) return { urgent: false, need: null, tone: '', score, cooldownFactor: 1 };
+
+  let tone;
+  if (need === 'attention') tone = score >= (policy?.highThreshold ?? 0.8) ? '有点委屈地问“你是不是把我忘了”，但不要指责或连续追问' : '自然地表达“有点想你了”，语气轻一点，不给对方压力';
+  else if (need === 'sharing') tone = '带着忍不住想分享的兴奋感，用“跟你说个事”自然开场';
+  else if (need === 'comfort') tone = '稍微露出一点脆弱，给对方关心的机会，但不要卖惨或索取';
+  else tone = '带一点克制的试探，想确认对方在乎你，但不要逼迫或情绪勒索';
+
+  const minFactor = Math.min(1, Math.max(0.1, Number(policy?.minCooldownFactor ?? 0.35)));
+  const progress = Math.min(1, Math.max(0, (score - trigger) / Math.max(0.01, 1 - trigger)));
+  return { urgent: true, need, tone, score, cooldownFactor: 1 - progress * (1 - minFactor) };
+}
+
 export class ProactiveScheduler {
   constructor({
     orchestrator,
@@ -204,33 +225,66 @@ export class ProactiveScheduler {
     const state = normalizeRateLimitState(await this.stateStore.load({ userId, companionId }).catch(() => defaultRateLimitState()));
     const dueItems = await this.getDueItems({ userId, companionId, now, ctx }).catch(() => []);
 
-    const allowed = canSendProactive(state, now, { ...this.policy, ...(ctx.policy ?? {}) });
+    // D3: 读 StateLayer 的同一份需求快照。没有该能力的旧接入保持原行为。
+    const supportsDesires = typeof this.orchestrator.stateLayer?.snapshot === 'function';
+    const stateSnapshot = supportsDesires ? await this.orchestrator.stateLayer.snapshot().catch(() => null) : null;
+    const relState = typeof this.orchestrator.relationship?.current === 'function'
+      ? await this.orchestrator.relationship.current().catch(() => null)
+      : null;
+    const urgency = desireUrgency(stateSnapshot?.desires);
+    const storyBeat = urgency.urgent && urgency.need === 'sharing' && typeof this.orchestrator.story?.pendingShare === 'function'
+      ? await this.orchestrator.story.pendingShare(now).catch(() => null)
+      : null;
+    const emotionLabel = inferEmotionLabel({ ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} }, stateSnapshot?.desires, this.orchestrator.history?.slice(-4) ?? []);
+    const behavior = behaviorPolicy(emotionLabel, { relationship: relState?.relationship ?? relState ?? {} });
+    const basePolicy = { ...this.policy, ...(ctx.policy ?? {}) };
+    const behaviorCooldownFactor = clamp(1 - behavior.proactiveBias, 0.5, 1.5);
+    const effectivePolicy = {
+      ...basePolicy,
+      minIntervalMinutes: basePolicy.minIntervalMinutes * (urgency.urgent ? urgency.cooldownFactor : 1) * behaviorCooldownFactor,
+    };
+
+    const allowed = canSendProactive(state, now, effectivePolicy);
     // 到期事项(如"7点叫我起床")是她答应过的事——哪怕在安静时段(她在睡觉)也要叫醒, 但仍受冷却/每日上限保护。
     const overrideQuietHours = dueItems.length > 0 && allowed.reason === 'quiet_hours';
     if (!allowed.ok && !overrideQuietHours) return { sent: false, reason: allowed.reason, nextAt: allowed.nextAt };
 
-    // P1 分级主动性: ctx.reason > 到期事项 > 睡前道晚安 > 沉默分级 > 默认理由。
+    // 优先级: 显式原因 > 到期事项 > 需求 > 睡前 > 沉默分级 > 旧默认理由。
     const bedtimeTier = this.sleepWindow ? pickBedtimeTier(now, this.sleepWindow) : null;
     const lastUserMessageAt = this.getLastUserMessageAt
       ? await this.getLastUserMessageAt({ userId, companionId }).catch(() => null)
       : null;
     const silenceTier = pickSilenceTier(now, lastUserMessageAt);
-    const reason = ctx.reason ?? formatDueReason(dueItems) ?? bedtimeTier?.reason ?? silenceTier?.reason ?? this.defaultReason;
+    const desireReason = storyBeat
+      ? `她今天刚经历了这件事，很想第一时间告诉对方：${storyBeat.title}——${storyBeat.content}`
+      : urgency.urgent ? formatDesireReason(urgency) : null;
+    const reason = ctx.reason ?? formatDueReason(dueItems) ?? desireReason ?? bedtimeTier?.reason ?? silenceTier?.reason ?? this.defaultReason;
+    const usedDesireReason = Boolean(desireReason && reason === desireReason);
+    const usedStoryBeat = Boolean(storyBeat && usedDesireReason);
+    // 新版接入有需求快照时，不再让纯 cron 在无任何动机时凭空发消息。
+    if (supportsDesires && !ctx.reason && dueItems.length === 0 && !desireReason && !bedtimeTier && !silenceTier) {
+      return { sent: false, reason: 'no_trigger' };
+    }
     const message = await this.orchestrator.proactiveTick({
       ...ctx,
       reason,
+      query: ctx.query ?? (usedStoryBeat ? storyBeat.content : undefined),
+      style: ctx.style ?? (usedDesireReason ? urgency.tone : undefined),
       shouldSend: true,
     });
     if (!message) return { sent: false, reason: 'orchestrator_skipped' };
 
     await this.deliver({ userId, companionId, message, reason, dueItems, now });
-    const nextState = markProactiveSent(state, now, { ...this.policy, ...(ctx.policy ?? {}) });
+    if (usedStoryBeat && typeof this.orchestrator.story?.markShared === 'function') {
+      await this.orchestrator.story.markShared(storyBeat, now).catch(() => {});
+    }
+    const nextState = markProactiveSent(state, now, effectivePolicy);
     await this.stateStore.save(nextState, { userId, companionId });
 
     const firedIds = dueItems.map((item) => item?.id).filter(Boolean);
     if (firedIds.length > 0) await this.markFired(firedIds).catch(() => {});
 
-    return { sent: true, message, reason, dueItems, state: nextState };
+    return { sent: true, message, reason, dueItems, storyBeat: usedStoryBeat ? storyBeat : null, urgency, emotionLabel, behaviorPolicy: behavior, state: nextState };
   }
 
   start({ intervalMs = 5 * 60 * 1000, ctx = {} } = {}) {
@@ -250,6 +304,16 @@ export class ProactiveScheduler {
 function formatDueReason(items = []) {
   const first = (items ?? [])[0];
   return first?.content ? `预期记忆到期: ${first.content}` : null;
+}
+
+function formatDesireReason(urgency) {
+  const reason = {
+    attention: '因为一直没被好好关注，是真的有点想对方了',
+    sharing: '心里攒着一件事，很想第一时间跟对方分享',
+    comfort: '此刻有点需要安慰，想自然地靠近对方一点',
+    security: '对这段关系有点不踏实，想得到一点温柔的确认',
+  }[urgency.need];
+  return reason ?? null;
 }
 
 function localHour(now, timezoneOffsetMinutes) {
@@ -279,4 +343,8 @@ function shiftedDate(now, timezoneOffsetMinutes) {
 
 function offsetMs(timezoneOffsetMinutes) {
   return timezoneOffsetMinutes == null ? 0 : Number(timezoneOffsetMinutes) * 60 * 1000;
+}
+
+function clamp(value, min, max) {
+  return Math.min(max, Math.max(min, Number(value) || 0));
 }

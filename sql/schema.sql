@@ -152,6 +152,7 @@ create table if not exists affective_state (
 -- 多角色: 加 companion_id 并把主键从 user_id 升级为 (user_id, companion_id)。
 -- add primary key 非幂等, 用守卫保证整段脚本可重复执行。
 alter table affective_state add column if not exists companion_id text not null default 'default';
+alter table affective_state add column if not exists desires jsonb not null default '{"attention":0,"sharing":0,"comfort":0,"security":0,"updated_at":null}'::jsonb;
 alter table affective_state drop constraint if exists affective_state_pkey;
 do $$
 begin
@@ -219,8 +220,11 @@ create table if not exists prospective (
 );
 -- 多角色: id 是主键, 加列 + 扩索引。
 alter table prospective add column if not exists companion_id text not null default 'default';
+alter table prospective add column if not exists annual_key text;
+alter table prospective add column if not exists last_fired_year int;
 drop index if exists prospective_pending_idx;
 create index if not exists prospective_pending_idx on prospective (user_id, companion_id, status) where status = 'pending';
+create unique index if not exists prospective_annual_unique_idx on prospective (user_id, companion_id, annual_key);
 
 -- 主动消息限流状态: 跨进程共享 quiet hours / cooldown / max-per-day 的发送轨迹。
 -- state 形如 {"sentAt":["2026-06-14T12:00:00.000Z"],"policy":{...}}。
@@ -238,6 +242,42 @@ begin
     alter table proactive_rate_limits add primary key (user_id, companion_id);
   end if;
 end $$;
+
+-- B3 · 行为投递状态：stonewall 每日额度与“下一轮必须给台阶”。
+create table if not exists behavior_state (
+  user_id text not null,
+  companion_id text not null default 'default',
+  state jsonb not null default '{"stonewallAt":[],"mustGiveRepairStep":false}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, companion_id)
+);
+
+-- S1 · 连续生活故事线。storyline_key 来自人设 seed，按角色幂等。
+create table if not exists story_lines (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null,
+  companion_id text not null default 'default',
+  storyline_key text not null,
+  title text not null,
+  stage text not null default 'setup' check (stage in ('setup','rising','climax','cooldown','closed')),
+  mood_link real not null default 0 check (mood_link >= -1 and mood_link <= 1),
+  last_beat text not null default '',
+  next_beat_hint text not null default '',
+  last_beat_at timestamptz,
+  beats_day text,
+  beats_today int not null default 0,
+  beat_shared_at timestamptz,
+  last_beat_sharing real not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, companion_id, storyline_key)
+);
+create index if not exists story_lines_active_idx on story_lines (user_id, companion_id, updated_at desc) where stage <> 'closed';
+alter table story_lines add column if not exists last_beat_at timestamptz;
+alter table story_lines add column if not exists beats_day text;
+alter table story_lines add column if not exists beats_today int not null default 0;
+alter table story_lines add column if not exists beat_shared_at timestamptz;
+alter table story_lines add column if not exists last_beat_sharing real not null default 0;
 
 -- ------------------------------------------------------------
 --  多角色 · 人设配置表 (见 src/companion.js)

@@ -25,6 +25,8 @@ import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter }
 import { DefaultLLM } from '../orchestrator/llm.js';
 import { loadPersonaConfig } from '../companion.js';
 import { makeScheduleActivityFn } from '../state/activity.js';
+import { inferEmotionLabel } from '../state/emotionLabel.js';
+import { behaviorPolicy } from '../state/behavior.js';
 import { WeatherProvider } from '../world/weather.js';
 import { WorldDimension } from '../world/index.js';
 import { SceneClassifier, buildNarrationPrompt } from '../narration.js';
@@ -82,6 +84,7 @@ async function main() {
     const memory = new MemoryAdapter({
       userId, companionId, subjectName, companionName,
       life: stateLayer.stateLayer?.life ?? null,
+      desire: stateLayer.stateLayer?.desire ?? null,
     });
     const relationship = new RelationshipAdapter(userId, companionId);
     const personaAdapter = new PersonaAdapter({ userId, companionId, subjectName: companionName });
@@ -118,6 +121,12 @@ async function main() {
         current: async () => {
           const s = await relationship.current();
           trace.relationshipState = slim(s);
+          trace.emotionLabel = inferEmotionLabel(
+            { ...(trace.stateSnapshot ?? {}), relationship: s?.relationship ?? s ?? {} },
+            trace.stateSnapshot?.desires,
+            [{ role: 'user', content: String(req.message ?? '') }]
+          );
+          trace.behaviorPolicy = behaviorPolicy(trace.emotionLabel, { relationship: s?.relationship ?? s ?? {} });
           return s;
         },
         toPrompt: (s) => {
@@ -149,7 +158,7 @@ async function main() {
         classify: async (ctx) => {
           const sceneType = await narration.classify(ctx);
           trace.sceneType = sceneType;
-          trace.promptParts.narration = buildNarrationPrompt(sceneType);
+          trace.promptParts.narration = buildNarrationPrompt(sceneType, persona?.config?.narrationDirectives);
           return sceneType;
         },
       }),

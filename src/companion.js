@@ -40,6 +40,11 @@ export const CompanionConfigSchema = z.object({
   relationshipStartStage: z.string().min(1).nullable().default(null),
   // 情绪基线: 目前只用 valence (mood 的初始正负向); 同样只在首次建档时生效一次。
   emotionBaseline: z.object({ valence: z.number().min(-1).max(1) }).nullable().default(null),
+  // 旁白指令按场景覆盖 (romantic/tense/conflict/intimate/daily -> 指令文本)。
+  // 角色专属的旁白写法 (含尺度/称呼) 属于人设, 不属于库代码; 缺省回退 src/narration.js 的通用默认。
+  narrationDirectives: z.record(z.string(), z.string()).nullable().default(null),
+  storyCast: z.array(z.object({ name: z.string().min(1), role: z.string().min(1), closeness: z.number().min(0).max(1).default(0.5) })).default([]),
+  storylines: z.array(z.object({ id: z.string().min(1), title: z.string().min(1), stage: z.enum(['setup','rising','climax','cooldown','closed']).default('setup'), mood_link: z.number().min(-1).max(1).default(0), last_beat: z.string().default(''), next_beat_hint: z.string().default('') })).default([]),
 });
 
 /** 校验/解析任意输入 -> 合法 CompanionConfig (缺字段补默认, 非法抛 ZodError)。 */
@@ -84,6 +89,13 @@ export function personaJsonToConfig(json = {}) {
     identityConstraints: Array.isArray(p.identity_constraints) ? p.identity_constraints : [],
     relationshipStartStage: json.relationship?.start_stage ?? null,
     emotionBaseline: typeof json.emotion_baseline?.valence === 'number' ? { valence: json.emotion_baseline.valence } : null,
+    // 旁白指令覆盖 (companions/<id>/narration.json 的 narration.directives): 只收字符串值
+    narrationDirectives:
+      json.narration?.directives && typeof json.narration.directives === 'object'
+        ? Object.fromEntries(Object.entries(json.narration.directives).filter(([, v]) => typeof v === 'string' && v.trim()))
+        : null,
+    storyCast: Array.isArray(json.story?.cast) ? json.story.cast : [],
+    storylines: Array.isArray(json.story?.lines) ? json.story.lines : [],
   });
   const options = {
     useMonologue: json.runtime?.use_monologue ?? true,
@@ -174,6 +186,9 @@ export function configToRow(userId, config) {
       identityConstraints: c.identityConstraints,
       relationshipStartStage: c.relationshipStartStage,
       emotionBaseline: c.emotionBaseline,
+      narrationDirectives: c.narrationDirectives,
+      storyCast: c.storyCast,
+      storylines: c.storylines,
     },
     updated_at: new Date().toISOString(),
   };

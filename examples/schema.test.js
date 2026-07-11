@@ -13,6 +13,9 @@ function ok(name, condition) {
 }
 
 console.log('knowledge graph database schema');
+ok('affective_state 包含幂等 desires 迁移', /alter table affective_state add column if not exists desires jsonb/i.test(schema));
+ok('定义 behavior_state 表保存 stonewall 每日状态', /create table if not exists behavior_state\s*\(/i.test(schema));
+ok('定义 story_lines 表与阶段约束', /create table if not exists story_lines\s*\(/i.test(schema) && /stage in \('setup','rising','climax','cooldown','closed'\)/i.test(schema));
 ok('定义 knowledge_entities 表', /create table if not exists knowledge_entities\s*\(/i.test(schema));
 ok('定义 knowledge_relations 表', /create table if not exists knowledge_relations\s*\(/i.test(schema));
 ok('实体按 user + companion + key 唯一', /unique\s*\(user_id,\s*companion_id,\s*entity_key\)/i.test(schema));

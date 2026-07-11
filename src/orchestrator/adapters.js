@@ -41,9 +41,10 @@ export function formatRelationshipPrompt(state) {
 export class MemoryAdapter {
   // life: 与 StateLayerAdapter 共享的同一个 LifeDimension。observe 时由 Memory 统一演变 life
   // 并把"生病/被照顾"对情绪/关系的耦合增量并进 affect 写入 (L4, 避免双写 life_state)。
-  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', life = null }) {
+  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', life = null, desire = null }) {
     this._mem = new Memory({ userId, companionId, subjectName, companionName });
     this._life = life;
+    this._desire = desire;
   }
 
   /** 输入当前用户消息, 返回可直接注入 system prompt 的记忆块 (含 K1 知识图谱事实)。 */
@@ -60,7 +61,7 @@ export class MemoryAdapter {
    * useLLM: true —— 让 M1 的状态机用 LLM 增量; life 注入后, 身心耦合增量在这次 affect 写入里一起落库。
    */
   async observe(turns, opts = {}) {
-    await this._mem.observe(turns, { useLLM: true, life: this._life, ...opts });
+    await this._mem.observe(turns, { useLLM: true, life: this._life, desire: this._desire, ...opts });
   }
 
   // ---- 维护期委托 (给后台调度循环用; 没对话时也让她的内在演变/沉淀) ----
@@ -69,6 +70,9 @@ export class MemoryAdapter {
   }
   reflect(opts) {
     return this._mem.reflect(opts);
+  }
+  updateUserProfile(opts) {
+    return this._mem.updateUserProfile(opts);
   }
   story(opts) {
     return this._mem.story(opts);
@@ -86,6 +90,12 @@ export class MemoryAdapter {
   dismissProspective(ids) {
     return this._mem.dismissProspective(ids);
   }
+  ensureAnniversaries(now) {
+    return this._mem.ensureAnniversaries(now);
+  }
+  recordSelfEvent(content, opts) {
+    return this._mem.recordSelfEvent(content, opts);
+  }
 }
 
 /** 状态层门面适配: 包统一 StateLayer, 编排器不再直接接 emotion。 */
@@ -99,10 +109,7 @@ export class StateLayerAdapter {
     return this.stateLayer.snapshot();
   }
 
-  /**
-   * no-op: 情绪/关系增量随 memory.observe 的 M1 状态机完成; life(精力/生病/被照顾)也已移交
-   * memory.observe 统一演变 (MemoryAdapter 注入了同一个 LifeDimension), 这里再演变就会重复写 life_state。
-   */
+  /** 情绪/关系/life/需求均由 memory.observe 的同一条链路演变，避免重复写。 */
   async evolve() {}
 
   /** L3/L4: 无对话时也推进她的一天 (作息活动派生 + 自动生病判定), 固化进库。 */

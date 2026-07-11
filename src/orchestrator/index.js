@@ -21,4 +21,5 @@ export {
   normalizeRateLimitState,
   pickSilenceTier,
   pickBedtimeTier,
+  desireUrgency,
 } from './scheduler.js';

@@ -12,12 +12,13 @@ import { engineRecall } from './engine/index.js';
 import { reconsolidateOnRecall, reconsolidateRecent } from './memory/reconsolidate.js';
 import { seedPersona, personaBlock } from './persona.js';
 import { dyadBackdrop, synthesizeNarrative } from './narrative.js';
-import { scheduleFromTurns, dueProspectives, markFired } from './memory/prospective.js';
+import { scheduleFromTurns, dueProspectives, markFired, ensureFirstChatAnniversary } from './memory/prospective.js';
 import { ingestImage, ingestAudio, recallMedia } from './modal/index.js';
 import { attachConfidence } from './confidence.js';
 import { dailyTraining } from './training.js';
 import { observeKnowledge, recallKnowledge } from './knowledge/index.js';
 import { PARAMS } from './config.js';
+import { updateUserProfile } from './profile.js';
 
 /**
  * 记忆系统门面。一个用户一个 userId, 所有记忆按 (userId, companionId) 隔离。
@@ -50,7 +51,7 @@ export class Memory {
     const coupling = life ? await life.evolve(turns).catch(() => null) : null;
     const extraDeltas = coupling ? couplingToDelta(coupling) : opts.extraDeltas;
 
-    const [{ before, after }, extracted, scheduled, knowledge] = await Promise.all([
+    const [{ before, after, desireDeltas }, extracted, scheduled, knowledge] = await Promise.all([
       updateFromTurn(this.userId, this.companionId, turns, { ...opts, extraDeltas }).catch(() => ({ before: null, after: null })),
       extractMemories(turns, this.subjectName, this.companionName).catch(() => []),
       // M5: 顺手识别"未来意图"("我明天面试") 并排一条预期记忆。
@@ -60,12 +61,14 @@ export class Memory {
         ? null
         : observeKnowledge(this.userId, this.companionId, turns, { subjectName: this.subjectName, companionName: this.companionName }).catch(() => null),
     ]);
+    // D2: 复用上面的同一次状态 LLM 推断，把需求增量交给 DesireDimension 合并落库。
+    if (opts.desire) await opts.desire.evolve(turns, { deltas: desireDeltas }).catch(() => null);
     // 情绪 → 记忆重要性 (emotion-design.md §8): 这一轮心情位移大, 说明发生了要紧的事。
     let boosted = before && after ? applyMoodShiftBoost(extracted, moodShiftMagnitude(before, after)) : extracted;
     // L4: 这次"生病被照顾"作为一条 dyad 共同记忆存下来(她会记得你照顾过她)。
     if (coupling?.careEvent) boosted = [...boosted, buildCareMemory(this.subjectName, coupling.careEvent)];
     const stored = boosted.length === 0 ? [] : await storeMemories(this.userId, this.companionId, boosted);
-    return { state: after, stored, scheduled, coupling, knowledge };
+    return { state: after, desires: opts.desire ? await opts.desire.snapshot().catch(() => null) : null, stored, scheduled, coupling, knowledge };
   }
 
   /**
@@ -131,6 +134,16 @@ export class Memory {
     return seedPersona(this.userId, this.companionId, facts);
   }
 
+  /** B3: 记录她自己的短暂行为事件，不混入用户记忆，也不改写既有事实。 */
+  async recordSelfEvent(content, opts = {}) {
+    const text = String(content ?? '').trim();
+    if (!text) return [];
+    return storeMemories(this.userId, this.companionId, [{
+      type: 'episode', fact_core: text, content: text, narrative: opts.narrative ?? text,
+      subject_kind: 'self', importance: opts.importance ?? 4, affect_valence: opts.valence ?? -0.2, affect_intensity: opts.intensity ?? 0.5,
+    }]);
+  }
+
   /** 取她的人格注入块 (域隔离: 只含 self 设定, 不混 user 记忆) */
   async persona(opts = {}) {
     return personaBlock(this.userId, this.companionId, this.subjectName, opts);
@@ -153,6 +166,9 @@ export class Memory {
   /** 已经主动提起过的预期记忆: 标记 fired, 不再重复打扰。 */
   async dismissProspective(ids) {
     return markFired(ids);
+  }
+  async ensureAnniversaries(now = Date.now()) {
+    return ensureFirstChatAnniversary(this.userId, this.companionId, now);
   }
 
   /** 她看到一张图 (M6): vision caption → image 记忆, 之后可被文本召回。缺凭证降级不崩。 */
@@ -211,6 +227,10 @@ export class Memory {
   /** 定期 (如每晚) 调用: 反思总结 */
   async reflect(opts = {}) {
     return runReflection(this.userId, this.companionId, opts);
+  }
+
+  async updateUserProfile(opts = {}) {
+    return updateUserProfile(this.userId, this.companionId, opts);
   }
 
   /** 维护期 (如每晚) 调用: 合并近义重复记忆 (收口并发 observe 漏过的"两条当前事实")。 */

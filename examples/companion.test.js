@@ -230,6 +230,17 @@ console.log('companionId 在门面/适配层落位');
   ok('PersonaAdapter.toPrompt 含 setExtra 补充', pa.toPrompt().includes('齐肩黑发'));
 }
 
+console.log('personaJsonToConfig: narration.directives 映射到 narrationDirectives (旁白按角色覆盖)');
+{
+  const { config } = personaJsonToConfig({
+    persona: { name: '阿冷' },
+    narration: { directives: { intimate: '角色专属尺度规则', romantic: '', bogus: 123 } },
+  });
+  ok('字符串指令被收进 narrationDirectives', config.narrationDirectives.intimate === '角色专属尺度规则');
+  ok('空串/非字符串被过滤', !('romantic' in config.narrationDirectives) && !('bogus' in config.narrationDirectives));
+  ok('没有 narration 字段时为 null', personaJsonToConfig({ persona: { name: '阿冷' } }).config.narrationDirectives === null);
+}
+
 console.log('mergePersonaSections (目录式人设: 分片合并纯逻辑)');
 {
   const merged = mergePersonaSections([
