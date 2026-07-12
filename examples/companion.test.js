@@ -3,6 +3,7 @@
 import assert from 'node:assert';
 import {
   CompanionConfigSchema,
+  normalizeCompanionProfile,
   normalizeCompanionConfig,
   safeCompanionConfig,
   rowToConfig,
@@ -93,6 +94,13 @@ console.log('CompanionConfig zod 校验');
     threwBadValence = true;
   }
   ok('emotionBaseline.valence 越界 (>1) 抛错', threwBadValence);
+
+  const profile = normalizeCompanionProfile({
+    legalName: '沈清词', nicknames: ['清清'], birthDate: '1998-05-20',
+    family: [{ relation: '父亲', occupation: '投资人' }],
+    menstrual: { enabled: true, cycleLengthDays: 28, periodLengthDays: 5 },
+  });
+  ok('角色档案支持出生/昵称/家庭/生理期字段', profile.nicknames[0] === '清清' && profile.family[0].relation === '父亲' && profile.menstrual.enabled === true);
 }
 
 console.log('personaJsonToConfig: 顶层 knowledge 数组映射到 knowledgeBank (M9 知识滴灌库)');

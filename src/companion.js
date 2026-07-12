@@ -23,6 +23,39 @@ const SeedFactSchema = z.union([
   }),
 ]);
 
+const FamilyMemberSchema = z.object({
+  relation: z.string().default(''),
+  name: z.string().default(''),
+  nickname: z.string().default(''),
+  occupation: z.string().default(''),
+  location: z.string().default(''),
+  notes: z.string().default(''),
+}).passthrough();
+
+export const CompanionProfileSchema = z.object({
+  legalName: z.string().default(''),
+  nicknames: z.array(z.string()).default([]),
+  gender: z.string().default('女'),
+  birthDate: z.string().default(''),
+  birthPlace: z.string().default('武汉'),
+  nationality: z.string().default('中国'),
+  idCardNumber: z.string().default(''),
+  passportNumber: z.string().default(''),
+  family: z.array(FamilyMemberSchema).default([]),
+  menstrual: z.object({
+    enabled: z.boolean().default(false),
+    lastPeriodStart: z.string().default(''),
+    cycleLengthDays: z.number().int().min(18).max(60).default(28),
+    periodLengthDays: z.number().int().min(2).max(14).default(5),
+    remindersEnabled: z.boolean().default(false),
+    notes: z.string().default(''),
+  }).default({}),
+}).passthrough();
+
+export function normalizeCompanionProfile(input = {}) {
+  return CompanionProfileSchema.parse(input);
+}
+
 export const CompanionConfigSchema = z.object({
   companionId: z.string().min(1).default('default'), // 隔离键, 默认 'default'
   name: z.string().min(1),                            // 她的名字 / 称呼 (= orchestrator companionName)
@@ -45,6 +78,7 @@ export const CompanionConfigSchema = z.object({
   narrationDirectives: z.record(z.string(), z.string()).nullable().default(null),
   storyCast: z.array(z.object({ name: z.string().min(1), role: z.string().min(1), closeness: z.number().min(0).max(1).default(0.5) })).default([]),
   storylines: z.array(z.object({ id: z.string().min(1), title: z.string().min(1), stage: z.enum(['setup','rising','climax','cooldown','closed']).default('setup'), mood_link: z.number().min(-1).max(1).default(0), last_beat: z.string().default(''), next_beat_hint: z.string().default('') })).default([]),
+  profile: CompanionProfileSchema.default({}),
 });
 
 /** 校验/解析任意输入 -> 合法 CompanionConfig (缺字段补默认, 非法抛 ZodError)。 */
@@ -96,6 +130,7 @@ export function personaJsonToConfig(json = {}) {
         : null,
     storyCast: Array.isArray(json.story?.cast) ? json.story.cast : [],
     storylines: Array.isArray(json.story?.lines) ? json.story.lines : [],
+    profile: json.profile ?? {},
   });
   const options = {
     useMonologue: json.runtime?.use_monologue ?? true,
@@ -189,6 +224,7 @@ export function configToRow(userId, config) {
       narrationDirectives: c.narrationDirectives,
       storyCast: c.storyCast,
       storylines: c.storylines,
+      profile: c.profile,
     },
     updated_at: new Date().toISOString(),
   };
