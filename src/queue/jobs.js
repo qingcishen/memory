@@ -60,14 +60,24 @@ export async function enqueue(userId, companionId = 'default', kind, payload = {
  * 没有 SELECT ... FOR UPDATE SKIP LOCKED 也能在多进程下不抢同一条: 两个 worker 同时认领同一行,
  * 只有一个的 update(status pending→running) 影响 1 行, 另一个影响 0 行被跳过。
  */
-export async function claimBatch({ limit = PARAMS.queue.batchSize, now = Date.now() } = {}) {
-  const { data: pend, error } = await supabase
+export async function claimBatch({ limit = PARAMS.queue.batchSize, now = Date.now(), kinds = [], leaseMs = 15 * 60_000 } = {}) {
+  const nowIso = new Date(now).toISOString();
+  const staleBefore = new Date(now - leaseMs).toISOString();
+  // 上一个 worker 崩溃后，超过租约的 running 任务重新可认领。
+  let stale = supabase.from('jobs').update({ status: 'pending', locked_at: null, locked_by: null, updated_at: nowIso })
+    .eq('status', 'running').or(`locked_at.is.null,locked_at.lt.${staleBefore}`);
+  if (kinds.length) stale = stale.in('kind', kinds);
+  await stale;
+
+  let query = supabase
     .from('jobs')
     .select('*')
     .eq('status', 'pending')
-    .lte('run_after', new Date(now).toISOString())
+    .lte('run_after', nowIso)
     .order('run_after', { ascending: true })
     .limit(limit);
+  if (kinds.length) query = query.in('kind', kinds);
+  const { data: pend, error } = await query;
   if (error) throw error;
   if (!pend || pend.length === 0) return [];
 
@@ -75,7 +85,7 @@ export async function claimBatch({ limit = PARAMS.queue.batchSize, now = Date.no
   for (const job of pend) {
     const { data, error: e } = await supabase
       .from('jobs')
-      .update({ status: 'running', updated_at: new Date().toISOString() })
+      .update({ status: 'running', locked_at: nowIso, locked_by: `${process.pid}`, updated_at: nowIso })
       .eq('id', job.id)
       .eq('status', 'pending') // CAS: 只认领仍是 pending 的
       .select()
@@ -89,7 +99,7 @@ export async function claimBatch({ limit = PARAMS.queue.batchSize, now = Date.no
 export async function completeJob(id, result = null) {
   const { error } = await supabase
     .from('jobs')
-    .update({ status: 'done', result, updated_at: new Date().toISOString() })
+    .update({ status: 'done', result, locked_at: null, locked_by: null, updated_at: new Date().toISOString() })
     .eq('id', id);
   if (error) throw error;
 }
@@ -104,6 +114,8 @@ export async function failJob(job, errMessage, now = Date.now(), opts = {}) {
       attempts: next.attempts,
       run_after: next.run_after,
       last_error: String(errMessage ?? '').slice(0, 500),
+      locked_at: null,
+      locked_by: null,
       updated_at: new Date().toISOString(),
     })
     .eq('id', job.id);
@@ -153,13 +165,17 @@ export class Worker {
       fail: (job, msg, now) => failJob(job, msg, now),
     };
     this._timer = null;
+    this._ticking = false;
     this.metrics = { processed: 0, succeeded: 0, failed: 0, skipped: 0 };
   }
 
   /** 跑一轮: 认领一批 → 逐个 handler → 成功 complete / 失败 fail(退避重试)。返回本轮结果摘要。 */
   async tick() {
+    if (this._ticking) return { claimed: 0, results: [], skippedOverlap: true };
+    this._ticking = true;
+    try {
     const now = this.clock();
-    const jobs = await this.store.claimBatch({ limit: this.batchSize, now }).catch(() => []);
+    const jobs = await this.store.claimBatch({ limit: this.batchSize, now, kinds: Object.keys(this.handlers) }).catch(() => []);
     const results = [];
     for (const job of jobs) {
       const handler = this.handlers[job.kind];
@@ -182,11 +198,15 @@ export class Worker {
       }
     }
     return { claimed: jobs.length, results };
+    } finally {
+      this._ticking = false;
+    }
   }
 
   start({ intervalMs = 2000 } = {}) {
     if (this._timer) return this._timer;
     this._timer = setInterval(() => this.tick().catch((e) => console.error('[worker]', e)), intervalMs);
+    this._timer.unref?.();
     return this._timer;
   }
 

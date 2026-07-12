@@ -188,9 +188,10 @@ export class Selfie {
 
     const references = listReferenceImages(this.userId, this.companionId)
       .map((item) => ({ path: referenceFilePath(item), mime: item.mime, name: item.name }));
+    const providerOpts = { seed: opts.seed, loraId: opts.loraId, loraTrigger: opts.loraTrigger };
     const img = references.length && typeof this.provider.edit === 'function'
-      ? await this.provider.edit(prompt, references, { seed: opts.seed })
-      : await this.provider.generate(prompt, { seed: opts.seed });
+      ? await this.provider.edit(prompt, references, providerOpts)
+      : await this.provider.generate(prompt, providerOpts);
     await this.write(this.userId, this.companionId, { url: img.url, tags, prompt, seed: img.seed, meta: { ...img.meta, kind } }).catch(() => {});
     return { url: img.url, tags, kind, cached: false, seed: img.seed };
   }

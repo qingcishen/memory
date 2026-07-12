@@ -4,7 +4,7 @@
 //   - cue 型: 再提相关话题时被语境触发
 //   - 已 fired / 过期 不再打扰
 import assert from 'node:assert';
-import { relativeTriggerAt, detectProspective, isDue, isExpired } from '../src/memory/prospective.js';
+import { annualTriggerAt, detectAnnualProspective, relativeTriggerAt, detectProspective, isDue, isExpired } from '../src/memory/prospective.js';
 import { PARAMS } from '../src/params.js';
 
 let passed = 0;
@@ -62,6 +62,19 @@ console.log('isDue (cue 型: 语境相似度触发)');
   ok('语境相近 → 触发', isDue(cue, { queryVec: [0.99, 0.1, 0] }, now) === true);
   ok('语境不相关 → 不触发', isDue(cue, { queryVec: [0, 1, 0] }, now) === false);
   ok('缺向量 → 不触发 (不误报)', isDue(cue, {}, now) === false);
+}
+
+console.log('annual prospective (生日 / 纪念日每年触发)');
+{
+  const before = new Date('2026-05-19T12:00:00').getTime();
+  const at = annualTriggerAt(5, 20, before);
+  ok('今年还没到 → 排今年生日', at.toISOString().startsWith('2026-05-20'));
+  const after = new Date('2026-05-21T12:00:00').getTime();
+  ok('今年已过 → 排明年生日', annualTriggerAt(5, 20, after).toISOString().startsWith('2027-05-20'));
+  const p = detectAnnualProspective([{ role: 'user', content: '我的生日是5月20日' }], before, '阿青');
+  ok('识别用户生日 annual 预期', p?.trigger_kind === 'annual' && p.annual_key === 'birthday:5-20');
+  ok('annual 到点 due', isDue({ status: 'pending', trigger_kind: 'annual', trigger_at: at.toISOString(), last_fired_year: null }, {}, at.getTime() + HOUR) === true);
+  ok('annual 同年已触发不重复 due', isDue({ status: 'pending', trigger_kind: 'annual', trigger_at: at.toISOString(), last_fired_year: 2026 }, {}, at.getTime() + HOUR) === false);
 }
 
 console.log(`\nM5 全部 ${passed} 条断言通过 ✅`);

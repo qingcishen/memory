@@ -142,11 +142,19 @@ story.toPrompt(snapshot) -> string                       // "她最近的生活"
 | V1 | 她的声音和脸 | TTS 换音色克隆(CosyVoice/火山声音复刻);自拍走 A2 角色 LoRA 锁脸 |
 | E1 | 质量评测 | `examples/eval/` LLM-judge 场景集:冷落/吵架/和好/撒娇各 N 个剧本,打分维度=人设一致/情绪合理/记忆正确;CI 手动触发,守住"改一处坏三处" |
 
+**当前实现进度**
+- D1/D2/D3、B1/B2/B3、S1/S2/S3、U1 已落地并进入本地测试链。
+- G1 已落地:`src/orchestrator/goals.js` 将 due prospective、desire urgency、story beat 组装进"本轮意图"槽。
+- C1 已落地:`prospective.trigger_kind='annual'` 支持生日/第一次聊天纪念日,annual 触发后自动推进到下一年。
+- V1 已落地为可配置生产接口:TTS 支持 `TTS_VOICE_ID`/克隆状态字段,图片生成支持 `IMAGE_LORA_ID`/`IMAGE_LORA_TRIGGER` 并写入生成元数据。
+- E1 已落地离线评估骨架:`npm run eval:v2` 读取 `examples/eval/companion-v2.scenarios.json` 做冷处理/争吵修复/撒娇/故事分享回归。
+- 控制台新增"伴侣升级"面板,集中展示需求、行为状态、故事线、纪念日、用户画像、声音与 LoRA 配置。
+
 ---
 
 ## 4. 数据与参数变更
 
-**数据库(全部幂等)**:`affective_state` 加 `desires jsonb`;新表 `story_lines`;无破坏性变更。
+**数据库(全部幂等)**:`affective_state` 加 `desires jsonb`;新表 `story_lines`;`prospective` 加 `annual_key`/`last_fired_year`;无破坏性变更。
 
 **params 新增**(全部进控制台参数页):
 
@@ -167,7 +175,7 @@ story.toPrompt(snapshot) -> string                       // "她最近的生活"
 - **纯逻辑单测**(每阶段必须):desire 曲线 / emotionLabel 场景表 / behaviorPolicy 边界 / story stage 机 —— 全部离线,进 `npm test` 链
 - **编排器 mock 测**:policy 正确传导到 deliverReply 参数、desire 快照进 prompt 组装
 - **行为级验收**(上文各阶段"验收"条目):用注入 `now` 模拟时间跳跃,断言可观察行为差异
-- **E1 评测集**在三线落地后建,作为长期回归防线
+- **E1 评测集**:`npm run eval:v2` 离线跑场景集;后续可在同入口接 LLM judge 做人设/情绪/记忆三维评分
 
 ## 6. 风险与红线
 

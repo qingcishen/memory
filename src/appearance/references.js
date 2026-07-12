@@ -17,7 +17,9 @@ function writeIndex(rows) {
 }
 
 export function listReferenceImages(userId, companionId = 'default') {
-  return readIndex().filter((x) => x.userId === String(userId) && x.companionId === String(companionId));
+  const rows = readIndex();
+  const exact = rows.filter((x) => x.userId === String(userId) && x.companionId === String(companionId));
+  return exact.length ? exact : rows.filter((x) => x.userId === '*' && x.companionId === String(companionId));
 }
 
 export function readReferenceById(id) {
@@ -29,21 +31,44 @@ export function referenceFilePath(item) {
   return file ? path.join(STORE, file) : '';
 }
 
-export function saveReferenceImage({ userId, companionId = 'default', name = '', mime = '', data = '' }) {
+export function saveReferenceImage({ userId, companionId = 'default', name = '', mime = '', data = '', isAvatar = false, source = '' }) {
   const ext = ALLOWED.get(String(mime).toLowerCase());
   if (!ext) throw new Error('只支持 PNG、JPEG 和 WebP 参考图');
   const buffer = Buffer.from(String(data), 'base64');
   if (!buffer.length) throw new Error('图片内容为空');
   if (buffer.length > 50 * 1024 * 1024) throw new Error('单张参考图不能超过 50MB');
+  const hash = crypto.createHash('sha256').update(buffer).digest('hex');
+  const rows = readIndex();
+  const existing = rows.find((x) => x.userId === String(userId) && x.companionId === String(companionId) && x.hash === hash);
+  if (existing) return existing;
   const id = crypto.randomUUID();
   const file = `${id}.${ext}`;
   fs.mkdirSync(STORE, { recursive: true });
   fs.writeFileSync(path.join(STORE, file), buffer);
-  const item = { id, userId: String(userId), companionId: String(companionId), name: String(name || file).slice(0, 160), mime, file, bytes: buffer.length, createdAt: new Date().toISOString() };
-  const rows = readIndex();
+  const item = {
+    id, userId: String(userId), companionId: String(companionId), name: String(name || file).slice(0, 160),
+    mime, file, bytes: buffer.length, hash, isAvatar: Boolean(isAvatar), source: String(source || '').slice(0, 500),
+    createdAt: new Date().toISOString(),
+  };
+  if (item.isAvatar) {
+    for (const row of rows) {
+      if (row.userId === item.userId && row.companionId === item.companionId) row.isAvatar = false;
+    }
+  }
   rows.push(item);
   writeIndex(rows);
   return item;
+}
+
+export function setReferenceAvatar(id, userId, companionId = 'default') {
+  const rows = readIndex();
+  const target = rows.find((x) => x.id === String(id) && (x.userId === String(userId) || x.userId === '*') && x.companionId === String(companionId));
+  if (!target) return null;
+  for (const row of rows) {
+    if (row.userId === target.userId && row.companionId === target.companionId) row.isAvatar = row.id === target.id;
+  }
+  writeIndex(rows);
+  return target;
 }
 
 export function deleteReferenceImage(id, userId, companionId = 'default') {

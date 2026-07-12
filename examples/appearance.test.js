@@ -1,6 +1,6 @@
 // A1 纯逻辑/骨架测试: 出图 provider(mock) + 自拍策略 + 图库命中。不连网, 注入假 read/write/provider。
 import assert from 'node:assert';
-import { MockImageProvider, HttpImageProvider, OpenAIImageProvider } from '../src/appearance/provider.js';
+import { MockImageProvider, HttpImageProvider, OpenAIImageProvider, withLoraTrigger } from '../src/appearance/provider.js';
 import { shouldSendSelfie, canSendSelfie, buildSelfiePrompt, buildScenePrompt, decidePhoto, Selfie } from '../src/appearance/selfie.js';
 
 let passed = 0;
@@ -77,6 +77,12 @@ console.log('OpenAIImageProvider (GPT Image Base64 响应)');
   ok('GPT Image Base64 使用正确 MIME', img.url === 'data:image/webp;base64,aW1hZ2U=');
 }
 
+console.log('LoRA trigger (角色一致性触发词)');
+{
+  ok('有 LoRA trigger 时自动前置', withLoraTrigger('手机自拍', { loraTrigger: 'shiya_v2' }).startsWith('shiya_v2, '));
+  ok('prompt 已包含 trigger 时不重复', withLoraTrigger('shiya_v2, 手机自拍', { loraTrigger: 'shiya_v2' }) === 'shiya_v2, 手机自拍');
+}
+
 console.log('OpenAIImageProvider (多参考图编辑接口)');
 {
   let request = null;
@@ -94,7 +100,8 @@ console.log('OpenAIImageProvider (多参考图编辑接口)');
   ]);
   ok('调用 /images/edits', request.url.endsWith('/images/edits'));
   ok('multipart 包含两张参考图', request.options.body.getAll('image[]').length === 2);
-  ok('编辑参数默认最高一致性与竖图', request.options.body.get('input_fidelity') === 'high' && request.options.body.get('size') === '1024x1536');
+  ok('gpt-image-2 自动省略不支持的 input_fidelity', request.options.body.get('input_fidelity') === null);
+  ok('编辑请求保留竖图尺寸', request.options.body.get('size') === '1024x1536');
   ok('编辑响应带 usage 元数据', img.meta.referenceCount === 2 && img.meta.usage.total_tokens === 123);
 }
 

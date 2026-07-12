@@ -29,15 +29,32 @@ export const NARRATION_DIRECTIVES = {
 };
 
 /**
+ * 场景基调之上的情绪细节层 (B 行为策略线的 inferEmotionLabel 产出)。
+ * 只覆盖"场景本身猜不出、但情绪标签能猜出"的那部分微妙意味——委屈/吃醋/撒娇/心疼
+ * 这几种在 tense/romantic 场景下会长得很像"她有点情绪"，但具体是哪种情绪该有区分的
+ * 神态。开心/平静/生气/失落不额外加(生气/失落已被 tense/conflict 场景本身覆盖到)。
+ */
+export const EMOTION_NUANCE = {
+  委屈: '这一刻她心里有点委屈，动作上可以带一点小别扭或欲言又止，但不会大吵大闹。',
+  吃醋: '这一刻她心里夹着一点不易察觉的醋意，动作/语气可以有一丝不自然的别扭，但嘴上未必承认。',
+  撒娇: '带一点撒娇讨好的意味，动作可以更黏人、更任性一点。',
+  心疼: '她其实有点心疼对方，神态里可以露出关切，但嘴上未必会直说。',
+};
+
+/**
  * 场景类型 -> 旁白指令; 未知类型或 daily 返回空串。纯函数。
  * overrides: 角色人设的按场景覆盖 (CompanionConfig.narrationDirectives, 来自
  * companions/<id>/narration.json) —— 角色专属的旁白写法/尺度/称呼属于人设,
  * 这里的 NARRATION_DIRECTIVES 只是通用兜底。
+ * emotionLabel: B 线的离散情绪推断结果 (见 src/state/emotionLabel.js), 只在
+ * 场景本身已经决定要写旁白(base 非空)时才叠加情绪细节——不会让纯日常聊天
+ * 单纯因为"有点委屈"就被迫多写一条 narration part, 维持"不是每轮都需要"的原则。
  */
-export function buildNarrationPrompt(sceneType, overrides = null) {
+export function buildNarrationPrompt(sceneType, overrides = null, emotionLabel = null) {
   const o = overrides?.[sceneType];
-  if (typeof o === 'string' && o.trim()) return o;
-  return NARRATION_DIRECTIVES[sceneType] ?? '';
+  const base = typeof o === 'string' && o.trim() ? o : NARRATION_DIRECTIVES[sceneType] ?? '';
+  const nuance = base && EMOTION_NUANCE[emotionLabel];
+  return nuance ? `${base}\n【情绪基调】${nuance}` : base;
 }
 
 /** 把原始 LLM 分类输出规整成合法场景类型; 不认识的一律降级 'daily'。纯函数, 可单测。 */
@@ -48,11 +65,17 @@ export function parseSceneLabel(raw) {
   return SCENE_TYPES.includes(s) ? s : 'daily';
 }
 
-/** 组装分类用的输入: 最近几轮 + 当前这条消息。纯函数。 */
-export function composeClassifyInput(userMessage, history = [], lookback = 4) {
+/**
+ * 组装分类用的输入: 最近几轮 + 当前这条消息 (+ 可选的连续性提示)。纯函数。
+ * previousScene: 上一轮判定的场景; 非 daily 时附一句"倾向保持"的提示——LLM 单轮分类
+ * 对模糊语句很容易在 daily/romantic/tense 之间来回抖动, 给一点惯性能显著减少闪回感,
+ * 真正转场(如从暧昧突然吵起来)时提示只是"倾向", 不会盖过明显的场景变化。
+ */
+export function composeClassifyInput(userMessage, history = [], lookback = 4, previousScene = null) {
   const recent = (history ?? []).slice(-lookback * 2).map((t) => `${t.role === 'user' ? '对方' : '她'}: ${t.content}`);
   recent.push(`对方: ${userMessage}`);
-  return recent.join('\n');
+  const hint = previousScene && previousScene !== 'daily' ? `\n[提示: 上一轮场景是 ${previousScene}, 除非这段对话明显转变, 否则倾向保持]` : '';
+  return recent.join('\n') + hint;
 }
 
 const CLASSIFY_SYS = `判断下面这段对话当前是哪种场景, 只从这几个词里选一个原样输出, 不要解释、不要标点:
@@ -65,8 +88,11 @@ export class SceneClassifier {
     this.lookback = lookback;
   }
 
-  /** 分类当前场景; 任何失败都降级 'daily', 不抛、不阻塞主链路。 */
-  async classify({ userMessage, history = [] } = {}) {
+  /**
+   * 分类当前场景; 任何失败都降级 'daily', 不抛、不阻塞主链路。
+   * previousScene: 上一轮场景 (调用方维护, 如 Orchestrator._lastSceneType), 用于连续性提示。
+   */
+  async classify({ userMessage, history = [], previousScene = null, signal } = {}) {
     if (!userMessage) return 'daily';
     try {
       const res = await this.llmClient.chat.completions.create({
@@ -75,9 +101,9 @@ export class SceneClassifier {
         max_tokens: 8,
         messages: [
           { role: 'system', content: CLASSIFY_SYS },
-          { role: 'user', content: composeClassifyInput(userMessage, history, this.lookback) },
+          { role: 'user', content: composeClassifyInput(userMessage, history, this.lookback, previousScene) },
         ],
-      });
+      }, { signal });
       return parseSceneLabel(res.choices?.[0]?.message?.content);
     } catch {
       return 'daily';

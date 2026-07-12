@@ -1,5 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
+import { HttpsProxyAgent } from 'https-proxy-agent';
 import dotenv from 'dotenv';
 dotenv.config();
 
@@ -21,6 +22,8 @@ export const llm = new OpenAI({
 export const LLM_MODEL = process.env.LLM_MODEL || 'deepseek-chat';
 // 编排器回复模型 (好模型, 可与 LLM_MODEL 不同 provider); 未配置时退回 LLM_MODEL。
 export const REPLY_MODEL = process.env.REPLY_MODEL || LLM_MODEL;
+export const REPLY_PROXY_URL = process.env.REPLY_PROXY_URL || '';
+const replyHttpAgent = REPLY_PROXY_URL ? new HttpsProxyAgent(REPLY_PROXY_URL) : undefined;
 
 // ---- 回复模型独立供应商 (可选) ----
 // 路线图约定"回复用好模型, 后台杂活用便宜模型"。REPLY_BASE_URL / REPLY_API_KEY
@@ -31,8 +34,27 @@ export const replyLlm =
     ? new OpenAI({
         apiKey: process.env.REPLY_API_KEY || process.env.LLM_API_KEY || 'placeholder',
         baseURL: process.env.REPLY_BASE_URL || process.env.LLM_BASE_URL || 'https://api.deepseek.com',
+        ...(replyHttpAgent ? { httpAgent: replyHttpAgent } : {}),
       })
-    : llm;
+    : replyHttpAgent
+      ? new OpenAI({
+          apiKey: process.env.LLM_API_KEY || 'placeholder',
+          baseURL: process.env.LLM_BASE_URL || 'https://api.deepseek.com',
+          httpAgent: replyHttpAgent,
+        })
+      : llm;
+
+// ---- 旁白模型独立供应商 (可选) ----
+// 只有显式配置 NARRATION_MODEL 时才启用独立旁白润色；未配置时保持旧链路。
+export const NARRATION_MODEL = process.env.NARRATION_MODEL || '';
+export const narrationLlm =
+  process.env.NARRATION_BASE_URL || process.env.NARRATION_API_KEY
+    ? new OpenAI({
+        apiKey: process.env.NARRATION_API_KEY || process.env.REPLY_API_KEY || process.env.LLM_API_KEY || 'placeholder',
+        baseURL: process.env.NARRATION_BASE_URL || process.env.REPLY_BASE_URL || process.env.LLM_BASE_URL || 'https://api.deepseek.com',
+        ...(replyHttpAgent ? { httpAgent: replyHttpAgent } : {}),
+      })
+    : replyLlm;
 
 // ---- 图片理解模型 (可与回复模型共用火山方舟 VLM) ----
 export const VISION_MODEL = process.env.VISION_MODEL || REPLY_MODEL;
@@ -41,6 +63,7 @@ export const visionLlm =
     ? new OpenAI({
         apiKey: process.env.VISION_API_KEY || process.env.REPLY_API_KEY || process.env.LLM_API_KEY || 'placeholder',
         baseURL: process.env.VISION_BASE_URL || process.env.REPLY_BASE_URL || process.env.LLM_BASE_URL || 'https://api.deepseek.com',
+        ...(replyHttpAgent ? { httpAgent: replyHttpAgent } : {}),
       })
     : replyLlm;
 
@@ -64,6 +87,9 @@ export const asrLlm = new OpenAI({
 // 凭证缺省逐级回退 ASR -> Embedding 的 OpenAI 侧, 与 asrLlm 同族。
 export const TTS_MODEL = process.env.TTS_MODEL || '';
 export const TTS_VOICE = process.env.TTS_VOICE || 'nova';
+export const TTS_VOICE_ID = process.env.TTS_VOICE_ID || process.env.TTS_VOICE || 'nova';
+export const TTS_VOICE_CLONE_PROVIDER = process.env.TTS_VOICE_CLONE_PROVIDER || '';
+export const TTS_VOICE_CLONE_STATUS = process.env.TTS_VOICE_CLONE_STATUS || '';
 export const TTS_CONFIGURED = Boolean(process.env.TTS_MODEL);
 export const ttsLlm = new OpenAI({
   apiKey: process.env.TTS_API_KEY || process.env.ASR_API_KEY || process.env.EMBED_API_KEY || process.env.LLM_API_KEY || 'placeholder',
@@ -80,3 +106,6 @@ export const IMAGE_QUALITY = process.env.IMAGE_QUALITY || 'high';
 export const IMAGE_BACKGROUND = process.env.IMAGE_BACKGROUND || 'opaque';
 export const IMAGE_OUTPUT_FORMAT = process.env.IMAGE_OUTPUT_FORMAT || 'png';
 export const IMAGE_OUTPUT_COMPRESSION = Number.parseInt(process.env.IMAGE_OUTPUT_COMPRESSION || '100', 10);
+export const IMAGE_LORA_ID = process.env.IMAGE_LORA_ID || '';
+export const IMAGE_LORA_TRIGGER = process.env.IMAGE_LORA_TRIGGER || '';
+export const IMAGE_LORA_STATUS = process.env.IMAGE_LORA_STATUS || '';

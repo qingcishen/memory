@@ -515,4 +515,38 @@ console.log('Orchestrator A1 拍照分享 (onPhoto 投递回调 + 用户要求�
   ok('没配 onPhoto → 不生成照片', called === false);
 }
 
+console.log('Orchestrator.reply 旁白系统: 场景连续性提示 + 情绪基调叠加 (接入 B/emotionLabel 行为策略线)');
+{
+  const deps = makeMocks();
+  // 需求 attention 拉满触发 inferEmotionLabel 的"委屈"分支 (见 src/state/emotionLabel.js),
+  // 不依赖任何正则关键词, 是最容易稳定复现离散情绪的路径。
+  deps.stateLayer.snapshot = async () => ({
+    emotion: { valence: 0.1, warmth: 0.5 },
+    life: { energy: 0.4 },
+    desires: { attention: 0.8, sharing: 0, comfort: 0, security: 0 },
+  });
+  const narration = {
+    calls: [],
+    async classify(ctx) {
+      this.calls.push(ctx);
+      return 'tense';
+    },
+  };
+  const orch = new Orchestrator({ userId: 'u_narration', deps: { ...deps, narration }, options: { useMonologue: false } });
+
+  await orch.reply('在吗');
+  ok('首轮没有上一轮场景 (previousScene 未设置)', narration.calls[0].previousScene == null);
+  const firstSystem = deps.llm.generateCalls[0].messages[0].content;
+  ok('旁白段带场景指令', firstSystem.includes('【旁白提示】'));
+  ok('旁白段叠加了情绪基调 (委屈)', firstSystem.includes('【情绪基调】') && firstSystem.includes('委屈'));
+
+  await orch.reply('还在吗');
+  ok('第二轮把上一轮场景传给分类器做连续性提示', narration.calls[1].previousScene === 'tense');
+
+  // 4 小时以上静默会清历史, 场景连续性也应该跟着重置 (见 orchestrator.js 的 idleHours 分支)
+  orch._lastUserMessageAt = Date.now() - 5 * 3600 * 1000;
+  await orch.reply('好久不见');
+  ok('长时间静默后场景连续性被重置, 不沿用几小时前的场景', narration.calls[2].previousScene == null);
+}
+
 console.log(`\nOrchestrator 全部 ${passed} 条断言通过 ✅`);

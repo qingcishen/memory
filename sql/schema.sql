@@ -149,6 +149,8 @@ create table if not exists affective_state (
   relationship jsonb not null default '{"closeness":0.5,"tension":0,"repair_debt":0,"trust":0.5}'::jsonb,
   updated_at   timestamptz not null default now()
 );
+alter table jobs add column if not exists locked_at timestamptz;
+alter table jobs add column if not exists locked_by text;
 -- 多角色: 加 companion_id 并把主键从 user_id 升级为 (user_id, companion_id)。
 -- add primary key 非幂等, 用守卫保证整段脚本可重复执行。
 alter table affective_state add column if not exists companion_id text not null default 'default';
@@ -350,7 +352,19 @@ create table if not exists chat_history (
   content      text not null,
   created_at   timestamptz not null default now()
 );
+alter table chat_history add column if not exists event_id text;
 create index if not exists chat_history_idx on chat_history (user_id, companion_id, created_at desc);
+create unique index if not exists chat_history_event_unique_idx
+  on chat_history (user_id, companion_id, event_id, role);
+
+-- 渠道事件幂等：飞书/Discord 重投或多进程时，同一事件只处理一次。
+create table if not exists channel_events (
+  channel    text not null,
+  event_id   text not null,
+  created_at timestamptz not null default now(),
+  primary key (channel, event_id)
+);
+create index if not exists channel_events_created_idx on channel_events (created_at);
 
 -- ------------------------------------------------------------
 --  世界观系统 (worldview): 动态世界状态 —— 背景剧情线/氛围随对话推进缓慢演变,
@@ -504,6 +518,21 @@ as $$
   order by e.embedding <=> query_embedding
   limit greatest(0, least(coalesce(match_count, 4), 50));
 $$;
+
+-- 安全默认：应用按 README 使用 service_role（可绕过 RLS）；禁止 anon key 直接读写伴侣数据。
+do $$
+declare table_name text;
+begin
+  foreach table_name in array array[
+    'memories','knowledge_entities','knowledge_relations','affective_state','life_state',
+    'affective_state_history','prospective','proactive_rate_limits','behavior_state','story_lines',
+    'companions','appearance_assets','jobs','chat_history','channel_events','world_state'
+  ] loop
+    if to_regclass('public.' || table_name) is not null then
+      execute format('alter table public.%I enable row level security', table_name);
+    end if;
+  end loop;
+end $$;
 
 -- 让 Supabase PostgREST 立即识别新表 / 新 RPC, 避免等待 schema cache 自动刷新。
 notify pgrst, 'reload schema';

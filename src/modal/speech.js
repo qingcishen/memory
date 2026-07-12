@@ -5,7 +5,7 @@
 // 台词 (dialogue parts) 合成一条语音; 旁白 (narration) 是第三人称描写, 念出来
 // 会很怪, 仍走文字。纯逻辑 (选材/判断) 与 IO (合成) 分离, 前者可离线单测。
 
-import { ttsLlm, TTS_MODEL, TTS_VOICE, PARAMS } from '../config.js';
+import { ttsLlm, TTS_MODEL, TTS_VOICE_ID, PARAMS } from '../config.js';
 import { recordLlmCall } from '../metrics.js';
 
 /**
@@ -35,7 +35,7 @@ export function shouldReplyWithVoice({ incomingVoice = false, configured = false
 export async function synthesizeSpeech(text, opts = {}) {
   const res = await ttsLlm.audio.speech.create({
     model: opts.model ?? TTS_MODEL,
-    voice: opts.voice ?? TTS_VOICE,
+    voice: opts.voice ?? TTS_VOICE_ID,
     input: String(text),
     response_format: 'opus',
   });

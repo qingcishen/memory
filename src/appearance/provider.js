@@ -9,6 +9,7 @@
 import {
   IMAGE_BASE_URL, IMAGE_API_KEY, IMAGE_MODEL, IMAGE_SIZE, IMAGE_QUALITY,
   IMAGE_BACKGROUND, IMAGE_OUTPUT_FORMAT, IMAGE_OUTPUT_COMPRESSION,
+  IMAGE_LORA_ID, IMAGE_LORA_TRIGGER, IMAGE_LORA_STATUS,
 } from '../config.js';
 
 /** 字符串 → 稳定十六进制短哈希 (给 mock url / seed 用, 可重现)。 */
@@ -78,9 +79,10 @@ export class OpenAIImageProvider {
     }
     const isGptImage = /^gpt-image-/i.test(this.model);
     const settings = { ...this.defaults, ...opts };
+    const finalPrompt = withLoraTrigger(prompt, settings);
     const body = {
       model: this.model,
-      prompt,
+      prompt: finalPrompt,
       // GPT Image 系列直接返回 b64_json；Seedream 等兼容端点可以请求 URL。
       ...(!isGptImage ? { response_format: 'url' } : {}),
       ...(settings.size ? { size: settings.size } : {}),
@@ -105,17 +107,22 @@ export class OpenAIImageProvider {
     return {
       url,
       seed: item?.seed ?? opts.seed ?? null,
-      meta: { provider: 'openai-compatible', model: this.model, prompt, settings },
+      meta: { provider: 'openai-compatible', model: this.model, prompt: finalPrompt, settings, lora: loraMeta(settings) },
     };
   }
 
   async edit(prompt, referenceImages = [], opts = {}) {
     if (!this.baseURL || !this.apiKey || !this.model || !referenceImages.length) return this.generate(prompt, opts);
     const settings = { ...this.defaults, ...opts };
+    const finalPrompt = withLoraTrigger(prompt, settings);
     const form = new FormData();
     form.set('model', this.model);
-    form.set('prompt', prompt);
-    form.set('input_fidelity', settings.input_fidelity || 'high');
+    form.set('prompt', finalPrompt);
+    // gpt-image-2 的 edits 接口不接受 input_fidelity；旧版 GPT Image
+    // 仍可显式传递。按模型能力组装参数，避免整个参考图请求被 400 拒绝。
+    if (!/^gpt-image-2(?:$|-)/i.test(this.model) && settings.input_fidelity) {
+      form.set('input_fidelity', settings.input_fidelity);
+    }
     for (const ref of referenceImages.slice(0, 16)) {
       const bytes = ref.buffer ?? await import('node:fs/promises').then((m) => m.readFile(ref.path));
       form.append('image[]', new Blob([bytes], { type: ref.mime || 'image/png' }), ref.name || 'reference.png');
@@ -138,8 +145,21 @@ export class OpenAIImageProvider {
     const mime = settings.output_format === 'jpeg' ? 'image/jpeg' : settings.output_format === 'webp' ? 'image/webp' : 'image/png';
     const url = item?.url || (item?.b64_json ? `data:${mime};base64,${item.b64_json}` : '');
     if (!url) throw new Error('参考图生成成功但响应里没有图片');
-    return { url, seed: item?.seed ?? null, meta: { provider: 'openai-compatible-edit', model: this.model, prompt, settings, referenceCount: referenceImages.length, usage: data?.usage } };
+    return { url, seed: item?.seed ?? null, meta: { provider: 'openai-compatible-edit', model: this.model, prompt: finalPrompt, settings, referenceCount: referenceImages.length, usage: data?.usage, lora: loraMeta(settings) } };
   }
+}
+
+export function withLoraTrigger(prompt, opts = {}) {
+  const trigger = String(opts.loraTrigger ?? IMAGE_LORA_TRIGGER ?? '').trim();
+  if (!trigger || String(prompt).includes(trigger)) return prompt;
+  return `${trigger}, ${prompt}`;
+}
+
+export function loraMeta(opts = {}) {
+  const id = String(opts.loraId ?? IMAGE_LORA_ID ?? '').trim();
+  const trigger = String(opts.loraTrigger ?? IMAGE_LORA_TRIGGER ?? '').trim();
+  const status = String(opts.loraStatus ?? IMAGE_LORA_STATUS ?? '').trim();
+  return id || trigger || status ? { id, trigger, status } : null;
 }
 
 export const defaultImageProvider = IMAGE_BASE_URL && IMAGE_API_KEY && IMAGE_MODEL
@@ -153,6 +173,9 @@ export const defaultImageProvider = IMAGE_BASE_URL && IMAGE_API_KEY && IMAGE_MOD
         background: IMAGE_BACKGROUND,
         output_format: IMAGE_OUTPUT_FORMAT,
         output_compression: IMAGE_OUTPUT_COMPRESSION,
+        loraId: IMAGE_LORA_ID,
+        loraTrigger: IMAGE_LORA_TRIGGER,
+        loraStatus: IMAGE_LORA_STATUS,
       },
     })
   : new MockImageProvider();

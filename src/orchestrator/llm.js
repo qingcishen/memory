@@ -3,7 +3,7 @@
 // generateReply 用"好模型"(REPLY_MODEL), think 用便宜模型(LLM_MODEL) —— 见编排器设计方案 §7.3。
 // 缺凭证时 import 不报错 (config.js 已有占位默认值), 真正调用才需要真实凭证。
 
-import { llm, replyLlm, LLM_MODEL, REPLY_MODEL } from '../config.js';
+import { llm, replyLlm, narrationLlm, LLM_MODEL, REPLY_MODEL, NARRATION_MODEL } from '../config.js';
 import { recordLlmCall } from '../metrics.js';
 
 const REPLY_PART_TYPES = ['dialogue', 'narration'];
@@ -67,6 +67,36 @@ export function normalizeReplyResult(result) {
   return { text: joinReplyParts(parts), parts };
 }
 
+/** 用独立模型只重写 narration part，dialogue 保持逐字不变。 */
+export async function rewriteNarrationParts(parts, messages, { client = narrationLlm, model = NARRATION_MODEL, signal } = {}) {
+  const source = normalizeParts(parts);
+  const narrationIndexes = source.flatMap((part, index) => part.type === 'narration' ? [index] : []);
+  if (!model || narrationIndexes.length === 0) return source;
+  try {
+    const res = await client.chat.completions.create({
+      model,
+      temperature: 0.75,
+      response_format: { type: 'json_object' },
+      messages: [
+        ...(messages ?? []),
+        { role: 'system', content: '你是专门的旁白作者。根据上下文和场景旁白指令，只润色草稿中 narration 的文字；不改台词、不新增剧情事实、不解释。只输出 JSON: {"narrations":["..."]}，数量必须与草稿中 narration 数量一致。' },
+        { role: 'user', content: `请润色这份草稿的旁白：${JSON.stringify({ parts: source })}` },
+      ],
+    }, { signal });
+    recordLlmCall('narration', res.usage);
+    const parsed = JSON.parse(res.choices?.[0]?.message?.content || '{}');
+    if (!Array.isArray(parsed.narrations) || parsed.narrations.length !== narrationIndexes.length) return source;
+    const rewritten = source.map((part) => ({ ...part }));
+    narrationIndexes.forEach((index, i) => {
+      const text = String(parsed.narrations[i] ?? '').trim();
+      if (text) rewritten[index].text = text;
+    });
+    return rewritten;
+  } catch {
+    return source;
+  }
+}
+
 export class DefaultLLM {
   /** 生成给用户的回复 (好模型, 温度高一点更有人味)。返回结构化 { parts }, 旁白/台词分开发消息。 */
   async generateReply(messages, opts = {}) {
@@ -78,10 +108,10 @@ export class DefaultLLM {
     };
     let res;
     try {
-      res = await replyLlm.chat.completions.create({ ...payload, response_format: { type: 'json_object' } });
+      res = await replyLlm.chat.completions.create({ ...payload, response_format: { type: 'json_object' } }, { signal: opts.signal });
     } catch (error) {
       if (!looksLikeUnsupportedResponseFormat(error)) throw error;
-      res = await replyLlm.chat.completions.create(payload);
+      res = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
     }
     recordLlmCall('reply', res.usage);
     let content = res.choices[0].message.content;
@@ -89,11 +119,12 @@ export class DefaultLLM {
     // 空回复绝不能变成 "..." 发给用户: 退回普通模式重试一次; 若返回的是散文,
     // parseReplyParts 会兜底把它整段当 dialogue part, 消息照样发得出去。
     if (!content || !String(content).trim()) {
-      res = await replyLlm.chat.completions.create(payload);
+      res = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
       recordLlmCall('reply', res.usage);
       content = res.choices[0].message.content;
     }
-    return { parts: parseReplyParts(content) };
+    const parts = parseReplyParts(content);
+    return { parts: await rewriteNarrationParts(parts, messages, { signal: opts.signal }) };
   }
 
   /** 生成不展示的内心独白 (便宜模型)。 */
@@ -105,7 +136,7 @@ export class DefaultLLM {
         { role: 'system', content: '你在帮一个 AI 角色生成不会被用户看到的内心想法, 简短直接, 不要客套或解释。' },
         { role: 'user', content: context },
       ],
-    });
+    }, { signal: opts.signal });
     recordLlmCall('think', res.usage);
     return res.choices[0].message.content;
   }
