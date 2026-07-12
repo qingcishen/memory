@@ -155,9 +155,16 @@ export class Worker {
    * @param handlers { [kind]: async (payload, job) => result } —— 按 kind 分发
    * @param store    可注入 { claimBatch, complete, fail } (默认走上面的 supabase 实现; 测试可全 mock 离线)
    */
-  constructor({ handlers = {}, store = null, batchSize = PARAMS.queue.batchSize, clock = () => Date.now() } = {}) {
+  constructor({
+    handlers = {},
+    store = null,
+    batchSize = PARAMS.queue.batchSize,
+    handlerTimeoutMs = PARAMS.queue.handlerTimeoutMs,
+    clock = () => Date.now(),
+  } = {}) {
     this.handlers = handlers;
     this.batchSize = batchSize;
+    this.handlerTimeoutMs = handlerTimeoutMs;
     this.clock = clock;
     this.store = store ?? {
       claimBatch: (opts) => claimBatch(opts),
@@ -175,7 +182,10 @@ export class Worker {
     this._ticking = true;
     try {
     const now = this.clock();
-    const jobs = await this.store.claimBatch({ limit: this.batchSize, now, kinds: Object.keys(this.handlers) }).catch(() => []);
+    const jobs = await this.store.claimBatch({ limit: this.batchSize, now, kinds: Object.keys(this.handlers) }).catch((e) => {
+      console.error('[worker] claimBatch failed:', e?.message ?? e);
+      return [];
+    });
     const results = [];
     for (const job of jobs) {
       const handler = this.handlers[job.kind];
@@ -187,7 +197,9 @@ export class Worker {
         continue;
       }
       try {
-        const result = await handler(job.payload ?? {}, job);
+        // handler 挂起 (如 LLM 调用没有超时) 不能冻结整个 worker: 卡够 handlerTimeoutMs 就当失败进重试,
+        // 原 promise 可能仍在后台跑, 但不再挡后续 job 的认领/执行。
+        const result = await runWithTimeout(() => handler(job.payload ?? {}, job), this.handlerTimeoutMs, `job ${job.kind} 超时 (${this.handlerTimeoutMs}ms)`);
         await this.store.complete(job.id, result ?? null);
         this.metrics.succeeded++;
         results.push({ id: job.id, ok: true });
@@ -214,4 +226,15 @@ export class Worker {
     if (this._timer) clearInterval(this._timer);
     this._timer = null;
   }
+}
+
+/** work() 超过 ms 未完成就 reject; 原 promise 不会被真正取消, 只是不再阻塞调用方。
+ *  注意: timer 不能 unref —— 卡住的 work() 没有其它 handle 撑着事件循环时, unref 会让进程在
+ *  timer 触发前就退出 (Node 判定"没有更多活干"), 表现成这个 await 永远不 settle。 */
+function runWithTimeout(work, ms, message) {
+  let timer;
+  const timeout = new Promise((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), ms);
+  });
+  return Promise.race([Promise.resolve().then(work), timeout]).finally(() => clearTimeout(timer));
 }

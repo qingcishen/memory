@@ -25,6 +25,7 @@ const telegramFetchDispatcher = TELEGRAM_PROXY_URL ? new ProxyAgent(TELEGRAM_PRO
 
 const DEFAULT_POLL_TIMEOUT_SECONDS = 25;
 const DEFAULT_RETRY_MS = 3000;
+const MAX_RETRY_MS = 60000;
 const DEFAULT_IDLE_LOG_MS = 60000;
 const DEFAULT_REPLY_TIMEOUT_MS = 90000;
 const MAX_TELEGRAM_MESSAGE_LENGTH = 3900;
@@ -46,6 +47,12 @@ export function isAllowedChat(chatId, allowedChatIds) {
 
 export function telegramUserId(chatId) {
   return `telegram:${chatId}`;
+}
+
+/** 连续第 n 次轮询失败该等多久 (指数退避, 有上限)。n 从 1 起。纯函数, 代理/网络抖动时别把日志和连接刷爆。 */
+export function pollRetryDelayMs(consecutiveErrors, { base = DEFAULT_RETRY_MS, cap = MAX_RETRY_MS } = {}) {
+  const n = Math.max(1, consecutiveErrors);
+  return Math.min(cap, base * Math.pow(2, n - 1));
 }
 
 export function chunkMessage(text, limit = MAX_TELEGRAM_MESSAGE_LENGTH) {
@@ -472,11 +479,21 @@ export class TelegramMemoryBot {
     );
     console.log('[telegram] waiting for messages...');
     this.startStatusReporter();
+    let pollErrorStreak = 0;
     while (!this.stopped) {
-      await this.pollOnce().catch(async (error) => {
-        console.error('[telegram] poll error:', formatError(error));
-        await sleep(DEFAULT_RETRY_MS);
-      });
+      await this.pollOnce()
+        .then(() => {
+          pollErrorStreak = 0;
+        })
+        .catch(async (error) => {
+          pollErrorStreak += 1;
+          const delay = pollRetryDelayMs(pollErrorStreak);
+          // 代理/网络抖动时连续报错很正常; 前几次照常打日志, 之后每 20 次才打一条, 避免日志文件被刷爆。
+          if (pollErrorStreak <= 5 || pollErrorStreak % 20 === 0) {
+            console.error(`[telegram] poll error (连续 ${pollErrorStreak} 次, ${delay}ms 后重试):`, formatError(error));
+          }
+          await sleep(delay);
+        });
     }
   }
 

@@ -80,4 +80,37 @@ console.log('Worker.tick (注入 mock store + handlers, 离线)');
   ok('队列空时 tick 返回 0', empty.claimed === 0);
 }
 
+console.log('Worker.tick 卡死的 handler 不冻结整个 worker (超时后当失败处理)');
+{
+  const failed = [];
+  const store = {
+    async claimBatch() {
+      return [{ id: 'stuck', kind: 'hang', payload: {} }];
+    },
+    async complete() {},
+    async fail(job, msg) {
+      failed.push({ id: job.id, msg });
+    },
+  };
+  const handlers = { hang: () => new Promise(() => {}) }; // 永不 resolve, 模拟挂起的 LLM 调用
+  const w = new Worker({ handlers, store, handlerTimeoutMs: 20 });
+  const summary = await w.tick();
+
+  ok('tick 没有被卡死的 handler 挂住 (按时返回)', summary.claimed === 1);
+  ok('超时的 job 进 fail 而不是永久 running', failed.some((f) => f.id === 'stuck' && /超时/.test(f.msg)));
+  ok('_ticking 复位, 下一轮还能继续认领', w._ticking === false);
+}
+
+console.log('Worker.tick claimBatch 报错时不吞掉 (返回空批次而不是抛出/挂起)');
+{
+  const store = {
+    async claimBatch() {
+      throw new Error('schema cache 里没有这一列');
+    },
+  };
+  const w = new Worker({ handlers: { x: async () => {} }, store });
+  const summary = await w.tick();
+  ok('claimBatch 抛错时 tick 仍正常返回', summary.claimed === 0);
+}
+
 console.log(`\nM5 任务队列 全部 ${passed} 条断言通过`);

@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { LocalJsonHistoryStore } from '../src/orchestrator/historyStore.js';
-import { TelegramMemoryBot, parseAllowedChatIds, isAllowedChat, telegramUserId, chunkMessage, buildOutgoingMessages, ensureReplyParts, typingDelayMs, parseDataUrl, pickPolicyDelay, applyPartsBudget, simulateBehaviorDelay, startTypingHeartbeat } from '../src/telegram/bot.js';
+import { TelegramMemoryBot, parseAllowedChatIds, isAllowedChat, telegramUserId, chunkMessage, buildOutgoingMessages, ensureReplyParts, typingDelayMs, parseDataUrl, pickPolicyDelay, applyPartsBudget, simulateBehaviorDelay, startTypingHeartbeat, pollRetryDelayMs } from '../src/telegram/bot.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -56,6 +56,14 @@ console.log('buildOutgoingMessages / typingDelayMs (parts -> Telegram 消息)');
   ok('dialogue 会清理长括号旁白', out[1].text === '嗯，我在。');
   ok('空 part 被跳过', out.every((m) => m.text));
   ok('typingDelayMs 有上下限', typingDelayMs('短') >= 600 && typingDelayMs('a'.repeat(1000)) <= 4000);
+}
+
+console.log('pollRetryDelayMs (轮询失败退避, 代理/网络抖动时别刷爆日志和连接)');
+{
+  ok('退避指数增长', pollRetryDelayMs(1) < pollRetryDelayMs(2) && pollRetryDelayMs(2) < pollRetryDelayMs(3));
+  ok('退避有上限', pollRetryDelayMs(100) === 60000);
+  ok('第 1 次退避等于 base', pollRetryDelayMs(1) === 3000);
+  ok('0 次和 1 次一样 (至少退避一次)', pollRetryDelayMs(0) === pollRetryDelayMs(1));
 }
 
 console.log('ensureReplyParts (结构化 parts 为空时不静默)');

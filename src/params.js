@@ -268,6 +268,7 @@ export const DEFAULT_PARAMS = {
     baseBackoffMs: 1000, // 重试退避基数 (指数: base * 2^attempts)
     maxBackoffMs: 5 * 60 * 1000, // 退避上限 5min
     batchSize: 10, // 一次 tick 最多 claim 几个 job
+    handlerTimeoutMs: 60 * 1000, // 单个 job 执行上限; 卡死的 handler (如 LLM 调用挂起) 不能冻结整个 worker
   },
 
   // ---- M9 每日训练: 知识滴灌 + 自我日记 (src/training.js) ----
