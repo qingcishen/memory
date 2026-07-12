@@ -30,6 +30,8 @@
     "test:behavior": "node examples/behavior.test.js",
     "test:story": "node examples/story.test.js",
     "test:profile": "node examples/profile.test.js",
+    "test:goals": "node examples/goals.test.js",
+    "eval:v2": "node examples/eval/companion-v2.eval.js",
     "test:state-layer": "node examples/state-layer.test.js",
     "test:desire": "node examples/desire.test.js",
     "test:ontology": "node examples/ontology.test.js",
@@ -53,21 +55,48 @@
     "test:appearance": "node examples/appearance.test.js",
     "test:queue": "node examples/queue.test.js",
     "test:telegram": "node examples/telegram.test.js",
+    "test:channels": "node examples/channels.test.js",
+    "test:narration": "node examples/narration.test.js",
     "test:runtime": "node examples/runtime.test.js",
     "test:weather": "node examples/weather.test.js",
     "test:schema": "node examples/schema.test.js",
     "test:knowledge": "node examples/knowledge.test.js",
     "test:speech": "node examples/speech.test.js",
     "telegram": "node src/telegram/bot.js",
-    "ui": "node src/ui/server.js",
+    "feishu": "node src/feishu/bot.js",
+    "discord": "node src/discord/bot.js",
+    "ui": "npm run ui:build && node src/ui/server.js",
+    "ui:dev": "vite --config src/ui/vite.config.js",
+    "ui:build": "vite build --config src/ui/vite.config.js",
     "test:ui": "node examples/ui.test.js",
     "inspect": "node examples/inspect.js",
-    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/emotion-label.test.js && node examples/behavior.test.js && node examples/desire.test.js && node examples/story.test.js && node examples/profile.test.js && node examples/state-layer.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/safety.test.js && node examples/confidence.test.js && node examples/store.test.js && node examples/scenario.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js && node examples/companion.test.js && node examples/training.test.js && node examples/activity.test.js && node examples/health.test.js && node examples/appearance.test.js && node examples/queue.test.js && node examples/telegram.test.js && node examples/runtime.test.js && node examples/weather.test.js && node examples/schema.test.js && node examples/ui.test.js && node examples/knowledge.test.js && node examples/speech.test.js"
+    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/emotion-label.test.js && node examples/behavior.test.js && node examples/desire.test.js && node examples/story.test.js && node examples/profile.test.js && node examples/goals.test.js && node examples/state-layer.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/safety.test.js && node examples/confidence.test.js && node examples/store.test.js && node examples/scenario.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js && node examples/companion.test.js && node examples/training.test.js && node examples/activity.test.js && node examples/health.test.js && node examples/appearance.test.js && node examples/queue.test.js && node examples/telegram.test.js && node examples/channels.test.js && node examples/narration.test.js && node examples/runtime.test.js && node examples/weather.test.js && node examples/schema.test.js && node examples/ui.test.js && node examples/knowledge.test.js && node examples/speech.test.js"
+  },
+  "overrides": {
+    "axios": "^1.16.0",
+    "discord.js": {
+      "undici": "^6.27.0"
+    }
   },
   "dependencies": {
+    "@larksuiteoapi/node-sdk": "^1.70.0",
     "@supabase/supabase-js": "^2.45.0",
+    "discord.js": "^14.26.5",
     "dotenv": "^16.4.5",
+    "https-proxy-agent": "^9.1.0",
+    "lucide-react": "^1.24.0",
     "openai": "^4.56.0",
+    "react": "^19.2.7",
+    "react-dom": "^19.2.7",
+    "undici": "^8.7.0",
     "zod": "^3.25.76"
+  },
+  "devDependencies": {
+    "@vitejs/plugin-react": "^6.0.3",
+    "autoprefixer": "^10.5.2",
+    "fast-glob": "^3.3.2",
+    "postcss": "^8.5.16",
+    "tailwindcss": "^3.4.17",
+    "vite": "^8.1.4"
   }
 }
