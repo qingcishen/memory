@@ -2,7 +2,7 @@
 // 不起 http 服务、不碰真实 .env 文件。
 
 import { parseEnvText, applyEnvUpdates, formatEnvValue, maskValue } from '../src/ui/envfile.js';
-import { extractProjectRef, buildMemoriesQuery, safePersonaName, normalizeModelIds, resolveModelTarget, listModels } from '../src/ui/server.js';
+import { extractProjectRef, buildMemoriesQuery, safePersonaName, safeCompanionId, normalizeModelIds, resolveModelTarget, listModels, bodyLimitForPath, isAllowedHost, isAuthorized } from '../src/ui/server.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -13,6 +13,13 @@ const ok = (name, cond) => {
   console.log(`  ✓ ${name}`);
   passed++;
 };
+
+console.log('管理端安全边界');
+ok('只允许本机 Host', isAllowedHost('127.0.0.1:8787') && isAllowedHost('localhost:8787') && !isAllowedHost('evil.example'));
+ok('未配置 Token 时保持本机兼容', isAuthorized({}, ''));
+ok('配置 Token 后必须 Bearer 匹配', isAuthorized({ authorization: 'Bearer secret' }, 'secret') && !isAuthorized({}, 'secret'));
+ok('普通 JSON 限制 1MB', bodyLimitForPath('/api/config') === 1_000_000);
+ok('图片路由允许 20MB', bodyLimitForPath('/api/image-references') === 20_000_000);
 
 console.log('parseEnvText (env 文本 -> 键值)');
 {
@@ -122,6 +129,18 @@ console.log('safePersonaName (人设文件白名单: 单文件 + 目录式分片
   ok('非 json 拒绝', safePersonaName('bot.js') === null);
   ok('隐藏文件拒绝', safePersonaName('.env.json') === null && safePersonaName('default/.hidden.json') === null);
   ok('空名拒绝', safePersonaName('') === null);
+}
+
+console.log('safeCompanionId (多角色管理: 角色 ID 白名单)');
+{
+  ok('字母数字放行', safeCompanionId('coco2') === 'coco2');
+  ok('下划线短横线放行', safeCompanionId('my-companion_01') === 'my-companion_01');
+  ok('路径穿越拒绝', safeCompanionId('../default') === null);
+  ok('斜杠拒绝', safeCompanionId('a/b') === null);
+  ok('隐藏名拒绝', safeCompanionId('.hidden') === null);
+  ok('空名拒绝', safeCompanionId('') === null);
+  ok('超长拒绝', safeCompanionId('a'.repeat(65)) === null);
+  ok('前后空白裁剪后再校验', safeCompanionId('  valid_id  ') === 'valid_id');
 }
 
 console.log('normalizeModelIds (兼容端点模型目录)');

@@ -72,8 +72,20 @@ async function main() {
   });
   const world = new WorldDimension({ userId, companionId });
   const narration = new SceneClassifier();
+  const photos = [];
 
-  let deps = { historyStore: createHistoryStore(), weather, world, narration };
+  let deps = {
+    historyStore: createHistoryStore(),
+    weather,
+    world,
+    narration,
+    // 网页试聊也是一个真实投递渠道。生成器可能返回公网 URL，也可能返回
+    // data URL；两种都可直接交给浏览器显示。
+    onPhoto: async ({ url, kind, reason, tags }) => {
+      if (!url) return;
+      photos.push({ url, kind: kind ?? 'photo', reason: reason ?? '', tags: tags ?? [] });
+    },
+  };
 
   if (debugMode) {
     // 与 Orchestrator 构造器内部完全一致的组装顺序 (共享 LifeDimension), 只是外面包了探针。
@@ -158,7 +170,8 @@ async function main() {
         classify: async (ctx) => {
           const sceneType = await narration.classify(ctx);
           trace.sceneType = sceneType;
-          trace.promptParts.narration = buildNarrationPrompt(sceneType, persona?.config?.narrationDirectives);
+          // 此时 emotionLabel 还没算出来 (与 relationship.current 并发, 顺序不定),
+          // narration 段的最终值改在 reply() 返回后用 result.emotionLabel 补算, 见下方。
           return sceneType;
         },
       }),
@@ -197,10 +210,29 @@ async function main() {
     deps,
   });
 
-  const { text, parts } = await bot.reply(String(req.message ?? ''));
-  if (debugMode) trace.metrics = metricsSnapshot(); // 本轮到回复为止的 LLM 调用/token (子进程独占, 就是这一轮的账)
+  const { text, parts, emotionLabel, behaviorPolicy: behavior } = await bot.reply(String(req.message ?? ''));
+  // Orchestrator 在消息渠道中会后台发图；runner 是短命进程，必须等这一张图
+  // 生成并收进 payload 后再退出，否则子进程结束时图片会一起丢失。
+  await bot._lastPhoto?.catch(() => {});
+  if (debugMode) {
+    trace.metrics = metricsSnapshot(); // 本轮到回复为止的 LLM 调用/token (子进程独占, 就是这一轮的账)
+    // reply() 权威返回的 emotionLabel/behaviorPolicy 覆盖 relationship tap 里预算的那份 (避免并发顺序不定导致的偏差)
+    if (emotionLabel) trace.emotionLabel = emotionLabel;
+    if (behavior) trace.behaviorPolicy = behavior;
+    trace.promptParts.narration = buildNarrationPrompt(trace.sceneType, persona?.config?.narrationDirectives, trace.emotionLabel);
+  }
   // 先把回复吐给 ui server (它只等第一行), 再留在后台把记忆提取/状态演变跑完
-  const payload = { ok: true, text, parts, persona: persona?.config?.name ?? null, ...(debugMode ? { debug: trace } : {}) };
+  const deliverableParts = Array.isArray(parts) && parts.length
+    ? parts
+    : (text ? [{ type: 'dialogue', text }] : []);
+  const payload = {
+    ok: true,
+    text,
+    parts: deliverableParts,
+    photos,
+    persona: persona?.config?.name ?? null,
+    ...(debugMode ? { debug: trace } : {}),
+  };
   process.stdout.write(`${JSON.stringify(payload)}\n`);
   await bot._lastAfterReply?.catch(() => {});
   await bot._lastHistoryPersist?.catch(() => {});

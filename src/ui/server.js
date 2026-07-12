@@ -1,7 +1,7 @@
 // 本地控制台服务端 (npm run ui)。
 //
 // 作用: 不用再手改 .env —— 在浏览器里填 Supabase / LLM / Embedding / Telegram 凭证,
-// 一键测试连通性, 并直接启停 Telegram bot、看它的实时日志。
+// 一键测试连通性, 并直接启停消息渠道 bot、看实时日志。
 //
 // 安全边界:
 // - 只绑定 127.0.0.1, 不对外网开放;
@@ -17,14 +17,16 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseEnvText, applyEnvUpdates, maskValue } from './envfile.js';
 import { DEFAULT_PARAMS } from '../params.js';
+import { normalizeCompanionProfile } from '../companion.js';
 import { OpenAIImageProvider } from '../appearance/provider.js';
-import { listReferenceImages, saveReferenceImage, deleteReferenceImage, referenceFilePath, readReferenceById } from '../appearance/references.js';
+import { listReferenceImages, saveReferenceImage, deleteReferenceImage, referenceFilePath, readReferenceById, setReferenceAvatar } from '../appearance/references.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
 const ENV_FILE = path.join(ROOT, '.env');
 const ENV_EXAMPLE = path.join(ROOT, '.env.example');
-const HTML_FILE = path.join(__dirname, 'index.html');
+const DIST_DIR = path.join(__dirname, 'dist');
+const HTML_FILE = path.join(DIST_DIR, 'index.html');
 const HOST = '127.0.0.1';
 const PORT = Number(process.env.UI_PORT || 8787);
 const MAX_LOG_LINES = 500;
@@ -87,6 +89,14 @@ const BACKUP_TABLES = [
 // ---------------------------------------------------------------
 export const CONFIG_SCHEMA = [
   {
+    id: 'admin',
+    title: '管理控制台安全',
+    hint: '控制台只绑定本机；如果通过代理或 Tunnel 访问，必须再配置一个高强度 Token。',
+    fields: [
+      { key: 'UI_ADMIN_TOKEN', label: 'Admin Token', secret: true, placeholder: '建议至少 32 位随机字符' },
+    ],
+  },
+  {
     id: 'supabase',
     title: 'Supabase 数据库',
     hint: '记忆 / 状态 / 历史都存这里。建项目后在 Project Settings → API 里拿 URL 和 service_role key, 并在 SQL Editor 执行 sql/schema.sql。',
@@ -131,6 +141,17 @@ export const CONFIG_SCHEMA = [
     ],
   },
   {
+    id: 'narration',
+    title: '独立旁白模型',
+    hint: '只润色动作、神态和氛围旁白，不改角色台词。留空模型名时不启用额外调用。',
+    testable: true,
+    fields: [
+      { key: 'NARRATION_BASE_URL', label: 'Base URL', placeholder: '留空则复用回复模型地址' },
+      { key: 'NARRATION_API_KEY', label: 'API Key', secret: true, placeholder: '留空则复用回复模型密钥' },
+      { key: 'NARRATION_MODEL', label: '旁白模型', placeholder: '例如 doubao-seed-2-1-pro-260628' },
+    ],
+  },
+  {
     id: 'embedding',
     title: 'Embedding 向量模型',
     hint: '文本转向量。维度必须与 sql/schema.sql 的 vector(1536) 一致, 换模型前先确认输出维度。',
@@ -167,6 +188,9 @@ export const CONFIG_SCHEMA = [
       { key: 'TTS_API_KEY', label: 'API Key', secret: true, placeholder: '留空则复用 ASR/EMBED 的密钥' },
       { key: 'TTS_MODEL', label: '合成模型 (配置即开启语音回复)', placeholder: 'tts-1 或 gpt-4o-mini-tts' },
       { key: 'TTS_VOICE', label: '音色', placeholder: 'nova' },
+      { key: 'TTS_VOICE_ID', label: '克隆音色 ID / Voice ID', placeholder: 'voice_xxx；留空复用上面的音色' },
+      { key: 'TTS_VOICE_CLONE_PROVIDER', label: '克隆服务商', placeholder: 'OpenAI / ElevenLabs / 自建 TTS' },
+      { key: 'TTS_VOICE_CLONE_STATUS', label: '克隆状态', options: ['not_started', 'training', 'ready', 'paused'], placeholder: 'not_started' },
     ],
   },
   {
@@ -183,6 +207,9 @@ export const CONFIG_SCHEMA = [
       { key: 'IMAGE_BACKGROUND', label: '背景', options: ['opaque', 'transparent', 'auto'], placeholder: 'opaque' },
       { key: 'IMAGE_OUTPUT_FORMAT', label: '输出格式', options: ['png', 'webp', 'jpeg'], placeholder: 'png' },
       { key: 'IMAGE_OUTPUT_COMPRESSION', label: '输出质量/压缩率 (0-100)', type: 'number', min: 0, max: 100, placeholder: '100' },
+      { key: 'IMAGE_LORA_ID', label: '角色 LoRA ID', placeholder: 'lora_xxx / adapter name' },
+      { key: 'IMAGE_LORA_TRIGGER', label: 'LoRA 触发词', placeholder: 'shiya_character_v2' },
+      { key: 'IMAGE_LORA_STATUS', label: 'LoRA 状态', options: ['not_started', 'training', 'ready', 'paused'], placeholder: 'not_started' },
     ],
   },
   {
@@ -204,6 +231,43 @@ export const CONFIG_SCHEMA = [
       { key: 'TELEGRAM_HISTORY_MAX_TURNS', label: '本地历史每会话最大轮数', placeholder: '80' },
       { key: 'TELEGRAM_REPLY_TIMEOUT_MS', label: '单次回复超时 (ms)', placeholder: '90000' },
       { key: 'TELEGRAM_POLL_TIMEOUT_SECONDS', label: 'long polling 超时 (秒)', placeholder: '25' },
+      { key: 'TELEGRAM_PROXY_URL', label: 'HTTP/HTTPS 代理（可选）', placeholder: 'http://127.0.0.1:1082' },
+    ],
+  },
+  {
+    id: 'feishu',
+    title: '飞书机器人',
+    hint: '使用飞书自建应用的长连接接收消息，本机无需公网回调地址。应用需开启机器人能力和 im.message.receive_v1 事件。',
+    testable: true,
+    fields: [
+      { key: 'FEISHU_APP_ID', label: 'App ID', placeholder: 'cli_xxx', link: { label: '飞书开放平台', url: 'https://open.feishu.cn/app' } },
+      { key: 'FEISHU_APP_SECRET', label: 'App Secret', secret: true, placeholder: '应用凭证' },
+      { key: 'FEISHU_VERIFICATION_TOKEN', label: 'Verification Token（可选）', secret: true, placeholder: '事件订阅验证令牌' },
+      { key: 'FEISHU_ENCRYPT_KEY', label: 'Encrypt Key（可选）', secret: true, placeholder: '事件加密密钥' },
+      { key: 'FEISHU_COMPANION_NAME', label: '她的名字', placeholder: '小忆' },
+      { key: 'FEISHU_SUBJECT_NAME', label: '你的称呼', placeholder: '你' },
+      { key: 'FEISHU_COMPANION_ID', label: '角色 ID', placeholder: 'default' },
+    ],
+    advanced: [
+      { key: 'FEISHU_PERSONA_FILE', label: '人设文件路径', placeholder: 'companions/default.json' },
+      { key: 'FEISHU_REPLY_TIMEOUT_MS', label: '单次回复超时 (ms)', placeholder: '90000' },
+    ],
+  },
+  {
+    id: 'discord',
+    title: 'Discord 机器人',
+    hint: '使用 Discord Gateway 长连接。私聊直接回复；服务器频道中仅在被 @ 时回复。请在 Bot 页面开启 Message Content Intent。',
+    testable: true,
+    fields: [
+      { key: 'DISCORD_BOT_TOKEN', label: 'Bot Token', secret: true, placeholder: 'Discord Bot Token', link: { label: 'Discord Developer Portal', url: 'https://discord.com/developers/applications' } },
+      { key: 'DISCORD_ALLOWED_GUILD_IDS', label: '允许的服务器 ID（可选，逗号分隔）', placeholder: '' },
+      { key: 'DISCORD_COMPANION_NAME', label: '她的名字', placeholder: '小忆' },
+      { key: 'DISCORD_SUBJECT_NAME', label: '你的称呼', placeholder: '你' },
+      { key: 'DISCORD_COMPANION_ID', label: '角色 ID', placeholder: 'default' },
+    ],
+    advanced: [
+      { key: 'DISCORD_PERSONA_FILE', label: '人设文件路径', placeholder: 'companions/default.json' },
+      { key: 'DISCORD_REPLY_TIMEOUT_MS', label: '单次回复超时 (ms)', placeholder: '90000' },
     ],
   },
   {
@@ -348,6 +412,29 @@ async function testTelegram(env) {
   return { ok: false, ms, message: body?.description || `HTTP ${res.status}` };
 }
 
+async function testFeishu(env) {
+  if (!env.FEISHU_APP_ID || !env.FEISHU_APP_SECRET) return { ok: false, message: '先填 FEISHU_APP_ID 和 FEISHU_APP_SECRET' };
+  const { res, ms } = await timedFetch('https://open.feishu.cn/open-apis/auth/v3/tenant_access_token/internal', {
+    method: 'POST', headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ app_id: env.FEISHU_APP_ID, app_secret: env.FEISHU_APP_SECRET }),
+  });
+  const body = await res.json().catch(() => null);
+  return body?.code === 0
+    ? { ok: true, ms, message: '应用凭证有效，可以建立长连接' }
+    : { ok: false, ms, message: body?.msg || `HTTP ${res.status}` };
+}
+
+async function testDiscord(env) {
+  if (!env.DISCORD_BOT_TOKEN) return { ok: false, message: '先填 DISCORD_BOT_TOKEN' };
+  const { res, ms } = await timedFetch('https://discord.com/api/v10/users/@me', {
+    headers: { authorization: `Bot ${env.DISCORD_BOT_TOKEN}` },
+  });
+  const body = await res.json().catch(() => null);
+  return res.ok
+    ? { ok: true, ms, message: `@${body.global_name || body.username} 凭证有效` }
+    : { ok: false, ms, message: body?.message || `HTTP ${res.status}` };
+}
+
 async function testCatalogTarget(target, env) {
   const cfg = resolveModelTarget(target, env);
   const catalog = await listModels(target, env);
@@ -366,11 +453,11 @@ async function testTts(env) {
   const { res, ms } = await timedFetch(`${cfg.base}/audio/speech`, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: `Bearer ${cfg.key}` },
-    body: JSON.stringify({ model: cfg.model, voice: env.TTS_VOICE || 'nova', input: '你好', response_format: 'opus' }),
+    body: JSON.stringify({ model: cfg.model, voice: env.TTS_VOICE_ID || env.TTS_VOICE || 'nova', input: '你好', response_format: 'opus' }),
   }, 45000);
   if (res.ok) {
     const bytes = (await res.arrayBuffer()).byteLength;
-    if (bytes > 0) return { ok: true, ms, message: `${cfg.model} 可用, 合成 ${bytes} 字节 opus (音色 ${env.TTS_VOICE || 'nova'})` };
+    if (bytes > 0) return { ok: true, ms, message: `${cfg.model} 可用, 合成 ${bytes} 字节 opus (音色 ${env.TTS_VOICE_ID || env.TTS_VOICE || 'nova'})` };
     return { ok: false, ms, message: '服务返回了空音频' };
   }
   const body = await res.json().catch(() => null);
@@ -381,12 +468,15 @@ const TESTS = {
   supabase: testSupabase,
   llm: testLlm,
   reply: (env) => testChatTarget('reply', env),
+  narration: (env) => testChatTarget('narration', env),
   vision: (env) => testChatTarget('vision', env),
   embedding: testEmbedding,
   asr: (env) => testCatalogTarget('asr', env),
   tts: testTts,
   image: (env) => testCatalogTarget('image', env),
   telegram: testTelegram,
+  feishu: testFeishu,
+  discord: testDiscord,
 };
 
 // ---------------------------------------------------------------
@@ -406,11 +496,13 @@ export function normalizeModelIds(payload) {
 export function resolveModelTarget(target, env = {}) {
   const llm = { base: env.LLM_BASE_URL || 'https://api.deepseek.com', key: env.LLM_API_KEY || '', model: env.LLM_MODEL || 'deepseek-chat', keyName: 'LLM_API_KEY', modelName: 'LLM_MODEL' };
   const reply = { base: env.REPLY_BASE_URL || llm.base, key: env.REPLY_API_KEY || llm.key, model: env.REPLY_MODEL || llm.model, keyName: 'REPLY_API_KEY', modelName: 'REPLY_MODEL' };
+  const narration = { base: env.NARRATION_BASE_URL || reply.base, key: env.NARRATION_API_KEY || reply.key, model: env.NARRATION_MODEL || '', keyName: 'NARRATION_API_KEY', modelName: 'NARRATION_MODEL' };
   const embedding = { base: env.EMBED_BASE_URL || 'https://api.openai.com/v1', key: env.EMBED_API_KEY || llm.key, model: env.EMBED_MODEL || 'text-embedding-3-small', keyName: 'EMBED_API_KEY', modelName: 'EMBED_MODEL' };
   const asr = { base: env.ASR_BASE_URL || embedding.base, key: env.ASR_API_KEY || embedding.key, model: env.ASR_MODEL || 'whisper-1', keyName: 'ASR_API_KEY', modelName: 'ASR_MODEL' };
   const map = {
     llm,
     reply,
+    narration,
     vision: { base: env.VISION_BASE_URL || reply.base, key: env.VISION_API_KEY || reply.key, model: env.VISION_MODEL || reply.model, keyName: 'VISION_API_KEY', modelName: 'VISION_MODEL' },
     embedding,
     asr,
@@ -681,6 +773,66 @@ async function getOverview(env, scope) {
   };
 }
 
+async function getCompanionUpgrade(env, scope) {
+  if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = scope.companionId || 'default';
+  const [state, behavior, story, annuals, profile, world, gallery] = await Promise.all([
+    getStateBundle(env, scope),
+    supabaseRest(env, scopedPath('behavior_state', { select: 'state,updated_at', limit: '1' }, scope)).catch((error) => ({ ok: false, message: error?.message })),
+    supabaseRest(env, scopedPath('story_lines', { select: 'storyline_key,title,stage,mood_link,last_beat,next_beat_hint,last_beat_at,beats_day,beats_today,beat_shared_at,last_beat_sharing,updated_at', order: 'updated_at.desc', limit: '12' }, scope)).catch((error) => ({ ok: false, message: error?.message })),
+    supabaseRest(env, scopedPath('prospective', { select: 'id,content,trigger_kind,trigger_at,status,annual_key,last_fired_year,created_at', trigger_kind: 'eq.annual', order: 'trigger_at.asc', limit: '30' }, scope)).catch((error) => ({ ok: false, message: error?.message })),
+    supabaseRest(env, scopedPath('memories', { select: 'id,content,fact_core,source,created_at', subject_kind: 'eq.self', superseded_by: 'is.null', order: 'created_at.desc', limit: '40' }, scope)).catch((error) => ({ ok: false, message: error?.message })),
+    getWorld(env, scope).catch((error) => ({ ok: false, message: error?.message })),
+    getGallery(env, scope).catch((error) => ({ ok: false, message: error?.message })),
+  ]);
+  const profileRow = profile.ok
+    ? (profile.data ?? []).find((row) => row.source?.kind === 'user_profile') ?? null
+    : null;
+  return {
+    ok: true,
+    scope: { userId: scope.userId, companionId },
+    affect: state.affect,
+    life: state.life,
+    behavior: behavior.ok ? behaviorSummary(behavior.data?.[0]) : null,
+    story: story.ok ? story.data ?? [] : [],
+    annuals: annuals.ok ? annuals.data ?? [] : [],
+    userProfile: profileRow,
+    world: world.ok ? world.world : null,
+    gallery: gallery.ok ? gallery.assets ?? [] : [],
+    capabilities: {
+      voice: {
+        configured: Boolean(env.TTS_MODEL),
+        model: env.TTS_MODEL || '',
+        voice: env.TTS_VOICE_ID || env.TTS_VOICE || 'nova',
+        cloneProvider: env.TTS_VOICE_CLONE_PROVIDER || '',
+        cloneStatus: env.TTS_VOICE_CLONE_STATUS || '',
+      },
+      image: {
+        configured: Boolean((env.IMAGE_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && env.IMAGE_MODEL),
+        model: env.IMAGE_MODEL || '',
+        loraId: env.IMAGE_LORA_ID || '',
+        loraTrigger: env.IMAGE_LORA_TRIGGER || '',
+        loraStatus: env.IMAGE_LORA_STATUS || '',
+      },
+    },
+    issues: [state, behavior, story, annuals, profile, world, gallery]
+      .filter((r) => r && !r.ok)
+      .map((r) => r.missingTable ? '缺少数据库表，请重新执行 sql/schema.sql' : r.message)
+      .filter(Boolean),
+  };
+}
+
+function behaviorSummary(row) {
+  const stonewallAt = Array.isArray(row?.state?.stonewallAt) ? row.state.stonewallAt : [];
+  const last = stonewallAt.at(-1) ?? null;
+  return {
+    stonewall_count: stonewallAt.length,
+    last_stonewall_at: last,
+    mustGiveRepairStep: Boolean(row?.state?.mustGiveRepairStep),
+    updated_at: row?.updated_at ?? null,
+  };
+}
+
 async function getMemoryDetail(env, id) {
   if (!/^[0-9a-f-]{30,40}$/i.test(String(id ?? ''))) return { ok: false, message: '记忆 ID 不合法' };
   const fields = 'id,user_id,companion_id,type,content,fact_core,importance,emotion,subject_kind,modality,media_ref,affect_valence,affect_intensity,affect_origin_valence,affect_origin_intensity,narrative,fact_locked,reconsolidation_count,access_count,access_log,last_accessed,created_at,superseded_by,dedup_hash';
@@ -800,8 +952,22 @@ async function getGallery(env, scope) {
   return r.ok ? { ok: true, assets: r.data } : r;
 }
 
+async function deleteGalleryAsset(env, id, scope) {
+  if (!id || !scope?.userId || !scope?.companionId) return { ok: false, message: '缺少照片或用户范围' };
+  const result = await supabaseRequest(env, scopedPath('appearance_assets', {
+    id: `eq.${id}`,
+    select: 'id',
+  }, scope), { method: 'DELETE', headers: { prefer: 'return=representation' } });
+  if (!result.ok) return result;
+  const deleted = Array.isArray(result.data) && result.data.length === 1;
+  return { ok: deleted, message: deleted ? '生成照片已删除' : '照片不存在或不属于当前用户' };
+}
+
 function publicReference(item) {
-  return { id: item.id, name: item.name, mime: item.mime, bytes: item.bytes, createdAt: item.createdAt, url: `/api/image-references/${item.id}/file` };
+  return {
+    id: item.id, name: item.name, mime: item.mime, bytes: item.bytes, createdAt: item.createdAt,
+    isAvatar: Boolean(item.isAvatar), url: `/api/image-references/${item.id}/file`,
+  };
 }
 
 function imageProviderFromEnv(env) {
@@ -812,6 +978,7 @@ function imageProviderFromEnv(env) {
       size: env.IMAGE_SIZE || '1024x1536', quality: env.IMAGE_QUALITY || 'high',
       background: env.IMAGE_BACKGROUND || 'opaque', output_format: env.IMAGE_OUTPUT_FORMAT || 'png',
       output_compression: Number.parseInt(env.IMAGE_OUTPUT_COMPRESSION || '100', 10), input_fidelity: 'high',
+      loraId: env.IMAGE_LORA_ID || '', loraTrigger: env.IMAGE_LORA_TRIGGER || '', loraStatus: env.IMAGE_LORA_STATUS || '',
     },
   });
 }
@@ -819,12 +986,24 @@ function imageProviderFromEnv(env) {
 async function generateUiImage(env, scope, body) {
   const provider = imageProviderFromEnv(env);
   const refs = listReferenceImages(scope.userId, scope.companionId || 'default');
-  const selected = Array.isArray(body.referenceIds) && body.referenceIds.length
+  const selectedAll = Array.isArray(body.referenceIds) && body.referenceIds.length
     ? refs.filter((x) => body.referenceIds.includes(x.id)) : refs;
+  // 16 张原始高清图接近 40MB，multipart 上传很容易在代理或图片供应商处超时。
+  // 头像优先，再取少量核心图即可保持身份一致性，同时让请求稳定落在合理体积。
+  const selected = [...selectedAll]
+    .sort((a, b) => Number(Boolean(b.isAvatar)) - Number(Boolean(a.isAvatar)))
+    .slice(0, 4);
   const inputs = selected.map((x) => ({ path: referenceFilePath(x), mime: x.mime, name: x.name }));
   const prompt = String(body.prompt || '').trim();
   if (!prompt) return { ok: false, message: '请输入生成提示词' };
-  const opts = { size: body.size || env.IMAGE_SIZE || '1024x1536', quality: body.quality || env.IMAGE_QUALITY || 'high', input_fidelity: body.inputFidelity || 'high' };
+  const opts = {
+    size: body.size || env.IMAGE_SIZE || '1024x1536',
+    quality: body.quality || env.IMAGE_QUALITY || 'high',
+    input_fidelity: body.inputFidelity || 'high',
+    loraId: env.IMAGE_LORA_ID || '',
+    loraTrigger: env.IMAGE_LORA_TRIGGER || '',
+    loraStatus: env.IMAGE_LORA_STATUS || '',
+  };
   if (body.mask?.data) opts.mask = { buffer: Buffer.from(body.mask.data, 'base64'), name: body.mask.name || 'mask.png' };
   const result = inputs.length ? await provider.edit(prompt, inputs, opts) : await provider.generate(prompt, opts);
   return { ok: true, image: result.url, meta: result.meta, message: inputs.length ? `已使用 ${inputs.length} 张参考图生成` : '图片生成完成' };
@@ -922,6 +1101,8 @@ async function getSystemHealth(env) {
       asr: Boolean((env.ASR_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && (env.ASR_MODEL || 'whisper-1')),
       image: Boolean((env.IMAGE_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && env.IMAGE_MODEL),
       telegram: Boolean(env.TELEGRAM_BOT_TOKEN),
+      feishu: Boolean(env.FEISHU_APP_ID && env.FEISHU_APP_SECRET),
+      discord: Boolean(env.DISCORD_BOT_TOKEN),
       envFile: fs.existsSync(ENV_FILE),
       paramOverrides: fs.existsSync(PARAMS_FILE),
     },
@@ -935,7 +1116,6 @@ async function getSystemHealth(env) {
 // ---------------------------------------------------------------
 const COMPANIONS_DIR = path.join(ROOT, 'companions');
 
-/** 人设文件名白名单: 只认 companions/ 下的一层 .json。纯函数, 供单测。 */
 /**
  * 人设文件白名单: companions/ 下的 xxx.json (单文件) 或 <角色ID>/xxx.json (目录式分片)。
  * 拒绝路径穿越/隐藏文件/更深层级。纯函数, 供单测。
@@ -978,6 +1158,191 @@ function savePersona(name, content) {
 }
 
 // ---------------------------------------------------------------
+// 多角色管理: 列出/新建/克隆/删除 companions/ 下的角色。
+// 角色 = 一个 companionId, 对应 companions/<id>.json (单文件) 或 companions/<id>/ (目录分片)。
+// 只操作人设文件本身; 该角色已经产生的记忆/状态数据留在 Supabase, 按 companionId 隔离,
+// 删角色文件不会动数据库 —— 这里的"删除"只是"不再用这份人设配置", 不是抹掉聊天记录。
+// ---------------------------------------------------------------
+
+/** 角色 ID 白名单: 字母/数字/下划线/短横线, 不允许隐藏名/穿越。纯函数, 供单测。 */
+export function safeCompanionId(id = '') {
+  const clean = String(id ?? '').trim();
+  return /^[\w-]{1,64}$/.test(clean) && !clean.startsWith('.') ? clean : null;
+}
+
+function companionDirPath(id) {
+  return path.join(COMPANIONS_DIR, id);
+}
+function companionFilePath(id) {
+  return path.join(COMPANIONS_DIR, `${id}.json`);
+}
+function companionExists(id) {
+  return fs.existsSync(companionDirPath(id)) || fs.existsSync(companionFilePath(id));
+}
+
+/** 读一个角色的 persona 分片(目录式)或整份 JSON(单文件), 取显示名; 读不出来就回退 ID 本身。 */
+function companionDisplayName(id) {
+  try {
+    const dir = companionDirPath(id);
+    const json = fs.existsSync(dir) && fs.statSync(dir).isDirectory()
+      ? JSON.parse(fs.readFileSync(path.join(dir, 'persona.json'), 'utf8'))
+      : JSON.parse(fs.readFileSync(companionFilePath(id), 'utf8'));
+    return json?.persona?.name || json?.meta?.display_name || id;
+  } catch {
+    return id;
+  }
+}
+
+/** 列出全部角色 ID (目录式 + 单文件去重合并)。 */
+export function listCompanionIds() {
+  if (!fs.existsSync(COMPANIONS_DIR)) return [];
+  const ids = new Set();
+  for (const entry of fs.readdirSync(COMPANIONS_DIR, { withFileTypes: true })) {
+    if (entry.isDirectory() && safeCompanionId(entry.name)) ids.add(entry.name);
+    if (entry.isFile() && /\.json$/.test(entry.name)) {
+      const id = entry.name.slice(0, -5);
+      if (safeCompanionId(id)) ids.add(id);
+    }
+  }
+  return [...ids].sort();
+}
+
+function listCompanions() {
+  return listCompanionIds().map((id) => {
+    const dir = companionDirPath(id);
+    const isDir = fs.existsSync(dir) && fs.statSync(dir).isDirectory();
+    return {
+      companionId: id,
+      name: companionDisplayName(id),
+      format: isDir ? 'dir' : 'file',
+      shardCount: isDir ? fs.readdirSync(dir).filter((f) => safePersonaName(`${id}/${f}`)).length : 1,
+    };
+  });
+}
+
+const EMPTY_COMPANION_PROFILE = normalizeCompanionProfile({});
+
+function companionProfileFilePath(id) {
+  return path.join(companionDirPath(id), 'profile.json');
+}
+
+function readCompanionProfile(companionId) {
+  const id = safeCompanionId(companionId);
+  if (!id) return { ok: false, message: '角色 ID 不合法' };
+  const dirFile = companionProfileFilePath(id);
+  const legacyFile = companionFilePath(id);
+  try {
+    let profile = {};
+    if (fs.existsSync(dirFile)) {
+      const raw = JSON.parse(fs.readFileSync(dirFile, 'utf8'));
+      profile = raw?.profile ?? raw ?? {};
+    } else if (fs.existsSync(legacyFile)) profile = JSON.parse(fs.readFileSync(legacyFile, 'utf8'))?.profile ?? {};
+    return { ok: true, profile: normalizeCompanionProfile(profile) };
+  } catch (error) {
+    return { ok: false, message: `角色档案读取失败: ${error.message}` };
+  }
+}
+
+function maskProfileSecret(value) {
+  const raw = String(value ?? '');
+  if (!raw) return '';
+  return raw.length <= 4 ? '••••' : `${'•'.repeat(Math.min(8, raw.length - 4))}${raw.slice(-4)}`;
+}
+
+function profileForClient(profile) {
+  const normalized = normalizeCompanionProfile(profile);
+  return {
+    ...normalized,
+    idCardNumber: '',
+    passportNumber: '',
+    idCardNumberMasked: maskProfileSecret(normalized.idCardNumber),
+    passportNumberMasked: maskProfileSecret(normalized.passportNumber),
+  };
+}
+
+function saveCompanionProfile(companionId, input = {}) {
+  const id = safeCompanionId(companionId);
+  if (!id) return { ok: false, message: '角色 ID 不合法' };
+  const currentResult = readCompanionProfile(id);
+  if (!currentResult.ok) return currentResult;
+  try {
+    const current = currentResult.profile;
+    const next = normalizeCompanionProfile({
+      ...current,
+      ...input,
+      idCardNumber: String(input.idCardNumber ?? '').trim() || current.idCardNumber,
+      passportNumber: String(input.passportNumber ?? '').trim() || current.passportNumber,
+    });
+    const dir = companionDirPath(id);
+    fs.mkdirSync(dir, { recursive: true });
+    fs.writeFileSync(companionProfileFilePath(id), `${JSON.stringify({ profile: next }, null, 2)}\n`);
+    return { ok: true, profile: profileForClient(next), message: '角色档案已保存；下次对话会读取新的背景设定' };
+  } catch (error) {
+    return { ok: false, message: `角色档案保存失败: ${error.message}` };
+  }
+}
+
+/** 把显示名/ID 写回 persona 分片的 persona.name / meta.display_name / meta.id。 */
+function patchPersonaIdentity(personaFilePath, name, id) {
+  try {
+    const json = JSON.parse(fs.readFileSync(personaFilePath, 'utf8'));
+    json.persona = { ...(json.persona ?? {}), name };
+    json.meta = { ...(json.meta ?? {}), id, display_name: name };
+    fs.writeFileSync(personaFilePath, `${JSON.stringify(json, null, 2)}\n`);
+  } catch {} // 分片格式不对就不硬改, 交给用户在编辑器里自己填名字
+}
+
+const NEW_COMPANION_TEMPLATE = (name) => ({
+  meta: { id: '', display_name: name },
+  persona: { name, personality: '', speech: [], likes: [], dislikes: [], background: '', values: '', address_user: '你', identity_constraints: [] },
+});
+
+/** 新建角色: 不传 cloneFrom 则只建一个空白 persona.json; 传了则克隆整份现有角色的人设文件。 */
+function createCompanion({ companionId, name, cloneFrom } = {}) {
+  const id = safeCompanionId(companionId);
+  if (!id) return { ok: false, message: '角色 ID 只能是字母/数字/下划线/短横线' };
+  if (companionExists(id)) return { ok: false, message: `角色 ${id} 已存在` };
+  const displayName = String(name ?? '').trim() || id;
+
+  if (cloneFrom) {
+    const srcId = safeCompanionId(cloneFrom);
+    if (!srcId || !companionExists(srcId)) return { ok: false, message: `找不到要克隆的角色 ${cloneFrom}` };
+    const destDir = companionDirPath(id);
+    const srcDir = companionDirPath(srcId);
+    if (fs.existsSync(srcDir) && fs.statSync(srcDir).isDirectory()) {
+      fs.cpSync(srcDir, destDir, { recursive: true });
+    } else {
+      fs.mkdirSync(destDir, { recursive: true });
+      fs.copyFileSync(companionFilePath(srcId), path.join(destDir, 'persona.json'));
+    }
+    const personaFile = path.join(destDir, 'persona.json');
+    if (fs.existsSync(personaFile)) patchPersonaIdentity(personaFile, displayName, id);
+    return { ok: true, message: `已从 ${srcId} 克隆出角色 ${id} (${displayName}), 记得去人设页调整细节`, companionId: id };
+  }
+
+  const destDir = companionDirPath(id);
+  fs.mkdirSync(destDir, { recursive: true });
+  const template = NEW_COMPANION_TEMPLATE(displayName);
+  template.meta.id = id;
+  fs.writeFileSync(path.join(destDir, 'persona.json'), `${JSON.stringify(template, null, 2)}\n`);
+  return { ok: true, message: `已创建角色 ${id} (${displayName})`, companionId: id };
+}
+
+/** 删除角色人设文件 (需要 confirm:true 二次确认)。只删文件, 数据库里的记忆/状态不受影响。 */
+function deleteCompanion(companionId, { confirm } = {}) {
+  const id = safeCompanionId(companionId);
+  if (!id) return { ok: false, message: '角色 ID 不合法' };
+  if (id === 'default') return { ok: false, message: 'default 是其它角色克隆的模板底稿, 不能删除' };
+  if (!companionExists(id)) return { ok: false, message: `角色 ${id} 不存在` };
+  if (!confirm) return { ok: false, message: '需要二次确认才会删除' };
+  const dir = companionDirPath(id);
+  const file = companionFilePath(id);
+  if (fs.existsSync(dir)) fs.rmSync(dir, { recursive: true, force: true });
+  if (fs.existsSync(file)) fs.rmSync(file, { force: true });
+  return { ok: true, message: `已删除角色 ${id} 的人设文件 (该角色在数据库里的记忆/状态未受影响)` };
+}
+
+// ---------------------------------------------------------------
 // 编排器试聊: 每条消息 spawn 一次 chat-runner (真实走完整管线, 会调 LLM + 写库)
 // ---------------------------------------------------------------
 function runChat({ message, userId, companionId, debug = false }) {
@@ -999,7 +1364,7 @@ function runChat({ message, userId, companionId, debug = false }) {
     const timer = setTimeout(() => {
       proc.kill('SIGKILL');
       finish({ ok: false, message: '回复超时 (120s)' });
-    }, 120000);
+    }, 180000);
     proc.stdout.on('data', (chunk) => {
       out += chunk;
       // 协议: runner 输出一行 JSON。防御性地跳过混进 stdout 的杂散日志行,
@@ -1073,9 +1438,9 @@ function runAction(payload, timeoutMs = 180000) {
 }
 
 // ---------------------------------------------------------------
-// Telegram bot 子进程管理
+// 消息渠道子进程管理
 // ---------------------------------------------------------------
-const bot = { proc: null, startedAt: null, logs: [], lastExit: null };
+const bot = { procs: new Map(), startedAt: null, logs: [], lastExit: null };
 
 function pushLog(line) {
   const clean = String(line).replace(/\s+$/, '');
@@ -1085,43 +1450,53 @@ function pushLog(line) {
 }
 
 function startBot() {
-  if (bot.proc) return { ok: false, message: 'bot 已在运行' };
+  const externalPid = externalTelegramPid();
+  if (externalPid) return { ok: false, message: `Telegram 由 launchd 后台托管中 (pid ${externalPid})` };
+  if (bot.procs.size) return { ok: false, message: '渠道机器人已在运行' };
   const env = readEnvValues();
-  if (!env.TELEGRAM_BOT_TOKEN) return { ok: false, message: '先在下方填好并保存 TELEGRAM_BOT_TOKEN' };
+  const channels = [
+    env.TELEGRAM_BOT_TOKEN && ['telegram', 'src/telegram/bot.js'],
+    env.FEISHU_APP_ID && env.FEISHU_APP_SECRET && ['feishu', 'src/feishu/bot.js'],
+    env.DISCORD_BOT_TOKEN && ['discord', 'src/discord/bot.js'],
+  ].filter(Boolean);
+  if (!channels.length) return { ok: false, message: '请先至少配置一个消息渠道' };
   try { fs.rmSync(BOT_STATUS_FILE, { force: true }); } catch {}
-  const proc = spawn(process.execPath, [path.join(ROOT, 'src/telegram/bot.js')], {
-    cwd: ROOT,
-    stdio: ['ignore', 'pipe', 'pipe'],
-    env: { ...process.env, ...env, CYBER_UI_STATUS_FILE: BOT_STATUS_FILE },
-  });
-  bot.proc = proc;
   bot.startedAt = Date.now();
   bot.lastExit = null;
-  pushLog(`[控制台] 启动 bot (pid ${proc.pid})`);
-  const onData = (chunk) => String(chunk).split('\n').forEach(pushLog);
-  proc.stdout.on('data', onData);
-  proc.stderr.on('data', onData);
-  proc.on('exit', (code, signal) => {
-    bot.lastExit = { code, signal, at: Date.now() };
-    pushLog(`[控制台] bot 退出 (code=${code ?? ''} signal=${signal ?? ''})`);
-    bot.proc = null;
-    bot.startedAt = null;
-  });
-  return { ok: true, message: `已启动 (pid ${proc.pid})` };
+  for (const [name, entry] of channels) {
+    const proc = spawn(process.execPath, [path.join(ROOT, entry)], {
+      cwd: ROOT,
+      stdio: ['ignore', 'pipe', 'pipe'],
+      env: { ...process.env, ...env, ...(name === 'telegram' ? { CYBER_UI_STATUS_FILE: BOT_STATUS_FILE } : {}) },
+    });
+    bot.procs.set(name, proc);
+    pushLog(`[控制台] 启动 ${name} (pid ${proc.pid})`);
+    const onData = (chunk) => String(chunk).split('\n').forEach((line) => pushLog(`[${name}] ${line}`));
+    proc.stdout.on('data', onData);
+    proc.stderr.on('data', onData);
+    proc.on('exit', (code, signal) => {
+      bot.lastExit = { channel: name, code, signal, at: Date.now() };
+      pushLog(`[控制台] ${name} 退出 (code=${code ?? ''} signal=${signal ?? ''})`);
+      bot.procs.delete(name);
+      if (!bot.procs.size) bot.startedAt = null;
+    });
+  }
+  return { ok: true, message: `已启动 ${channels.map(([name]) => name).join('、')}` };
 }
 
 function stopBot() {
-  const proc = bot.proc;
-  if (!proc) return { ok: false, message: 'bot 未在运行' };
+  const procs = [...bot.procs.values()];
+  if (!procs.length) return { ok: false, message: '渠道机器人未运行' };
   pushLog('[控制台] 发送停止信号...');
-  proc.kill('SIGTERM');
+  for (const proc of procs) proc.kill('SIGTERM');
   setTimeout(() => {
-    if (bot.proc === proc) proc.kill('SIGKILL');
+    for (const proc of procs) if ([...bot.procs.values()].includes(proc)) proc.kill('SIGKILL');
   }, 5000).unref();
   return { ok: true, message: '已发送停止信号' };
 }
 
 function botStatus() {
+  const externalPid = externalTelegramPid();
   let runtime = null;
   try {
     const parsed = JSON.parse(fs.readFileSync(BOT_STATUS_FILE, 'utf8'));
@@ -1129,13 +1504,30 @@ function botStatus() {
     if (Number.isFinite(ageMs) && ageMs < 60000) runtime = parsed;
   } catch {}
   return {
-    running: Boolean(bot.proc),
-    pid: bot.proc?.pid ?? null,
+    running: bot.procs.size > 0 || Boolean(externalPid),
+    pid: [...bot.procs.values()][0]?.pid ?? externalPid ?? null,
+    managedBy: externalPid && !bot.procs.size ? 'launchd' : 'console',
+    channels: {
+      ...Object.fromEntries([...bot.procs].map(([name, proc]) => [name, { running: true, pid: proc.pid }])),
+      ...(externalPid && !bot.procs.has('telegram') ? { telegram: { running: true, pid: externalPid, managedBy: 'launchd' } } : {}),
+    },
     startedAt: bot.startedAt,
     lastExit: bot.lastExit,
     logs: bot.logs.slice(-200),
     runtime,
   };
+}
+
+function externalTelegramPid() {
+  const lock = path.join(ROOT, '.telegram-bot.lock');
+  try {
+    const pid = Number(fs.readFileSync(lock, 'utf8').trim());
+    if (!Number.isInteger(pid) || pid <= 0) return null;
+    process.kill(pid, 0);
+    return pid;
+  } catch {
+    return null;
+  }
 }
 
 // ---------------------------------------------------------------
@@ -1148,21 +1540,60 @@ function json(res, status, data) {
 }
 
 async function readBody(req) {
-  let raw = '';
+  const pathname = new URL(req.url, 'http://localhost').pathname;
+  const maxBytes = bodyLimitForPath(pathname);
+  const chunks = [];
+  let bytes = 0;
   for await (const chunk of req) {
-    raw += chunk;
-    if (raw.length > 70_000_000) throw new Error('body too large');
+    bytes += chunk.length;
+    if (bytes > maxBytes) {
+      const error = new Error(`body too large (max ${maxBytes} bytes)`);
+      error.statusCode = 413;
+      throw error;
+    }
+    chunks.push(chunk);
   }
+  const raw = Buffer.concat(chunks).toString('utf8');
   return raw ? JSON.parse(raw) : {};
+}
+
+export function bodyLimitForPath(pathname = '') {
+  return /\/api\/(image-references|images|import)/.test(String(pathname)) ? 20_000_000 : 1_000_000;
+}
+
+export function isAllowedHost(value = '') {
+  const raw = String(value);
+  const host = raw.startsWith('[') ? raw.slice(1, raw.indexOf(']')) : raw.split(':')[0];
+  return ['127.0.0.1', 'localhost', '::1'].includes(host);
+}
+
+export function isAuthorized(headers = {}, token = '') {
+  if (!token) return true;
+  return String(headers.authorization || '').replace(/^Bearer\s+/i, '') === token;
 }
 
 async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const route = `${req.method} ${url.pathname}`;
+  if (!isAllowedHost(req.headers.host)) return json(res, 403, { ok: false, message: 'invalid host' });
+  const adminToken = readEnvValues().UI_ADMIN_TOKEN || process.env.UI_ADMIN_TOKEN || '';
+  if (url.pathname.startsWith('/api/') && !isAuthorized(req.headers, adminToken)) {
+    return json(res, 401, { ok: false, message: '需要管理控制台 Token' });
+  }
 
   if (route === 'GET /' || route === 'GET /index.html') {
+    if (!fs.existsSync(HTML_FILE)) return json(res, 503, { ok: false, message: '管理界面尚未构建，请先运行 npm run ui:build' });
     res.writeHead(200, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
     res.end(fs.readFileSync(HTML_FILE));
+    return;
+  }
+  if (req.method === 'GET' && url.pathname.startsWith('/assets/')) {
+    const file = path.join(DIST_DIR, 'assets', path.basename(url.pathname));
+    if (!fs.existsSync(file)) return json(res, 404, { ok: false, message: '资源不存在' });
+    const ext = path.extname(file);
+    const types = { '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.svg': 'image/svg+xml', '.png': 'image/png' };
+    res.writeHead(200, { 'content-type': types[ext] || 'application/octet-stream', 'cache-control': 'no-cache' });
+    fs.createReadStream(file).pipe(res);
     return;
   }
   if (route === 'GET /api/config') return json(res, 200, configPayload());
@@ -1204,6 +1635,10 @@ async function handle(req, res) {
   }
   if (route === 'GET /api/overview') {
     try { return json(res, 200, await getOverview(readEnvValues(), Object.fromEntries(url.searchParams))); }
+    catch (error) { return json(res, 200, { ok: false, message: describeNetworkError(error) }); }
+  }
+  if (route === 'GET /api/companion-v2') {
+    try { return json(res, 200, await getCompanionUpgrade(readEnvValues(), Object.fromEntries(url.searchParams))); }
     catch (error) { return json(res, 200, { ok: false, message: describeNetworkError(error) }); }
   }
   if (route === 'GET /api/state') {
@@ -1252,6 +1687,10 @@ async function handle(req, res) {
     return json(res, 200, await saveWorld(readEnvValues(), body.scope ?? {}, body.world ?? {}));
   }
   if (route === 'GET /api/gallery') return json(res, 200, await getGallery(readEnvValues(), Object.fromEntries(url.searchParams)));
+  if (req.method === 'DELETE' && url.pathname.startsWith('/api/gallery/')) {
+    const result = await deleteGalleryAsset(readEnvValues(), url.pathname.slice('/api/gallery/'.length), Object.fromEntries(url.searchParams));
+    return json(res, result.ok ? 200 : 404, result);
+  }
   if (route === 'GET /api/image-references') {
     const scope = Object.fromEntries(url.searchParams);
     return json(res, 200, { ok: true, items: listReferenceImages(scope.userId, scope.companionId || 'default').map(publicReference) });
@@ -1273,6 +1712,12 @@ async function handle(req, res) {
     const scope = Object.fromEntries(url.searchParams);
     const ok = deleteReferenceImage(url.pathname.slice('/api/image-references/'.length), scope.userId, scope.companionId || 'default');
     return json(res, ok ? 200 : 404, { ok, message: ok ? '参考图已删除' : '参考图不存在' });
+  }
+  if (req.method === 'PATCH' && /^\/api\/image-references\/[^/]+\/avatar$/.test(url.pathname)) {
+    const body = await readBody(req);
+    const id = url.pathname.split('/')[3];
+    const item = setReferenceAvatar(id, body?.scope?.userId, body?.scope?.companionId || 'default');
+    return json(res, item ? 200 : 404, { ok: Boolean(item), item: item ? publicReference(item) : null, message: item ? '角色头像已更新' : '参考图不存在' });
   }
   if (route === 'POST /api/images/generate') {
     const body = await readBody(req);
@@ -1311,6 +1756,23 @@ async function handle(req, res) {
     const body = await readBody(req);
     return json(res, 200, savePersona(body?.file, String(body?.content ?? '')));
   }
+  if (route === 'GET /api/companions') return json(res, 200, { ok: true, companions: listCompanions() });
+  if (route === 'POST /api/companions') {
+    const body = await readBody(req);
+    return json(res, 200, createCompanion(body ?? {}));
+  }
+  if (route === 'DELETE /api/companions') {
+    const body = await readBody(req);
+    return json(res, 200, deleteCompanion(body?.companionId, { confirm: Boolean(body?.confirm) }));
+  }
+  if (route === 'GET /api/companion-profile') {
+    const result = readCompanionProfile(url.searchParams.get('companionId') || 'default');
+    return json(res, result.ok ? 200 : 400, result.ok ? { ok: true, profile: profileForClient(result.profile) } : result);
+  }
+  if (route === 'PUT /api/companion-profile') {
+    const body = await readBody(req);
+    return json(res, 200, saveCompanionProfile(body?.companionId || 'default', body?.profile ?? {}));
+  }
   if (route === 'POST /api/chat') {
     const body = await readBody(req);
     const message = String(body?.message ?? '').trim();
@@ -1334,7 +1796,7 @@ export function createServer() {
   return http.createServer((req, res) => {
     handle(req, res).catch((error) => {
       console.error('[ui]', error);
-      if (!res.headersSent) json(res, 500, { ok: false, message: error?.message || 'internal error' });
+      if (!res.headersSent) json(res, error?.statusCode || 500, { ok: false, message: error?.message || 'internal error' });
     });
   });
 }
@@ -1345,7 +1807,7 @@ if (import.meta.url === `file://${process.argv[1]}`) {
     console.log(`[ui] Cyber Memory 控制台: http://${HOST}:${PORT}  (仅本机可访问)`);
   });
   const shutdown = () => {
-    if (bot.proc) bot.proc.kill('SIGTERM');
+    for (const proc of bot.procs.values()) proc.kill('SIGTERM');
     server.close(() => process.exit(0));
     setTimeout(() => process.exit(0), 1500).unref();
   };
