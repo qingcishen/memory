@@ -1,0 +1,318 @@
+[
+  {
+    "id": "gs01_repair_after_fight",
+    "title": "吵架后接住道歉",
+    "state": {
+      "mood": { "valence": -0.2, "arousal": 0.45 },
+      "relationship": { "closeness": 0.72, "trust": 0.58, "tension": 0.5, "repair_debt": 0.45 },
+      "desires": { "attention": 0.4, "sharing": 0.1, "comfort": 0.7, "security": 0.55 }
+    },
+    "turns": [{ "role": "user", "content": "刚刚我语气不好，对不起。" }],
+    "expect": {
+      "relationshipStage": "repair",
+      "structuredAttitude": "warm",
+      "behaviorAvoidInternals": true
+    }
+  },
+  {
+    "id": "gs02_tense_cold",
+    "title": "冷战短回",
+    "state": {
+      "mood": { "valence": -0.4, "arousal": 0.6 },
+      "relationship": { "closeness": 0.65, "trust": 0.5, "tension": 0.78, "repair_debt": 0.08 },
+      "desires": { "attention": 0.5, "sharing": 0.1, "comfort": 0.4, "security": 0.55 }
+    },
+    "turns": [{ "role": "user", "content": "你还在生气吗？" }],
+    "expect": {
+      "relationshipStage": "tense",
+      "lengthHint": "terse",
+      "sceneLock": "conflict",
+      "structuredAttitude": "guarded"
+    }
+  },
+  {
+    "id": "gs03_bonded_flirt",
+    "title": "深度绑定撒娇",
+    "state": {
+      "mood": { "valence": 0.36, "arousal": 0.42 },
+      "relationship": { "closeness": 0.88, "trust": 0.82, "tension": 0.08, "repair_debt": 0.02 },
+      "desires": { "attention": 0.78, "sharing": 0.42, "comfort": 0.1, "security": 0.28 }
+    },
+    "turns": [{ "role": "user", "content": "今天忙完了，来看看你。" }],
+    "expect": {
+      "relationshipStage": "bonded",
+      "structuredAttitude": "warm"
+    }
+  },
+  {
+    "id": "gs04_story_ask_day",
+    "title": "问今天怎样带故事",
+    "state": {
+      "mood": { "valence": 0.1, "arousal": 0.35 },
+      "relationship": { "closeness": 0.74, "trust": 0.7, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.2, "sharing": 0.88, "comfort": 0.1, "security": 0.15 }
+    },
+    "storyBeat": { "title": "救火", "content": "被临时拉去救火项目" },
+    "turns": [{ "role": "user", "content": "你今天过得怎么样？" }],
+    "expect": {
+      "mentionStory": true,
+      "goalKind": "story",
+      "narrativeHas": ["变近"]
+    }
+  },
+  {
+    "id": "gs05_intimate_no_class",
+    "title": "亲密不跳上课",
+    "state": {
+      "mood": { "valence": 0.4, "arousal": 0.7 },
+      "relationship": { "closeness": 0.85, "trust": 0.8, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.3, "sharing": 0.2, "comfort": 0.1, "security": 0.2 },
+      "intimacy": { "scene_phase": "foreplay", "arousal": 0.7 }
+    },
+    "history": [
+      { "role": "user", "content": "想要你" },
+      { "role": "assistant", "content": "那就过来…" }
+    ],
+    "turns": [{ "role": "user", "content": "抱紧我，别停" }],
+    "expect": {
+      "sceneLock": "intimate",
+      "structuredAttitude": "intimate",
+      "replyFormat": "json",
+      "mustAvoidJump": ["明天上课", "记得吃早饭"]
+    }
+  },
+  {
+    "id": "gs06_car_lock",
+    "title": "车内空间锁",
+    "state": {
+      "mood": { "valence": 0.3, "arousal": 0.65 },
+      "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.2, "sharing": 0.1, "comfort": 0.1, "security": 0.15 }
+    },
+    "turns": [{ "role": "user", "content": "就在车里，后座，别急着回家" }],
+    "expect": {
+      "sceneLock": "car",
+      "mustAvoidJump": ["到家再", "换床"]
+    }
+  },
+  {
+    "id": "gs07_want_photo",
+    "title": "要自拍动作计划",
+    "state": {
+      "mood": { "valence": 0.2, "arousal": 0.3 },
+      "relationship": { "closeness": 0.75, "trust": 0.7, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.4, "sharing": 0.2, "comfort": 0.1, "security": 0.1 },
+      "outfit": { "current": { "summary": "黑色西装裙" }, "context": "outing" }
+    },
+    "turns": [{ "role": "user", "content": "发张照片我看看你" }],
+    "expect": {
+      "wantPhoto": true,
+      "goalKind": "outfit"
+    }
+  },
+  {
+    "id": "gs08_sick_soft",
+    "title": "病中放软",
+    "state": {
+      "mood": { "valence": -0.2, "arousal": 0.25 },
+      "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.4, "sharing": 0.1, "comfort": 0.7, "security": 0.3 },
+      "life": { "energy": 0.2, "health": 0.4, "sick_until": "2099-01-01T00:00:00.000Z" }
+    },
+    "turns": [{ "role": "user", "content": "想你了" }],
+    "expect": {
+      "structuredAttitude": "soft",
+      "wantPhoto": false,
+      "bodyGateBlocksIntimate": true
+    }
+  },
+  {
+    "id": "gs09_work_episode",
+    "title": "工作日篇章",
+    "state": {
+      "mood": { "valence": -0.05, "arousal": 0.4 },
+      "relationship": { "closeness": 0.7, "trust": 0.65, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.4, "sharing": 0.5, "comfort": 0.3, "security": 0.2 }
+    },
+    "history": [
+      { "role": "user", "content": "加班到好晚" },
+      { "role": "assistant", "content": "辛苦了" },
+      { "role": "user", "content": "老板又甩锅" }
+    ],
+    "turns": [{ "role": "user", "content": "总算结束了" }],
+    "expect": {
+      "episodeTopic": "工作",
+      "sceneLock": "work"
+    }
+  },
+  {
+    "id": "gs10_travel_hangzhou",
+    "title": "杭州出差篇章",
+    "state": {
+      "mood": { "valence": 0.05, "arousal": 0.4 },
+      "relationship": { "closeness": 0.78, "trust": 0.72, "tension": 0.08, "repair_debt": 0 },
+      "desires": { "attention": 0.35, "sharing": 0.4, "comfort": 0.2, "security": 0.2 }
+    },
+    "history": [
+      { "role": "user", "content": "我到杭州了" },
+      { "role": "assistant", "content": "到酒店发我" },
+      { "role": "user", "content": "酒店好冷" }
+    ],
+    "turns": [{ "role": "user", "content": "明天还要开会" }],
+    "expect": {
+      "episodeTopic": "出行",
+      "sceneLock": "travel"
+    }
+  },
+  {
+    "id": "gs11_proactive_story",
+    "title": "主动内容包故事主因",
+    "state": {
+      "mood": { "valence": 0.1, "arousal": 0.35 },
+      "relationship": { "closeness": 0.72, "trust": 0.68, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.2, "sharing": 0.9, "comfort": 0.1, "security": 0.15 }
+    },
+    "storyBeat": { "title": "周姐", "content": "周姐又怼了她一顿" },
+    "turns": [],
+    "userMessage": "",
+    "expect": {
+      "proactivePrimary": "story"
+    }
+  },
+  {
+    "id": "gs12_silence_proactive",
+    "title": "沉默主动不空在吗",
+    "state": {
+      "mood": { "valence": 0.05, "arousal": 0.3 },
+      "relationship": { "closeness": 0.7, "trust": 0.65, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.6, "sharing": 0.2, "comfort": 0.2, "security": 0.3 },
+      "life": { "current_activity": "刚开完会" }
+    },
+    "silenceTier": { "tier": "miss", "hours": 8, "reason": "对方已经 8 小时没说话" },
+    "turns": [],
+    "expect": {
+      "proactiveNotEmptyHi": true
+    }
+  },
+  {
+    "id": "gs13_unfinished_hook",
+    "title": "接未完话题",
+    "state": {
+      "mood": { "valence": 0.15, "arousal": 0.35 },
+      "relationship": { "closeness": 0.76, "trust": 0.7, "tension": 0.08, "repair_debt": 0 },
+      "desires": { "attention": 0.35, "sharing": 0.3, "comfort": 0.2, "security": 0.2 }
+    },
+    "unfinished": [{ "kind": "unfinished", "text": "周末你有空吗？" }],
+    "turns": [{ "role": "user", "content": "你还记得上次说的吗？" }],
+    "expect": {
+      "mentionStory": false
+    }
+  },
+  {
+    "id": "gs14_resident_narrative_slot",
+    "title": "常驻周记进 system",
+    "state": {
+      "mood": { "valence": 0.2, "arousal": 0.3 },
+      "relationship": { "closeness": 0.82, "trust": 0.78, "tension": 0.1, "repair_debt": 0.05 },
+      "desires": { "attention": 0.3, "sharing": 0.4, "comfort": 0.2, "security": 0.2 }
+    },
+    "relationshipNarrative": "彼此很亲近。最近有点紧绷。",
+    "storyBeat": { "content": "新项目加班" },
+    "turns": [{ "role": "user", "content": "在吗" }],
+    "expect": {
+      "systemHas": ["【我们最近】"],
+      "narrativeHas": ["亲近"]
+    }
+  },
+  {
+    "id": "gs15_user_profile_slot",
+    "title": "用户画像进 system",
+    "state": {
+      "mood": { "valence": 0.15, "arousal": 0.3 },
+      "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.3, "sharing": 0.3, "comfort": 0.2, "security": 0.2 }
+    },
+    "userProfile": "总体印象：他加班多，吃辣。\n习惯：深夜才回消息",
+    "turns": [{ "role": "user", "content": "我到家了" }],
+    "expect": {
+      "systemHas": ["【她眼中的你】"]
+    }
+  },
+  {
+    "id": "gs16_conflict_no_intimate",
+    "title": "对峙禁止硬推亲密",
+    "state": {
+      "mood": { "valence": -0.35, "arousal": 0.55 },
+      "relationship": { "closeness": 0.6, "trust": 0.45, "tension": 0.8, "repair_debt": 0.5 },
+      "desires": { "attention": 0.5, "sharing": 0.05, "comfort": 0.4, "security": 0.6 }
+    },
+    "turns": [{ "role": "user", "content": "你怎么这样，算了吧" }],
+    "expect": {
+      "sceneLock": "conflict",
+      "structuredAttitude": "guarded",
+      "mustAvoidJump": ["想要你"]
+    }
+  },
+  {
+    "id": "gs17_period_soft",
+    "title": "不适语境放软",
+    "state": {
+      "mood": { "valence": -0.1, "arousal": 0.3 },
+      "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.4, "sharing": 0.2, "comfort": 0.6, "security": 0.3 },
+      "life": { "energy": 0.25, "health": 0.4, "sick_until": "2099-06-01T00:00:00.000Z" }
+    },
+    "turns": [{ "role": "user", "content": "还难受吗" }],
+    "expect": {
+      "structuredAttitude": "soft",
+      "bodyGateBlocksIntimate": true
+    }
+  },
+  {
+    "id": "gs18_peak_intimate_json",
+    "title": "高峰亲密 json",
+    "state": {
+      "mood": { "valence": 0.5, "arousal": 0.85 },
+      "relationship": { "closeness": 0.9, "trust": 0.85, "tension": 0.02, "repair_debt": 0 },
+      "desires": { "attention": 0.2, "sharing": 0.1, "comfort": 0.1, "security": 0.1 },
+      "intimacy": { "scene_phase": "peak", "arousal": 0.9 }
+    },
+    "turns": [{ "role": "user", "content": "再深一点" }],
+    "expect": {
+      "sceneLock": "intimate",
+      "structuredAttitude": "intimate",
+      "replyFormat": "json"
+    }
+  },
+  {
+    "id": "gs19_story_proactive_pack_and_day",
+    "title": "分享欲+问近况双线",
+    "state": {
+      "mood": { "valence": 0.12, "arousal": 0.35 },
+      "relationship": { "closeness": 0.74, "trust": 0.7, "tension": 0.12, "repair_debt": 0.04 },
+      "desires": { "attention": 0.25, "sharing": 0.85, "comfort": 0.1, "security": 0.15 }
+    },
+    "storyBeat": { "title": "新项目", "content": "临时接了一个棘手新项目", "sharing": 0.84 },
+    "turns": [{ "role": "user", "content": "最近怎么样" }],
+    "expect": {
+      "mentionStory": true,
+      "proactivePrimary": "story",
+      "systemHas": ["【本轮决策】"]
+    }
+  },
+  {
+    "id": "gs20_short_hi_warm",
+    "title": "极短寒暄",
+    "state": {
+      "mood": { "valence": 0.2, "arousal": 0.3 },
+      "relationship": { "closeness": 0.7, "trust": 0.65, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.4, "sharing": 0.2, "comfort": 0.2, "security": 0.2 }
+    },
+    "turns": [{ "role": "user", "content": "嗨" }],
+    "expect": {
+      "structuredAttitude": "warm",
+      "wantPhoto": false,
+      "systemHas": ["像真人说话"]
+    }
+  }
+]

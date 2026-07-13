@@ -106,8 +106,13 @@ export function detectNonSequitur(replyText = '', locks = []) {
   if (!text.trim()) return { bad: false, reasons: [] };
   const reasons = [];
 
-  if (STOCK_ENDINGS.test(text) && locks.some((l) => l.id === 'intimate' || l.id === 'car' || l.id === 'conflict')) {
-    reasons.push('stock: 库存万能结尾');
+  // 库存结尾：亲密/车/冲突必查；其它场景也软查「纯万能收尾」
+  if (STOCK_ENDINGS.test(text)) {
+    if (locks.some((l) => l.id === 'intimate' || l.id === 'car' || l.id === 'conflict')) {
+      reasons.push('stock: 库存万能结尾');
+    } else if (/(明天上课|记得吃早饭|写作业)[.。!！]?$/.test(text.trim())) {
+      reasons.push('stock: 句末库存收尾');
+    }
   }
 
   for (const lock of locks) {
@@ -120,9 +125,19 @@ export function detectNonSequitur(replyText = '', locks = []) {
     if (lock.id === 'car' && /(回了家|上了床|到卧室)/.test(text) && !/(到家|回家了)/.test(text)) {
       reasons.push('car: 车内突然回家上床');
     }
+    if (lock.id === 'conflict' && /(想要你|来做|脱掉)/.test(text)) {
+      reasons.push('conflict: 对峙中硬推亲密');
+    }
+    if (lock.id === 'sick' && /(通宵|出去浪|剧烈)/.test(text)) {
+      reasons.push('sick: 病中约剧烈活动');
+    }
   }
   if (/(想要|插|高潮|湿)/.test(text) && /(明天上课|第一节课|交作业)/.test(text)) {
     reasons.push('mixed: 亲密与上课硬拼');
+  }
+  // 电报体三连硬切
+  if (/^[^。！？]{1,8}。[。\s]*[^。！？]{1,8}。[。\s]*[^。！？]{1,8}。/.test(text.replace(/\s/g, ''))) {
+    reasons.push('style: 疑似电报体三连');
   }
   return { bad: reasons.length > 0, reasons };
 }

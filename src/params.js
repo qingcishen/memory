@@ -308,6 +308,12 @@ export const DEFAULT_PARAMS = {
     stripStockEndings: true,
     // 超短用户句时瘦身 world/story 段，减 prompt 体积
     compactShortTurns: true,
+    // 结构化两阶段计划（启发式 + 可选便宜模型 enrich）
+    structuredPlanLlm: true,
+    // 生成后一致性检改：默认开启（坏回复最多再生成一次）
+    coherenceRetry: true,
+    // 关系周记 / 用户画像常驻槽
+    residentSlots: true,
   },
 
   // ---- P1 双向关系触发规则 ----

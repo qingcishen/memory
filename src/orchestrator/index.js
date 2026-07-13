@@ -24,6 +24,13 @@ export {
   buildTurnBrief,
 } from './turnPlan.js';
 export { explainRecallHits, formatRecallExplanation } from './explainRecall.js';
+export {
+  planStructuredHeuristic,
+  enrichStructuredPlan,
+  applyStructuredToTurn,
+  structuredPlanToPrompt,
+  mergeStructured,
+} from './structuredPlan.js';
 export { LocalJsonHistoryStore, SupabaseHistoryStore } from './historyStore.js';
 export {
   DEFAULT_PROACTIVE_POLICY,

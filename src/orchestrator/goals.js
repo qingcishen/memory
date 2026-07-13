@@ -31,16 +31,20 @@ export function buildConversationGoals({
       security: '自然获得一点关系上的确认',
     }[urgency.need];
     goals.push({ kind: 'desire', priority: urgency.score, text, need: urgency.need });
-  } else if (storyBeat?.content) {
-    // 强制：有今日 beat 时进目标栈（问近况优先；闲聊也可轻点）
+  }
+  // 有今日 beat：问近况必挂 story；分享欲紧急时也挂（与 desire 并存）；其它闲聊可轻点
+  if (storyBeat?.content) {
     const askedAboutDay = /(今天|最近|最近在忙|怎么样|过得|忙什么)/.test(String(userMessage || ''));
-    goals.push({
-      kind: 'story',
-      priority: askedAboutDay ? 0.85 : 0.42,
-      text: askedAboutDay
-        ? `对方在问近况：从你今天的生活「${storyBeat.content}」自然答，像真人吐槽/分享，别念剧情配置。`
-        : `心里有今日生活碎片「${storyBeat.content}」，时机自然时可轻点一句，别像播报。`,
-    });
+    const sharingDesire = urgency.urgent && urgency.need === 'sharing';
+    if (askedAboutDay || !urgency.urgent || sharingDesire) {
+      goals.push({
+        kind: 'story',
+        priority: askedAboutDay ? 0.85 : sharingDesire ? 0.55 : 0.42,
+        text: askedAboutDay
+          ? `对方在问近况：从你今天的生活「${storyBeat.content}」自然答，像真人吐槽/分享，别念剧情配置。`
+          : `心里有今日生活碎片「${storyBeat.content}」，时机自然时可轻点一句，别像播报。`,
+      });
+    }
   }
 
   // I5: 亲密张力/满足感 → 本轮意图；高张力时可主动发起亲密（policy 可来自角色 drive）

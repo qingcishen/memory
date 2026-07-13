@@ -174,11 +174,17 @@ console.log('assemble · coherence slots');
     personaPrompt: '人设',
     coherencePrompt: '【连贯性·硬规则·本轮最高优先级】\n锁住亲密',
     relationshipStagePrompt: '【关系阶段·亲密恋人】',
+    relationshipNarrativePrompt: '【我们最近】彼此很亲近',
+    userProfilePrompt: '【她眼中的你】加班多',
+    structuredPlanPrompt: '【本轮决策】态度：warm',
     episodePrompt: '【最近的关系篇章】\n- 加班夜',
   });
   ok('连贯段进 system', sys.includes('连贯性·硬规则'));
   ok('关系阶段进 system', sys.includes('关系阶段·亲密恋人'));
   ok('篇章进 system', sys.includes('最近的关系篇章'));
+  ok('周记常驻槽进 system', sys.includes('我们最近'));
+  ok('画像常驻槽进 system', sys.includes('她眼中的你'));
+  ok('结构化决策进 system', sys.includes('本轮决策'));
 }
 
 console.log('unified selfie + quality gate');

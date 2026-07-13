@@ -16,6 +16,9 @@ export function buildSystemPrompt({
   relationshipStagePrompt = '',
   coherencePrompt = '',
   turnBriefPrompt = '',
+  structuredPlanPrompt = '',
+  relationshipNarrativePrompt = '',
+  userProfilePrompt = '',
   episodePrompt = '',
   statePrompt = '',
   emotionPrompt = '',
@@ -24,7 +27,7 @@ export function buildSystemPrompt({
   identityConstraintsPrompt = '',
   narrationPrompt = '',
 } = {}) {
-  // 连贯性/本轮简报放在业务段靠前：场景锁与本轮计划必须压过散落的人设与时间提示。
+  // 连贯性/本轮简报/常驻关系槽放在业务段靠前。
   const sections = [
     timePrompt,
     personaPrompt,
@@ -32,8 +35,11 @@ export function buildSystemPrompt({
     storyPrompt,
     relationshipPrompt,
     relationshipStagePrompt,
+    relationshipNarrativePrompt,
+    userProfilePrompt,
     coherencePrompt,
     turnBriefPrompt,
+    structuredPlanPrompt,
     statePrompt || emotionPrompt,
     goalsPrompt,
     episodePrompt,

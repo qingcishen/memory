@@ -31,6 +31,19 @@ import {
   stripStockEndingsFromParts,
 } from './turnPlan.js';
 import { explainRecallHits, formatRecallExplanation } from './explainRecall.js';
+import {
+  planStructuredHeuristic,
+  enrichStructuredPlan,
+  applyStructuredToTurn,
+  structuredPlanToPrompt,
+} from './structuredPlan.js';
+import {
+  synthesizeRelationshipNarrative,
+  relationshipNarrativeToPrompt,
+  readRelationshipNarrative,
+  saveRelationshipNarrative,
+} from '../companion/relationshipNarrative.js';
+import { readUserProfilePrompt } from '../profile.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
@@ -115,6 +128,12 @@ export class Orchestrator {
     this._personaLoadedAt = 0;
     this._historyLoaded = false;
     this._configLoaded = false;
+    this._relationshipNarrative = '';
+    this._userProfilePrompt = '';
+    this._residentSlotsLoadedAt = 0;
+    this._episodeBuffer = [];
+    this._lastStructured = null;
+    this._lastTurnPlan = null;
   }
 
   /**
@@ -191,6 +210,41 @@ export class Orchestrator {
       await this.memory.ensureAnniversaries().catch(() => {});
       this._anniversariesEnsured = true;
     }
+    // 关系周记 / 用户画像常驻槽（失败静默，mock 测试不连库）
+    await this.loadResidentSlots().catch(() => {});
+    return this;
+  }
+
+  /**
+   * 加载跨会话常驻槽：【我们最近】关系周记 + 【她眼中的你】用户画像。
+   * 与 persona 同刷新周期；PARAMS.orchestrator.residentSlots === false 时跳过。
+   */
+  async loadResidentSlots({ force = false } = {}) {
+    if (PARAMS.orchestrator?.residentSlots === false) {
+      this._relationshipNarrative = '';
+      this._userProfilePrompt = '';
+      return this;
+    }
+    const now = Date.now();
+    const ttl = this.options.personaRefreshMs ?? PARAMS.orchestrator?.personaRefreshMs ?? 30 * 60 * 1000;
+    if (!force && this._residentSlotsLoadedAt && now - this._residentSlotsLoadedAt < ttl) return this;
+
+    // 与 companions 配置加载同门：全 mock 编排器测试（persona 无 setExtra）不连库。
+    // 真实 PersonaAdapter / 显式 forceResidentSlots 才读周记与画像。
+    const canHitDb =
+      this.options.forceResidentSlots === true || typeof this.persona?.setExtra === 'function';
+    if (!canHitDb) {
+      this._residentSlotsLoadedAt = now;
+      return this;
+    }
+
+    const [narrative, profilePrompt] = await Promise.all([
+      readRelationshipNarrative(this.userId, this.companionId).catch(() => ''),
+      readUserProfilePrompt(this.userId, this.companionId).catch(() => ''),
+    ]);
+    if (narrative) this._relationshipNarrative = narrative;
+    if (profilePrompt) this._userProfilePrompt = profilePrompt;
+    this._residentSlotsLoadedAt = now;
     return this;
   }
 
@@ -334,8 +388,8 @@ export class Orchestrator {
       goals.sort((a, b) => b.priority - a.priority);
     }
 
-    // 本轮计划：历史深度 / 独白 / 召回 query / 采样 / parts 预算 / 简报
-    const turn = planTurn({
+    // 本轮计划：历史深度 / 独白 / 召回 query / parts 预算 / 简报
+    let turn = planTurn({
       userMessage,
       sceneLocks,
       behavior,
@@ -346,7 +400,40 @@ export class Orchestrator {
       historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
       useMonologueDefault: this.options.useMonologue,
     });
+    // 两阶段：结构化决策（启发式 + 可选便宜模型）
+    let structured = planStructuredHeuristic({
+      userMessage,
+      sceneLocks,
+      goals,
+      behavior,
+      storyBeat,
+      unfinished,
+      intimacyPhase: intimacyLive?.scene_phase,
+      bodySit,
+    });
+    // enrich：仅真实 LLM 客户端（OpenAI 兼容）才二次规划；DefaultLLM mock / 无 client 跳过
+    const planClient = this.llm?.client || this.llm?.openai || null;
+    if (PARAMS.orchestrator?.structuredPlanLlm !== false && planClient) {
+      structured = await enrichStructuredPlan(
+        structured,
+        {
+          userMessage,
+          sceneLocks,
+          goals,
+          storyBeat,
+          unfinished,
+          intimacyPhase: intimacyLive?.scene_phase,
+        },
+        { client: planClient, signal: opts.signal },
+      ).catch(() => structured);
+    }
+    turn = applyStructuredToTurn(turn, structured, behavior);
+    if (turn._lengthHintOverride) {
+      behavior = { ...behavior, lengthHint: turn._lengthHintOverride, partsBudget: turn.partsBudget };
+    }
+    if (turn.replyFormat) opts = { ...opts, replyFormat: opts.replyFormat || turn.replyFormat };
     this._lastTurnPlan = turn;
+    this._lastStructured = structured;
 
     if (this.narration) this._lastSceneType = sceneType;
     this._lastSceneTypeForObserve = sceneType;
@@ -376,6 +463,12 @@ export class Orchestrator {
         topGoalText: goals[0]?.text,
       }),
       turnBriefPrompt: turn.turnBrief || '',
+      structuredPlanPrompt: structuredPlanToPrompt(structured),
+      relationshipNarrativePrompt:
+        PARAMS.orchestrator?.residentSlots === false
+          ? ''
+          : relationshipNarrativeToPrompt(this._relationshipNarrative || ''),
+      userProfilePrompt: PARAMS.orchestrator?.residentSlots === false ? '' : this._userProfilePrompt || '',
       statePrompt: [
         this.stateLayer.toPrompt(stateForPrompt, {
           relationship: rel,
@@ -455,6 +548,7 @@ export class Orchestrator {
         messages,
         samplingHints,
         turn,
+        structured,
         sceneLocks,
         stateSnapshot,
         stateForPrompt,
@@ -481,9 +575,10 @@ export class Orchestrator {
       await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal })
     );
 
-    // 跳戏软修复：最多再生成一次（失败安全，不阻塞）
+    // 一致性检改：默认开启（params.orchestrator.coherenceRetry）
+    const allowRetry = opts.skipCoherenceRetry !== true && PARAMS.orchestrator?.coherenceRetry !== false;
     const repair = nonSequiturRepairHint(reply, sceneLocks);
-    if (repair.needsRetry && !opts.skipCoherenceRetry) {
+    if (repair.needsRetry && allowRetry) {
       try {
         const retryMessages = [
           ...messages,
@@ -515,7 +610,10 @@ export class Orchestrator {
       relationshipStage: relStage,
     });
 
-    if (PHOTO_REQUEST_RE.test(userMessage)) this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: true });
+    // 动作计划：对方要看 / structured 决策 wantPhoto
+    if (PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto) {
+      this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto });
+    }
 
     const debug = opts.debug
       ? this._buildDebug({
@@ -527,6 +625,7 @@ export class Orchestrator {
           sceneLocks,
           unfinished,
           turn,
+          structured,
           repair,
           worldSnapshot,
           storySnapshot,
@@ -554,6 +653,8 @@ export class Orchestrator {
       sceneLocks: sceneLocks.map((l) => l.id),
       bodySituation: bodySit,
       recallExplain,
+      turnPlan: summarizeTurnPlan(turn),
+      structuredPlan: summarizeStructured(structured),
       ...(debug ? { debug } : {}),
     };
   }
@@ -577,13 +678,14 @@ export class Orchestrator {
 
   async *_replyStreaming(ctx) {
     const {
-      userMessage, opts, messages, samplingHints, turn, sceneLocks, stateSnapshot,
+      userMessage, opts, messages, samplingHints, turn, structured, sceneLocks, stateSnapshot,
       emotionLabel, behavior, goals, intimacyLive, relStage, bodySit, recallExplain,
     } = ctx;
     let lastPreview = '';
     let finalParts = [];
     let finalText = '';
     let streamed = true;
+    let repair = { needsRetry: false, reasons: [] };
 
     try {
       for await (const ev of this.llm.generateReplyStream(messages, { ...samplingHints, signal: opts.signal })) {
@@ -608,6 +710,30 @@ export class Orchestrator {
 
     let reply = finalText;
     let parts = finalParts;
+
+    // 流式完成后一致性检改（默认同非流式）
+    const allowRetry = opts.skipCoherenceRetry !== true && PARAMS.orchestrator?.coherenceRetry !== false;
+    repair = nonSequiturRepairHint(reply, sceneLocks);
+    if (repair.needsRetry && allowRetry) {
+      try {
+        const retryMessages = [
+          ...messages,
+          { role: 'assistant', content: reply },
+          { role: 'user', content: repair.hint },
+        ];
+        const retried = normalizeReplyResult(
+          await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
+        );
+        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks).needsRetry) {
+          reply = retried.text;
+          parts = retried.parts;
+          yield { event: 'preview', text: reply };
+        }
+      } catch {
+        /* 保持原稿 */
+      }
+    }
+
     ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
     this.recordHistory(
@@ -622,7 +748,11 @@ export class Orchestrator {
       sceneLocks,
       relationshipStage: relStage,
     });
-    if (PHOTO_REQUEST_RE.test(userMessage)) this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: true });
+    if (PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto) {
+      this._lastPhoto = this.maybePhoto(stateSnapshot, {
+        requested: PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto,
+      });
+    }
 
     const result = {
       text: reply,
@@ -635,10 +765,19 @@ export class Orchestrator {
       sceneLocks: sceneLocks.map((l) => l.id),
       bodySituation: bodySit,
       recallExplain,
+      turnPlan: summarizeTurnPlan(turn),
+      structuredPlan: summarizeStructured(structured),
       streamed,
     };
     if (opts.debug) {
-      result.debug = this._buildDebug({ ...ctx, repair: { needsRetry: false, reasons: [] }, messages, monologue: ctx.monologue, samplingHints });
+      result.debug = this._buildDebug({
+        ...ctx,
+        structured,
+        repair,
+        messages,
+        monologue: ctx.monologue,
+        samplingHints,
+      });
     }
     yield { event: 'done', ...result };
   }
@@ -669,6 +808,7 @@ export class Orchestrator {
     sceneLocks,
     unfinished,
     turn,
+    structured,
     repair,
     worldSnapshot,
     storySnapshot,
@@ -692,15 +832,10 @@ export class Orchestrator {
       bodySituation: bodySit,
       sceneLocks: (sceneLocks || []).map((l) => l.id),
       unfinished,
-      turnPlan: turn
-        ? {
-            historyTurns: turn.historyTurns,
-            useMonologue: turn.useMonologue,
-            recallQuery: turn.recallQuery,
-            partsBudget: turn.partsBudget,
-            turnBrief: turn.turnBrief,
-          }
-        : null,
+      turnPlan: summarizeTurnPlan(turn),
+      structuredPlan: summarizeStructured(structured ?? this._lastStructured),
+      relationshipNarrative: this._relationshipNarrative || '',
+      userProfilePrompt: this._userProfilePrompt || '',
       recallExplain: recallExplain || [],
       recallExplainText: formatRecallExplanation(recallExplain || [], turn?.recallQuery),
       coherenceRepair: repair?.needsRetry ? repair.reasons : [],
@@ -805,6 +940,11 @@ export class Orchestrator {
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       relationshipStagePrompt: relationshipStageToPrompt(relStage, rel),
+      relationshipNarrativePrompt:
+        PARAMS.orchestrator?.residentSlots === false
+          ? ''
+          : relationshipNarrativeToPrompt(this._relationshipNarrative || ''),
+      userProfilePrompt: PARAMS.orchestrator?.residentSlots === false ? '' : this._userProfilePrompt || '',
       turnBriefPrompt: turn.turnBrief || '',
       statePrompt: [
         this.stateLayer.toPrompt(stateSnapshot) ?? '',
@@ -894,14 +1034,55 @@ export class Orchestrator {
       if (typeof this.memory.train === 'function') tasks.push(this.trainNightly());
       // Episode 夜间：把当日缓冲篇章合成关系故事链
       tasks.push(this.synthesizeEpisodesNightly(now));
+      // 关系周记常驻槽刷新
+      if (PARAMS.orchestrator?.residentSlots !== false) {
+        tasks.push(this.refreshRelationshipNarrativeNightly(now));
+      }
     }
     const results = await Promise.allSettled(tasks);
     // S2 故事拍在基础 settle 完成后再推进，避免两条 affect 写路径并发覆盖。
     if (nightly && typeof this.story?.tick === 'function') {
       results.push(...await Promise.allSettled([this.story.tick({ now })]));
     }
+    // 夜间后强制刷新常驻槽缓存（画像可能已被 updateUserProfile 更新）
+    if (nightly && PARAMS.orchestrator?.residentSlots !== false) {
+      results.push(...await Promise.allSettled([this.loadResidentSlots({ force: true })]));
+    }
     for (const r of results) if (r.status === 'rejected') console.error('[maintain]', r.reason);
     return results;
+  }
+
+  /**
+   * 夜间启发式合成关系周记并落库；失败静默。
+   */
+  async refreshRelationshipNarrativeNightly(now = Date.now()) {
+    const [relState, stateSnapshot, storySnapshot] = await Promise.all([
+      this.relationship.current().catch(() => null),
+      this.stateLayer.snapshot().catch(() => null),
+      this.story?.current?.().catch(() => null) ?? Promise.resolve(null),
+    ]);
+    const rel = relState?.relationship ?? relState ?? {};
+    const stage = inferRelationshipStage(rel);
+    const episodes = (this._episodeBuffer || []).slice(-3);
+    const text = synthesizeRelationshipNarrative({
+      stage,
+      relationship: rel,
+      storyBeat: storySnapshot?.today,
+      episodes,
+      life: stateSnapshot?.life,
+    });
+    if (!text) return null;
+    this._relationshipNarrative = text;
+    // 真实 persona 适配器才落库；mock 测试只更新内存槽
+    const canHitDb =
+      this.options.forceResidentSlots === true || typeof this.persona?.setExtra === 'function';
+    if (canHitDb) {
+      const saved = await saveRelationshipNarrative(this.userId, this.companionId, text).catch(() => null);
+      if (!saved && typeof this.memory.recordSelfEvent === 'function') {
+        await this.memory.recordSelfEvent(`【关系周记】${text}`, { importance: 8, narrative: text }).catch(() => null);
+      }
+    }
+    return text;
   }
 
   /**
@@ -1087,4 +1268,34 @@ function extractEpisodeTexts(hits = []) {
     .map((h) => h.narrative || h.content || h.fact_core)
     .filter(Boolean)
     .slice(0, 3);
+}
+
+/** 对外暴露的本轮计划摘要（debug / API） */
+function summarizeTurnPlan(turn) {
+  if (!turn) return null;
+  return {
+    historyTurns: turn.historyTurns,
+    useMonologue: turn.useMonologue,
+    recallQuery: turn.recallQuery,
+    partsBudget: turn.partsBudget,
+    replyFormat: turn.replyFormat ?? null,
+    turnBrief: turn.turnBrief ?? null,
+  };
+}
+
+/** 对外暴露的结构化决策摘要 */
+function summarizeStructured(structured) {
+  if (!structured) return null;
+  return {
+    attitude: structured.attitude,
+    lengthHint: structured.lengthHint,
+    mentionStory: structured.mentionStory,
+    mentionUnfinished: structured.mentionUnfinished,
+    wantPhoto: structured.wantPhoto,
+    bubbleCount: structured.bubbleCount,
+    replyFormat: structured.replyFormat,
+    actions: structured.actions || [],
+    note: structured.note || '',
+    source: structured.source,
+  };
 }
