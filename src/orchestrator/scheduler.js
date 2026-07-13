@@ -7,6 +7,8 @@ import { supabase, PARAMS } from '../config.js';
 import { minutesInRange, shanghaiWallClock } from '../state/activity.js';
 import { inferEmotionLabel } from '../state/emotionLabel.js';
 import { behaviorPolicy } from '../state/behavior.js';
+import { buildProactiveContentPack } from '../companion/proactiveContent.js';
+import { extractUnfinishedHooks } from '../companion/sceneCoherence.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 const HOUR = 60 * 60 * 1000;
@@ -247,9 +249,15 @@ export class ProactiveScheduler {
         intimacyUrg = { urgent: false, cooldownFactor: 1, tone: '', kind: null };
       }
     }
-    const storyBeat = urgency.urgent && urgency.need === 'sharing' && typeof this.orchestrator.story?.pendingShare === 'function'
-      ? await this.orchestrator.story.pendingShare(now).catch(() => null)
-      : null;
+    // 故事拍：分享欲高时优先 pendingShare；否则 current.today 也可作内容辅料
+    let storyBeat = null;
+    if (typeof this.orchestrator.story?.pendingShare === 'function') {
+      storyBeat = await this.orchestrator.story.pendingShare(now).catch(() => null);
+    }
+    if (!storyBeat && typeof this.orchestrator.story?.current === 'function') {
+      const snap = await this.orchestrator.story.current().catch(() => null);
+      storyBeat = snap?.today ?? null;
+    }
     const emotionLabel = inferEmotionLabel({ ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} }, stateSnapshot?.desires, this.orchestrator.history?.slice(-4) ?? []);
     const behavior = behaviorPolicy(emotionLabel, { relationship: relState?.relationship ?? relState ?? {} });
     const basePolicy = { ...this.policy, ...(ctx.policy ?? {}) };
@@ -266,56 +274,65 @@ export class ProactiveScheduler {
     const overrideQuietHours = dueItems.length > 0 && allowed.reason === 'quiet_hours';
     if (!allowed.ok && !overrideQuietHours) return { sent: false, reason: allowed.reason, nextAt: allowed.nextAt };
 
-    // 优先级: 显式原因 > 到期事项 > 需求 > 睡前 > 沉默分级 > 旧默认理由。
     const bedtimeTier = this.sleepWindow ? pickBedtimeTier(now, this.sleepWindow) : null;
     const lastUserMessageAt = this.getLastUserMessageAt
       ? await this.getLastUserMessageAt({ userId, companionId }).catch(() => null)
       : null;
     const silenceTier = pickSilenceTier(now, lastUserMessageAt);
-    const desireReason = storyBeat
-      ? `她今天刚经历了这件事，很想第一时间告诉对方：${storyBeat.title}——${storyBeat.content}`
-      : urgency.urgent ? formatDesireReason(urgency) : null;
-    const intimacyReason = intimacyUrg.urgent
-      ? intimacyUrg.kind === 'tension'
-        ? intimacyUrg.canInitiate
-          ? '你想要他了，主动找他亲近；可以黏、可以半命令式把人拽近、暗示想亲密，第一句仍像真人说话'
-          : '心里有一点亲近的渴望，想自然地靠近对方，可以撩一点'
-        : '最近少了一些贴近，想被陪着，语气轻、不抱怨'
-      : null;
-    const reason =
-      ctx.reason ??
-      formatDueReason(dueItems) ??
-      desireReason ??
-      intimacyReason ??
-      bedtimeTier?.reason ??
-      silenceTier?.reason ??
-      this.defaultReason;
-    const usedDesireReason = Boolean(desireReason && reason === desireReason);
-    const usedIntimacyReason = Boolean(intimacyReason && reason === intimacyReason);
-    const usedStoryBeat = Boolean(storyBeat && usedDesireReason);
-    // 新版接入有需求快照时，不再让纯 cron 在无任何动机时凭空发消息。
-    if (
-      supportsDesires &&
-      !ctx.reason &&
-      dueItems.length === 0 &&
-      !desireReason &&
-      !intimacyReason &&
-      !bedtimeTier &&
-      !silenceTier
-    ) {
+    const unfinished = extractUnfinishedHooks(this.orchestrator.history ?? []);
+
+    // 统一内容包：主触发仍是 prospective/需求/亲密/睡前/沉默；
+    // 故事拍仅在分享欲高时作主因；穿搭/未完/活动作辅料丰富开场，不单独开闸（防 cron 刷屏）。
+    const shareBeat = urgency.urgent && urgency.need === 'sharing' ? storyBeat : null;
+    const contentPack = buildProactiveContentPack({
+      dueItems,
+      urgency,
+      intimacyUrg,
+      storyBeat: shareBeat,
+      outfit: stateSnapshot?.outfit,
+      unfinished,
+      silenceTier,
+      bedtimeTier,
+      lifeActivity: stateSnapshot?.life?.current_activity,
+      defaultReason: this.defaultReason,
+    });
+
+    const gateKinds = new Set(['prospective', 'story', 'desire', 'intimacy', 'bedtime', 'silence']);
+    const hasGate =
+      Boolean(ctx.reason) ||
+      dueItems.length > 0 ||
+      urgency.urgent ||
+      intimacyUrg.urgent ||
+      Boolean(bedtimeTier) ||
+      Boolean(silenceTier) ||
+      gateKinds.has(contentPack.primary?.kind);
+
+    // 新版接入有需求快照时，不再让纯 cron / 仅 activity 在无动机时凭空发消息。
+    if (supportsDesires && !hasGate) {
       return { sent: false, reason: 'no_trigger' };
     }
+
+    const reason = ctx.reason ?? contentPack.reason;
+    const usedStoryBeat = contentPack.primary?.kind === 'story' || contentPack.secondary?.kind === 'story';
     const message = await this.orchestrator.proactiveTick({
       ...ctx,
       reason,
-      query: ctx.query ?? (usedStoryBeat ? storyBeat.content : undefined),
-      style: ctx.style ?? (usedDesireReason ? urgency.tone : usedIntimacyReason ? intimacyUrg.tone : undefined),
+      query: ctx.query ?? contentPack.query,
+      style: ctx.style ?? contentPack.style,
+      contentPack,
+      dueItems,
+      urgency,
+      intimacyUrg,
+      storyBeat,
+      unfinished,
+      silenceTier,
+      bedtimeTier,
       shouldSend: true,
     });
     if (!message) return { sent: false, reason: 'orchestrator_skipped' };
 
-    await this.deliver({ userId, companionId, message, reason, dueItems, now });
-    if (usedStoryBeat && typeof this.orchestrator.story?.markShared === 'function') {
+    await this.deliver({ userId, companionId, message, reason, dueItems, now, contentPack });
+    if (usedStoryBeat && storyBeat && typeof this.orchestrator.story?.markShared === 'function') {
       await this.orchestrator.story.markShared(storyBeat, now).catch(() => {});
     }
     const nextState = markProactiveSent(state, now, effectivePolicy);
@@ -324,7 +341,18 @@ export class ProactiveScheduler {
     const firedIds = dueItems.map((item) => item?.id).filter(Boolean);
     if (firedIds.length > 0) await this.markFired(firedIds).catch(() => {});
 
-    return { sent: true, message, reason, dueItems, storyBeat: usedStoryBeat ? storyBeat : null, urgency, emotionLabel, behaviorPolicy: behavior, state: nextState };
+    return {
+      sent: true,
+      message,
+      reason,
+      dueItems,
+      storyBeat: usedStoryBeat ? storyBeat : null,
+      contentPack,
+      urgency,
+      emotionLabel,
+      behaviorPolicy: behavior,
+      state: nextState,
+    };
   }
 
   start({ intervalMs = 5 * 60 * 1000, ctx = {} } = {}) {

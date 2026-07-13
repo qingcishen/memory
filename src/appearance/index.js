@@ -4,6 +4,7 @@ export {
   shouldSendSelfie,
   canSendSelfie,
   buildSelfiePrompt,
+  buildUnifiedLookPrompt,
   buildScenePrompt,
   decidePhoto,
   Selfie,

@@ -113,6 +113,24 @@ export class MemoryAdapter {
   recordSelfEvent(content, opts) {
     return this._mem.recordSelfEvent(content, opts);
   }
+
+  /**
+   * Episode · 关系篇章（dyad）: 把一轮对话的启发式摘要落成 episode 记忆。
+   * 不改 fact_core 红线；失败时由调用方 allSettled 吞掉。
+   */
+  recordEpisode(episode = {}) {
+    if (typeof this._mem.recordEpisode === 'function') {
+      return this._mem.recordEpisode(episode);
+    }
+    const text = String(episode.content || episode.title || '').trim();
+    if (!text) return Promise.resolve([]);
+    return this._mem.recordSelfEvent(text, {
+      narrative: episode.title,
+      importance: episode.importance ?? 5,
+      valence: 0.15,
+      intensity: episode.emotion ?? 0.3,
+    });
+  }
 }
 
 /** 状态层门面适配: 包统一 StateLayer, 编排器不再直接接 emotion。 */

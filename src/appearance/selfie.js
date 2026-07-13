@@ -8,8 +8,13 @@
 import { supabase, PARAMS } from '../config.js';
 import { defaultImageProvider } from './provider.js';
 import { listReferenceImages, referenceFilePath } from './references.js';
+import { outfitToImageMods } from '../state/outfit.js';
 
 const DAY = 24 * 60 * 60 * 1000;
+
+/** 脸与气质一致性：所有自拍共用，尽量锁同一人。 */
+const FACE_LOCK =
+  'same woman consistently, natural East Asian features, soft jawline, realistic skin texture, photorealistic, not anime, not illustration';
 
 // ============================================================
 //  纯逻辑 (无 IO, 离线可测)
@@ -63,11 +68,11 @@ export function canSendSelfie(rateState = {}, now = Date.now(), policy = {}) {
 }
 
 /**
- * 把状态快照 + 角色外貌描述拼成出图 prompt, 并产出一组状态 tags(给图库命中复用)。
- * @param appearance CompanionConfig.appearance 文本 (五官/发型/穿着的固定描述)
- * @returns { prompt:string, tags:string[] }
+ * 统一外貌管线：外貌人设 + 当前穿搭 + 情绪/健康 + 脸锁。
+ * 对话「今天穿什么」、自拍出图、相册成片共用同一 current look 描述。
+ * @returns { prompt:string, tags:string[], lookSummary:string }
  */
-export function buildSelfiePrompt(snapshot, appearance = '', now = Date.now()) {
+export function buildUnifiedLookPrompt(snapshot, appearance = '', now = Date.now(), { kind = 'selfie' } = {}) {
   const emotion = snapshot?.emotion ?? {};
   const life = snapshot?.life ?? {};
   const tags = [];
@@ -87,29 +92,38 @@ export function buildSelfiePrompt(snapshot, appearance = '', now = Date.now()) {
     tags.push('low');
     mods.push('表情有点淡淡的、没什么精神');
   }
-  // 作息: 晚上居家
   const hour = new Date(now).getHours();
   if (hour >= 21 || hour < 7) {
     tags.push('home');
     mods.push('在家、灯光柔和');
   }
-  // O 线穿搭: 优先用当前穿着描述
-  const outfitSummary = snapshot?.outfit?.current?.summary;
-  if (outfitSummary) {
-    tags.push('outfit', snapshot.outfit.context || 'dressed');
-    mods.push(outfitSummary);
-    const pieces = snapshot.outfit.current?.pieces ?? {};
-    if (pieces.hair) mods.push(pieces.hair);
-    if (pieces.makeup) mods.push(pieces.makeup);
+
+  // O 线：outfitToImageMods 与对话 toOutfitPrompt 同源
+  const outfitMods = outfitToImageMods(snapshot?.outfit);
+  if (outfitMods.length) {
+    tags.push('outfit', snapshot?.outfit?.context || 'dressed');
+    mods.push(...outfitMods);
   } else if (hour >= 21 || hour < 7) {
     mods.push('居家穿着');
   }
+
   if (tags.length === 0) tags.push('default');
-  tags.unshift('selfie'); // 区分自拍 vs 随手拍, 给图库命中分桶
+  if (kind === 'selfie') tags.unshift('selfie');
 
   const base = appearance ? appearance.trim() : '一个年轻女生';
-  const prompt = [base, ...mods, '自拍视角, 自然真实'].join(', ');
-  return { prompt, tags };
+  const lookSummary = [base, ...outfitMods].filter(Boolean).join(' · ');
+  const framing = kind === 'selfie' ? 'selfie angle, natural phone photo, candid' : 'full-body fashion lookbook, natural light';
+  const prompt = [base, FACE_LOCK, ...mods, framing, 'consistent face identity'].join(', ');
+  return { prompt, tags, lookSummary };
+}
+
+/**
+ * 把状态快照 + 角色外貌描述拼成出图 prompt, 并产出一组状态 tags(给图库命中复用)。
+ * @param appearance CompanionConfig.appearance 文本 (五官/发型/穿着的固定描述)
+ * @returns { prompt:string, tags:string[] }
+ */
+export function buildSelfiePrompt(snapshot, appearance = '', now = Date.now()) {
+  return buildUnifiedLookPrompt(snapshot, appearance, now, { kind: 'selfie' });
 }
 
 // 当下活动 → "她看到的世界" (随手拍的题材)。命中才返回, 否则 null (没什么好拍的)。
@@ -189,22 +203,56 @@ export class Selfie {
   async photo(snapshot, opts = {}) {
     const now = opts.now ?? Date.now();
     const kind = opts.kind ?? 'selfie';
-    const built = kind === 'scene' ? buildScenePrompt(snapshot, now) : buildSelfiePrompt(snapshot, opts.appearance ?? '', now);
+    const built =
+      kind === 'scene'
+        ? buildScenePrompt(snapshot, now)
+        : buildUnifiedLookPrompt(snapshot, opts.appearance ?? '', now, { kind });
     if (!built) return null; // scene 没题材
-    const { prompt, tags } = built;
+    const { prompt, tags, lookSummary } = built;
 
     // 先查图库: 同 kind/状态 tags 命中过就复用 (省一次出图)
     const hit = await this.read(this.userId, this.companionId, { tags }).catch(() => null);
-    if (hit) return { url: hit.url, tags, kind, cached: true, seed: hit.seed ?? null };
+    if (hit) {
+      return {
+        url: hit.url,
+        tags,
+        kind,
+        cached: true,
+        seed: hit.seed ?? null,
+        lookSummary: lookSummary || null,
+      };
+    }
 
-    const references = listReferenceImages(this.userId, this.companionId)
-      .map((item) => ({ path: referenceFilePath(item), mime: item.mime, name: item.name }));
-    const providerOpts = { seed: opts.seed, loraId: opts.loraId, loraTrigger: opts.loraTrigger };
-    const img = references.length && typeof this.provider.edit === 'function'
-      ? await this.provider.edit(prompt, references, providerOpts)
-      : await this.provider.generate(prompt, providerOpts);
-    await this.write(this.userId, this.companionId, { url: img.url, tags, prompt, seed: img.seed, meta: { ...img.meta, kind } }).catch(() => {});
-    return { url: img.url, tags, kind, cached: false, seed: img.seed };
+    // 有参考图优先 edit 锁脸；否则 generate。LoRA 来自 env / opts。
+    const references = listReferenceImages(this.userId, this.companionId).map((item) => ({
+      path: referenceFilePath(item),
+      mime: item.mime,
+      name: item.name,
+    }));
+    const providerOpts = {
+      seed: opts.seed,
+      loraId: opts.loraId ?? process.env.IMAGE_LORA_ID,
+      loraTrigger: opts.loraTrigger ?? process.env.IMAGE_LORA_TRIGGER,
+    };
+    const img =
+      references.length && typeof this.provider.edit === 'function'
+        ? await this.provider.edit(prompt, references, providerOpts)
+        : await this.provider.generate(prompt, providerOpts);
+    await this.write(this.userId, this.companionId, {
+      url: img.url,
+      tags,
+      prompt,
+      seed: img.seed,
+      meta: { ...img.meta, kind, lookSummary: lookSummary || null },
+    }).catch(() => {});
+    return {
+      url: img.url,
+      tags,
+      kind,
+      cached: false,
+      seed: img.seed,
+      lookSummary: lookSummary || null,
+    };
   }
 
   /** 自拍 (= photo({kind:'selfie'})); 保留旧名便于直接调用。 */

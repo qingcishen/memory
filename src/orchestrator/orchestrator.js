@@ -19,6 +19,10 @@ import { StoryEngine } from '../story/index.js';
 import { buildConversationGoals, goalsToPrompt } from './goals.js';
 import { prepareIntimacyForTurn, defaultIntimacy, mergeIntimacyConfig } from '../state/intimacy.js';
 import { normalizeWardrobe } from '../state/outfit.js';
+import { detectSceneLocks, sceneCoherenceToPrompt, extractUnfinishedHooks } from '../companion/sceneCoherence.js';
+import { inferRelationshipStage, relationshipStageToPrompt } from '../companion/relationshipStage.js';
+import { buildEpisodeHeuristic, episodesToPrompt } from '../companion/episode.js';
+import { buildProactiveContentPack } from '../companion/proactiveContent.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
@@ -269,12 +273,23 @@ export class Orchestrator {
           )
         : stateSnapshot?.intimacy ?? null;
     const stateForPrompt = stateSnapshot ? { ...stateSnapshot, intimacy: intimacyLive ?? stateSnapshot.intimacy } : stateSnapshot;
+    const rel = relState?.relationship ?? relState ?? {};
+    // 场景连贯锁（纯逻辑）：从历史+本轮+亲密阶段推断，注入最高优先级 prompt
+    const sceneLocks = detectSceneLocks(userMessage, this.history, intimacyLive?.scene_phase);
+    this._lastSceneLocks = sceneLocks;
+    const unfinished = extractUnfinishedHooks(this.history);
+    const relStage = inferRelationshipStage(rel);
+    const episodeTexts = extractEpisodeTexts(memoryHits);
     const goals = buildConversationGoals({
       dueItems,
       desires: stateSnapshot?.desires,
       storyBeat: storySnapshot?.today,
       intimacy: intimacyLive ?? stateSnapshot?.intimacy,
       intimacyPolicy: this.stateLayer?.stateLayer?.intimacy?.config?.proactive,
+      unfinished,
+      outfit: stateSnapshot?.outfit,
+      userMessage,
+      sceneLocks,
     });
     if (this.narration) this._lastSceneType = sceneType; // 供下一轮连续性提示; 未启用旁白则不维护
     this._lastSceneTypeForObserve = sceneType;
@@ -294,9 +309,12 @@ export class Orchestrator {
       storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
+      relationshipStagePrompt: relationshipStageToPrompt(relStage, rel),
+      coherencePrompt: sceneCoherenceToPrompt(sceneLocks, { intimacyPhase: intimacyLive?.scene_phase }),
+      episodePrompt: episodesToPrompt(episodeTexts),
       statePrompt: [
         this.stateLayer.toPrompt(stateForPrompt, {
-          relationship: relState?.relationship ?? relState,
+          relationship: rel,
           hardBoundaries: this._config?.intimacyHardBoundaries,
           intimacyConfig: this.stateLayer?.stateLayer?.intimacy?.config,
         }),
@@ -338,9 +356,14 @@ export class Orchestrator {
     ], { eventId: opts.eventId });
 
     // fire-and-forget; 暴露在 _lastAfterReply 上仅供测试 await。
-    this._lastAfterReply = this.afterReply(userMessage, reply);
+    this._lastAfterReply = this.afterReply(userMessage, reply, {
+      history: this.history,
+      sceneLocks,
+      relationshipStage: relStage,
+    });
 
     // A1: 用户要看她样子时, 后台生成一张自拍 (fire-and-forget, 经 onPhoto 投递, 不阻塞文字)。
+    // 统一走 maybePhoto：快照里已含 outfit，selfie 管线用同一份 current look。
     if (PHOTO_REQUEST_RE.test(userMessage)) this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: true });
 
     // parts 给调用方(bot.js)按 narration/dialogue 分开发多条消息; text 是拼好的整段, 供日志/兼容用。
@@ -348,6 +371,9 @@ export class Orchestrator {
       stateSnapshot: stateForPrompt,
       intimacyPhase: intimacyLive?.scene_phase ?? null,
       relationshipState: relState,
+      relationshipStage: relStage,
+      sceneLocks: sceneLocks.map((l) => l.id),
+      unfinished,
       worldSnapshot,
       storySnapshot,
       sceneType,
@@ -368,6 +394,8 @@ export class Orchestrator {
       behaviorPolicy: behavior,
       goals,
       intimacyPhase: intimacyLive?.scene_phase ?? null,
+      relationshipStage: relStage?.id ?? null,
+      sceneLocks: sceneLocks.map((l) => l.id),
       ...(debug ? { debug } : {}),
     };
   }
@@ -386,15 +414,41 @@ export class Orchestrator {
         : ctx.shouldSend ?? true;
     if (!shouldSend) return null;
 
-    const seed = ctx.query ?? ctx.memoryQuery ?? ctx.reason ?? '想主动找对方聊一句';
-    const [stateSnapshot, relState, memoryBlock, weather, worldSnapshot, storySnapshot] = await Promise.all([
+    // L3: 没显式给触发原因时, 先拉状态再拼内容包（故事/穿搭/未完/活动）。
+    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
-      this.memory.recall(seed).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
       this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
     ]);
+
+    const pack =
+      ctx.contentPack ||
+      buildProactiveContentPack({
+        dueItems: ctx.dueItems,
+        urgency: ctx.urgency,
+        intimacyUrg: ctx.intimacyUrg,
+        storyBeat: ctx.storyBeat ?? storySnapshot?.today,
+        outfit: stateSnapshot?.outfit,
+        unfinished: ctx.unfinished ?? extractUnfinishedHooks(this.history),
+        silenceTier: ctx.silenceTier,
+        bedtimeTier: ctx.bedtimeTier,
+        lifeActivity: stateSnapshot?.life?.current_activity,
+        defaultReason: ctx.reason ?? activityReason(stateSnapshot?.life) ?? '想主动找对方聊一句',
+      });
+    const effCtx = {
+      ...ctx,
+      reason: ctx.reason ?? pack.reason,
+      query: ctx.query ?? pack.query,
+      style: ctx.style ?? pack.style,
+      contentPack: pack,
+    };
+
+    const seed = effCtx.query ?? effCtx.memoryQuery ?? effCtx.reason ?? '想主动找对方聊一句';
+    const memoryBlock = await this.memory.recall(seed).catch(() => '');
+    const rel = relState?.relationship ?? relState ?? {};
+    const relStage = inferRelationshipStage(rel);
 
     const promptParts = {
       timePrompt: buildTimePrompt(new Date(), { weather }),
@@ -403,12 +457,10 @@ export class Orchestrator {
       storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
+      relationshipStagePrompt: relationshipStageToPrompt(relStage, rel),
       statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
       memoryBlock: memoryBlock ?? '',
     };
-
-    // L3: 没显式给触发原因时, 用她此刻的生活活动作主动开场的由头 (忙完想起你 / 做某事分享)。
-    const effCtx = { ...ctx, reason: ctx.reason ?? activityReason(stateSnapshot?.life) };
 
     let monologue = '';
     if (ctx.useMonologue ?? this.options.useMonologue) {
@@ -433,7 +485,7 @@ export class Orchestrator {
     // A1: 主动找你时也可能顺手分享一张照片 (在外面看到风景/猫狗的随手拍, 或心情好的自拍)。
     this._lastPhoto = this.maybePhoto(stateSnapshot, {});
 
-    return { text: proactive, parts };
+    return { text: proactive, parts, contentPack: pack, relationshipStage: relStage?.id ?? null };
   }
 
   /**
@@ -502,19 +554,19 @@ export class Orchestrator {
   }
 
   /** 回复返回后触发的后台状态更新, 任一失败只记日志, 不影响已发出的回复。 */
-  afterReply(userMessage, reply) {
+  afterReply(userMessage, reply, meta = {}) {
     if (this.afterReplyEnqueue) {
-      return Promise.resolve(this.afterReplyEnqueue({ userMessage, reply }))
+      return Promise.resolve(this.afterReplyEnqueue({ userMessage, reply, ...meta }))
         .catch((error) => {
           console.error('[afterReply.enqueue]', error);
-          return this.runAfterReply(userMessage, reply);
+          return this.runAfterReply(userMessage, reply, meta);
         });
     }
-    return this.runAfterReply(userMessage, reply);
+    return this.runAfterReply(userMessage, reply, meta);
   }
 
   /** 真正执行回复后状态更新，供持久队列 worker 调用。 */
-  runAfterReply(userMessage, reply) {
+  runAfterReply(userMessage, reply, meta = {}) {
     const turns = [
       { role: 'user', content: userMessage },
       { role: 'assistant', content: reply },
@@ -522,9 +574,38 @@ export class Orchestrator {
     const tasks = [this.stateLayer.evolve(turns), this.memory.observe(turns), this.relationship.bump()];
     // 世界观系统: 后台判断这一轮要不要推进世界线 (大多数寻常对话不推进, 见 WorldDimension.evolve)。
     if (this.world) tasks.push(this.world.evolve(turns));
+    // Episode · 会话篇章：历史够长时落一条 dyad 叙事记忆（启发式，不改 fact_core）
+    if (typeof this.memory.recordEpisode === 'function' || typeof this.memory.recordSelfEvent === 'function') {
+      tasks.push(this.maybeRecordEpisode(meta.history ?? this.history, turns));
+    }
     return Promise.allSettled(tasks).then((results) => {
       for (const r of results) if (r.status === 'rejected') console.error('[afterReply]', r.reason);
       return results;
+    });
+  }
+
+  /**
+   * 从最近对话抽篇章；每 N 轮最多落一条，避免刷屏。
+   */
+  async maybeRecordEpisode(history = [], extraTurns = []) {
+    const now = Date.now();
+    const last = this._lastEpisodeAt || 0;
+    // 至少间隔 8 分钟，且历史至少 4 条消息
+    if (now - last < 8 * 60 * 1000) return null;
+    const turns = [...(history || []).slice(-12), ...extraTurns];
+    if (turns.filter((t) => t?.role === 'user').length < 2) return null;
+    const ep = buildEpisodeHeuristic(turns, { now });
+    if (!ep) return null;
+    this._lastEpisodeAt = now;
+    if (typeof this.memory.recordEpisode === 'function') {
+      return this.memory.recordEpisode(ep);
+    }
+    // 降级：记为 self 事件也能被召回
+    return this.memory.recordSelfEvent(ep.content, {
+      narrative: ep.title,
+      importance: ep.importance,
+      valence: ep.emotion > 0.5 ? 0.2 : 0.1,
+      intensity: ep.emotion,
     });
   }
 }
@@ -600,4 +681,13 @@ function activityReason(life) {
 function buildProactiveSituation(ctx = {}) {
   const reason = ctx.reason ? ` (${ctx.reason})` : '';
   return `这一刻不是对方发消息过来, 是你自己想主动找对方说点什么${reason}。`;
+}
+
+/** 从召回 hits 里抽出 episode/篇章类记忆文本，供 prompt 注入。 */
+function extractEpisodeTexts(hits = []) {
+  return (hits || [])
+    .filter((h) => h && (h.type === 'episode' || /【篇章】|篇章/.test(String(h.fact_core || h.content || h.narrative || ''))))
+    .map((h) => h.narrative || h.content || h.fact_core)
+    .filter(Boolean)
+    .slice(0, 3);
 }

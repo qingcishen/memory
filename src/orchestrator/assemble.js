@@ -13,6 +13,9 @@ export function buildSystemPrompt({
   storyPrompt = '',
   goalsPrompt = '',
   relationshipPrompt = '',
+  relationshipStagePrompt = '',
+  coherencePrompt = '',
+  episodePrompt = '',
   statePrompt = '',
   emotionPrompt = '',
   memoryBlock = '',
@@ -20,7 +23,20 @@ export function buildSystemPrompt({
   identityConstraintsPrompt = '',
   narrationPrompt = '',
 } = {}) {
-  const sections = [timePrompt, personaPrompt, worldPrompt, storyPrompt, relationshipPrompt, statePrompt || emotionPrompt, goalsPrompt, memoryBlock];
+  // 连贯性/关系阶段放在业务段靠前：场景锁必须压过散落的人设与时间提示。
+  const sections = [
+    timePrompt,
+    personaPrompt,
+    worldPrompt,
+    storyPrompt,
+    relationshipPrompt,
+    relationshipStagePrompt,
+    coherencePrompt,
+    statePrompt || emotionPrompt,
+    goalsPrompt,
+    episodePrompt,
+    memoryBlock,
+  ];
   if (monologue && monologue.trim()) sections.push(`(你此刻的想法, 别直接说出来): ${monologue.trim()}`);
   // 事实约束: 禁止捏造两人之间没发生过的具体事件。
   sections.push('【禁止编造事实】不要凭空捏造两人之间具体发生过的事件、对话、经历（如"昨晚你叫我吃什么"、"上次你说过"、"你昨晚陪我改论文"之类）。对方说困/没睡好/不舒服时，直接关心就好，不要用"昨晚我们一起做了什么"来编造理由——那件事根本没发生过。只依据已有记忆块和背景说话；不确定的事模糊带过或不提。');
@@ -129,6 +145,9 @@ export function buildMonologueContext({
   goalsPrompt = '',
   identityConstraintsPrompt = '',
   relationshipPrompt = '',
+  relationshipStagePrompt = '',
+  coherencePrompt = '',
+  episodePrompt = '',
   statePrompt = '',
   emotionPrompt = '',
   memoryBlock = '',
@@ -138,9 +157,12 @@ export function buildMonologueContext({
     personaPrompt,
     worldPrompt,
     storyPrompt,
-    goalsPrompt,
-    identityConstraintsPrompt,
     relationshipPrompt,
+    relationshipStagePrompt,
+    coherencePrompt,
+    goalsPrompt,
+    episodePrompt,
+    identityConstraintsPrompt,
     statePrompt || emotionPrompt,
     memoryBlock,
   ].filter(

@@ -203,6 +203,25 @@ export class Memory {
     }]);
   }
 
+  /**
+   * 关系篇章（dyad episode）: 会话级叙事记忆，召回时作为「最近发生过什么」的素材。
+   * fact_core = 摘要正文，永不被 reconsolidate 改写。
+   */
+  async recordEpisode(episode = {}) {
+    const text = String(episode.content ?? episode.title ?? '').trim();
+    if (!text) return [];
+    return storeMemories(this.userId, this.companionId, [{
+      type: 'episode',
+      fact_core: text,
+      content: text,
+      narrative: episode.title ? `${episode.title}。${text}` : text,
+      subject_kind: episode.subject_kind || 'dyad',
+      importance: episode.importance ?? 5,
+      affect_valence: episode.emotion != null ? Math.min(0.5, Number(episode.emotion) * 0.4) : 0.1,
+      affect_intensity: episode.emotion ?? 0.3,
+    }]);
+  }
+
   /** 取她的人格注入块 (域隔离: 只含 self 设定, 不混 user 记忆) */
   async persona(opts = {}) {
     return personaBlock(this.userId, this.companionId, this.subjectName, opts);
