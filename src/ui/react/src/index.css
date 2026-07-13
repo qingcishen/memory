@@ -514,6 +514,66 @@ textarea.input { padding: 12px !important; resize: vertical; }
   background: color-mix(in srgb, var(--sw-accent) 10%, transparent);
 }
 
+/* 点击标题 / 单品名复制 */
+.copyable-name {
+  cursor: copy;
+  border-radius: 4px;
+  transition: color .12s ease, background .12s ease;
+}
+.copyable-name:hover {
+  color: var(--sw-accent);
+  background: color-mix(in srgb, var(--sw-accent) 10%, transparent);
+}
+.copyable-name.is-copied {
+  color: var(--sw-accent);
+  font-weight: 600;
+}
+.copyable-title {
+  display: inline;
+  font: inherit;
+  letter-spacing: inherit;
+}
+h4 .copyable-title,
+strong .copyable-title {
+  font-weight: inherit;
+}
+.copyable-summary {
+  display: inline;
+  font: inherit;
+  color: inherit;
+}
+.outfit-piece-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin-top: 6px;
+}
+.outfit-piece-chip,
+.outfit-card-tags .copyable-name {
+  display: inline-block;
+  padding: 2px 8px;
+  border-radius: 999px;
+  border: 1px solid var(--sw-border);
+  background: var(--sw-surface-2, var(--sw-surface));
+  font-size: 11px;
+  line-height: 1.4;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.outfit-piece-chip:hover,
+.outfit-card-tags .copyable-name:hover {
+  border-color: color-mix(in srgb, var(--sw-accent) 50%, var(--sw-border));
+}
+.outfit-card-meta h4 {
+  margin: 6px 0 4px;
+}
+.outfit-card-summary {
+  margin: 0;
+  cursor: default;
+}
+
 /* 生图配置 + 脸参考（今日穿搭旁） */
 .outfit-image-setup { margin-top: 14px; }
 .outfit-image-setup-head {

@@ -377,6 +377,42 @@ function ImageGenAndFacePanel({
   );
 }
 
+/** 可点击复制的标题 / 单品名 */
+function CopyableName({ text, className = '', as: Tag = 'span', title, onCopied }) {
+  const [flash, setFlash] = useState(false);
+  const value = String(text || '').trim();
+  if (!value) return null;
+  const copy = async (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(value);
+      setFlash(true);
+      onCopied?.(value);
+      setTimeout(() => setFlash(false), 1200);
+    } catch {
+      /* ignore */
+    }
+  };
+  return (
+    <Tag
+      className={`copyable-name ${flash ? 'is-copied' : ''} ${className}`.trim()}
+      onClick={copy}
+      title={title || `点击复制：${value}`}
+      role="button"
+      tabIndex={0}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          copy(e);
+        }
+      }}
+    >
+      {flash ? '已复制' : value}
+    </Tag>
+  );
+}
+
 function OutfitFlipCard({
   card,
   worn,
@@ -387,6 +423,7 @@ function OutfitFlipCard({
   onDeleteCustom,
   wearing,
   busyId,
+  onNameCopied,
 }) {
   const [flipped, setFlipped] = useState(false);
   const [prompt, setPrompt] = useState(card.prompt || '');
@@ -396,6 +433,22 @@ function OutfitFlipCard({
   const isBusy = busyId === card.id;
 
   useEffect(() => { setPrompt(card.prompt || ''); }, [card.prompt, card.id]);
+
+  const pieceEntries = useMemo(() => {
+    const p = card.pieces && typeof card.pieces === 'object' ? card.pieces : {};
+    const labels = {
+      dress: '裙', top: '上', bottom: '下', outer: '外', shoes: '鞋', bag: '包',
+      jewelry: '饰', watch: '表', hair: '发', makeup: '妆', accessories: '配',
+    };
+    return Object.entries(p)
+      .filter(([, v]) => v != null && String(v).trim())
+      .map(([k, v]) => ({
+        key: k,
+        label: labels[k] || k,
+        value: Array.isArray(v) ? v.join('、') : String(v),
+      }))
+      .slice(0, 8);
+  }, [card.pieces]);
 
   const copyPrompt = async (event) => {
     event.stopPropagation();
@@ -435,8 +488,13 @@ function OutfitFlipCard({
   return (
     <article className={`outfit-card ${flipped ? 'is-flipped' : ''} ${worn ? 'is-worn' : ''} ${card.hasImage ? 'has-image' : ''}`}>
       <div className="outfit-card-inner">
-        <button type="button" className="outfit-card-face outfit-card-front" onClick={() => setFlipped(true)} aria-label={`${card.title} · 点开看提示词`}>
-          <div className="outfit-card-media">
+        <div className="outfit-card-face outfit-card-front">
+          <button
+            type="button"
+            className="outfit-card-media"
+            onClick={() => setFlipped(true)}
+            aria-label={`${card.title} · 点开看提示词`}
+          >
             {card.imageUrl
               ? <img src={card.imageUrl} alt={card.title} />
               : (
@@ -447,7 +505,7 @@ function OutfitFlipCard({
               )}
             {worn && <b className="outfit-card-worn-badge">此刻穿着</b>}
             {card.hasImage && <em className="outfit-card-image-dot" aria-hidden="true" />}
-          </div>
+          </button>
           <div className="outfit-card-meta">
             <div className="outfit-card-kicker">
               <span>{card.subtitle || card.kind}</span>
@@ -459,23 +517,52 @@ function OutfitFlipCard({
               )}
               {card.context && <span className="outfit-chip">{CONTEXT_LABEL[card.context] || card.context}</span>}
             </div>
-            <h4>{card.title}</h4>
-            <p>{card.summary || '—'}</p>
-            {(card.tags || []).slice(0, 3).length > 0 && (
+            <h4>
+              <CopyableName
+                text={card.title}
+                className="copyable-title"
+                onCopied={onNameCopied}
+              />
+            </h4>
+            <p className="outfit-card-summary">
+              {card.summary ? (
+                <CopyableName text={card.summary} className="copyable-summary" onCopied={onNameCopied} />
+              ) : '—'}
+            </p>
+            {pieceEntries.length > 0 && (
+              <div className="outfit-card-tags outfit-piece-chips">
+                {pieceEntries.map((item) => (
+                  <CopyableName
+                    key={item.key}
+                    text={item.value}
+                    className="outfit-piece-chip"
+                    title={`点击复制${item.label}：${item.value}`}
+                    onCopied={onNameCopied}
+                  />
+                ))}
+              </div>
+            )}
+            {pieceEntries.length === 0 && (card.tags || []).slice(0, 3).length > 0 && (
               <div className="outfit-card-tags">
-                {card.tags.slice(0, 3).map((tag) => <span key={tag}>{tag}</span>)}
+                {card.tags.slice(0, 3).map((tag) => (
+                  <CopyableName key={tag} text={tag} onCopied={onNameCopied} />
+                ))}
               </div>
             )}
           </div>
-          <div className="outfit-card-hint">点击翻转 · 看 AI 提示词</div>
-        </button>
+          <button type="button" className="outfit-card-hint" onClick={() => setFlipped(true)}>
+            点标题/单品名复制 · 点图或此处翻转看提示词
+          </button>
+        </div>
 
         <div className="outfit-card-face outfit-card-back">
           <div className="outfit-card-back-head">
             <button type="button" className="outfit-card-back-flipzone" onClick={() => setFlipped(false)} aria-label="翻回正面">
               <div>
                 <span className="outfit-card-kicker">IMAGE PROMPT</span>
-                <strong>{card.title}</strong>
+                <strong onClick={(e) => e.stopPropagation()}>
+                  <CopyableName text={card.title} className="copyable-title" onCopied={onNameCopied} />
+                </strong>
               </div>
             </button>
             <button type="button" className="outfit-icon-btn" onClick={(e) => { e.stopPropagation(); setFlipped(false); }} aria-label="关闭背面">
@@ -609,6 +696,11 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   const flash = (message) => {
     setToast(message);
     setTimeout(() => setToast(''), 2200);
+  };
+
+  const onNameCopied = (text) => {
+    const short = String(text || '').length > 28 ? `${String(text).slice(0, 28)}…` : text;
+    flash(`已复制：${short}`);
   };
 
   const current = state.data?.current;
@@ -982,7 +1074,9 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
           </p>
           {dailyChips.length > 0 && (
             <div className="outfit-card-tags" style={{ marginTop: 8 }}>
-              {dailyChips.slice(0, 6).map((t) => <span key={t}>{t}</span>)}
+              {dailyChips.slice(0, 6).map((t) => (
+                <CopyableName key={t} text={t} onCopied={onNameCopied} />
+              ))}
             </div>
           )}
           <div className="outfit-card-actions" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
@@ -1197,15 +1291,26 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
               <ol className="outfit-parse-list">
                 {parsePreview.looks.map((look) => (
                   <li key={look.index || look.title}>
-                    <b>{look.index}. {look.title}</b>
-                    <span>{look.summary}</span>
-                    <small>
+                    <b>
+                      {look.index}.{' '}
+                      <CopyableName text={look.title} onCopied={onNameCopied} />
+                    </b>
+                    {look.summary && (
+                      <span>
+                        <CopyableName text={look.summary} onCopied={onNameCopied} />
+                      </span>
+                    )}
+                    <small className="outfit-piece-chips">
                       {[
-                        look.pieces?.dress || look.pieces?.top,
+                        look.pieces?.dress,
+                        look.pieces?.top,
+                        look.pieces?.outer,
                         look.pieces?.shoes,
                         look.pieces?.bag,
-                        look.context,
-                      ].filter(Boolean).join(' · ')}
+                        look.pieces?.hair,
+                      ].filter(Boolean).map((name) => (
+                        <CopyableName key={name} text={name} className="outfit-piece-chip" onCopied={onNameCopied} />
+                      ))}
                     </small>
                   </li>
                 ))}
@@ -1288,6 +1393,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
               onUpload={onUpload}
               onClearImage={onClearImage}
               onDeleteCustom={onDeleteCustom}
+              onNameCopied={onNameCopied}
               wearing={wearingId === card.id}
               busyId={busyIds.has(card.id) ? card.id : ''}
             />
