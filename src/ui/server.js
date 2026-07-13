@@ -50,6 +50,18 @@ import {
   MCP_CATALOG,
   clientConfigPaths,
 } from './mcpCatalog.js';
+import {
+  DEFAULT_SAFETY_POLICY,
+  normalizeSafetyPolicy,
+  checkMessageSafety,
+  redactExportTables,
+  DEFAULT_QUOTA,
+  normalizeQuota,
+  checkQuota,
+  canWriteAction,
+  buildTimeline,
+  buildRelationshipView,
+} from '../product/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -61,6 +73,7 @@ const HOST = '127.0.0.1';
 const PORT = Number(process.env.UI_PORT || 8787);
 const MAX_LOG_LINES = 500;
 const PARAMS_FILE = path.join(ROOT, 'config', 'params.json');
+const PRODUCT_POLICY_FILE = path.join(ROOT, 'config', 'product-policy.json');
 const BOT_STATUS_FILE = path.join(ROOT, 'logs', 'ui-bot-status.json');
 
 const PARAM_SCHEMA = [
@@ -1267,12 +1280,148 @@ function resetParams() {
 
 async function exportScope(env, scope) {
   if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
+  const policy = readProductPolicy().safety;
+  if (policy.dataRights?.allowExport === false) {
+    return { ok: false, message: '当前策略禁止导出' };
+  }
   const tables = {};
   for (const table of BACKUP_TABLES) {
     const r = await supabaseRest(env, scopedPath(table, { select: '*', limit: '10000' }, scope));
     if (r.ok) tables[table] = r.data;
   }
-  return { ok: true, version: 1, exportedAt: new Date().toISOString(), scope, tables };
+  const redacted = redactExportTables(tables, policy);
+  return { ok: true, version: 1, exportedAt: new Date().toISOString(), scope, tables: redacted, redacted: Boolean(policy.redactPII) };
+}
+
+// ---- P2 产品策略：安全 / 配额 ----
+function readProductPolicy() {
+  let raw = {};
+  try {
+    if (fs.existsSync(PRODUCT_POLICY_FILE)) raw = JSON.parse(fs.readFileSync(PRODUCT_POLICY_FILE, 'utf8'));
+  } catch {
+    raw = {};
+  }
+  return {
+    safety: normalizeSafetyPolicy(raw.safety || {}),
+    quota: normalizeQuota(raw.quota || {}),
+    updatedAt: raw.updatedAt || null,
+  };
+}
+
+function writeProductPolicy(patch = {}) {
+  const cur = readProductPolicy();
+  const next = {
+    safety: normalizeSafetyPolicy(patch.safety !== undefined ? { ...cur.safety, ...patch.safety } : cur.safety),
+    quota: normalizeQuota(patch.quota !== undefined ? { ...cur.quota, ...patch.quota } : cur.quota),
+    updatedAt: new Date().toISOString(),
+  };
+  fs.mkdirSync(path.dirname(PRODUCT_POLICY_FILE), { recursive: true });
+  fs.writeFileSync(PRODUCT_POLICY_FILE, `${JSON.stringify(next, null, 2)}\n`);
+  return next;
+}
+
+async function getProductLife(env, scope) {
+  if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = scope.companionId || 'default';
+  const [state, history, episodes, story, gallery, annuals, behavior] = await Promise.all([
+    getStateBundle(env, scope),
+    supabaseRest(env, scopedPath('chat_history', { select: 'id,role,content,created_at', order: 'created_at.desc', limit: '40' }, scope)),
+    supabaseRest(env, scopedPath('memories', {
+      select: 'id,type,content,fact_core,narrative,created_at,subject_kind',
+      type: 'eq.episode',
+      superseded_by: 'is.null',
+      order: 'created_at.desc',
+      limit: '20',
+    }, scope)),
+    supabaseRest(env, scopedPath('story_lines', {
+      select: 'storyline_key,title,stage,last_beat,next_beat_hint,last_beat_at,updated_at',
+      order: 'updated_at.desc',
+      limit: '8',
+    }, scope)),
+    getGallery(env, scope).catch(() => ({ ok: false, assets: [] })),
+    supabaseRest(env, scopedPath('prospective', {
+      select: 'id,content,trigger_kind,trigger_at,status,created_at',
+      trigger_kind: 'eq.annual',
+      order: 'trigger_at.asc',
+      limit: '20',
+    }, scope)),
+    supabaseRest(env, scopedPath('behavior_state', { select: 'state,updated_at', limit: '1' }, scope)).catch(() => ({ ok: false })),
+  ]);
+
+  const hist = history.ok ? (history.data || []).reverse() : [];
+  const eps = episodes.ok ? episodes.data || [] : [];
+  const stories = story.ok ? story.data || [] : [];
+  const photos = gallery.ok ? gallery.assets || [] : [];
+  const anns = annuals.ok ? annuals.data || [] : [];
+  const timeline = buildTimeline({
+    history: hist,
+    episodes: eps,
+    story: stories,
+    photos: photos.slice(0, 12),
+    annuals: anns,
+    life: state.life,
+  });
+  const relationship = buildRelationshipView({
+    relationship: state.affect?.relationship || state.relationship || {},
+    annuals: anns,
+    episodes: eps,
+    behavior: behavior.ok ? behaviorSummary(behavior.data?.[0]) : null,
+    desires: state.affect?.desires || null,
+  });
+
+  return {
+    ok: true,
+    scope: { userId: scope.userId, companionId },
+    day: timeline.summary,
+    timeline: timeline.events,
+    relationship,
+    outfit: state.life?.outfit || null,
+    photos: photos.slice(0, 24).map((p) => ({ id: p.id, url: p.url, tags: p.tags, created_at: p.created_at })),
+    story: stories,
+  };
+}
+
+async function getProductUsage(env, scope) {
+  if (!scope.userId) return { messagesToday: 0, photosToday: 0, memories: 0, companions: 0 };
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const iso = dayStart.toISOString();
+  const filters = { user_id: `eq.${scope.userId}`, companion_id: `eq.${scope.companionId || 'default'}` };
+  const [messagesToday, photosToday, memories, companions] = await Promise.all([
+    supabaseCount(env, 'chat_history', { ...filters, created_at: `gte.${iso}` }).catch(() => 0),
+    supabaseCount(env, 'appearance_assets', { ...filters, created_at: `gte.${iso}` }).catch(() => 0),
+    supabaseCount(env, 'memories', { ...filters, superseded_by: 'is.null' }).catch(() => 0),
+    supabaseCount(env, 'companions', { user_id: `eq.${scope.userId}` }).catch(() => 1),
+  ]);
+  return { messagesToday, photosToday, memories, companions, tokensMonth: 0 };
+}
+
+async function getProductQuota(env, scope) {
+  const policy = readProductPolicy();
+  const usage = scope?.userId ? await getProductUsage(env, scope) : {
+    messagesToday: 0, photosToday: 0, memories: 0, companions: 0, tokensMonth: 0,
+  };
+  const check = checkQuota(usage, policy.quota);
+  return { ok: true, ...check, scope: scope?.userId ? scope : null };
+}
+
+async function deleteScopeData(env, scope, { confirm } = {}) {
+  if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
+  const policy = readProductPolicy().safety;
+  if (policy.dataRights?.allowDelete === false) return { ok: false, message: '当前策略禁止删除' };
+  if (confirm !== 'DELETE') return { ok: false, message: '请传 confirm: "DELETE" 二次确认' };
+  const deleted = {};
+  for (const table of BACKUP_TABLES) {
+    // PostgREST: DELETE with filters
+    const path = `${table}?user_id=eq.${encodeURIComponent(scope.userId)}&companion_id=eq.${encodeURIComponent(scope.companionId || 'default')}`;
+    const r = await supabaseRequest(env, path, {
+      method: 'DELETE',
+      headers: { prefer: 'return=minimal' },
+      timeoutMs: 120000,
+    }).catch((e) => ({ ok: false, message: e?.message }));
+    deleted[table] = r.ok ? 'ok' : (r.message || 'fail');
+  }
+  return { ok: true, deleted, message: `已删除 ${scope.userId} / ${scope.companionId || 'default'} 的作用域数据` };
 }
 
 async function importScope(env, payload = {}) {
@@ -2198,6 +2347,19 @@ export function isAuthorized(headers = {}, token = '') {
   return String(headers.authorization || '').replace(/^Bearer\s+/i, '') === token;
 }
 
+// 供单测：产品策略读写与门控
+export {
+  readProductPolicy,
+  writeProductPolicy,
+  checkMessageSafety,
+  checkQuota,
+  canWriteAction,
+  normalizeSafetyPolicy,
+  normalizeQuota,
+  DEFAULT_SAFETY_POLICY,
+  DEFAULT_QUOTA,
+};
+
 async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const route = `${req.method} ${url.pathname}`;
@@ -2395,6 +2557,39 @@ async function handle(req, res) {
   }
   if (route === 'GET /api/export') return json(res, 200, await exportScope(readEnvValues(), Object.fromEntries(url.searchParams)));
   if (route === 'POST /api/import') return json(res, 200, await importScope(readEnvValues(), await readBody(req)));
+  // P2 产品：生活时间线 / 安全 / 配额 / 删除
+  if (route === 'GET /api/product/life') {
+    return json(res, 200, await getProductLife(readEnvValues(), Object.fromEntries(url.searchParams)));
+  }
+  if (route === 'GET /api/product/safety') {
+    const p = readProductPolicy();
+    return json(res, 200, { ok: true, safety: p.safety, updatedAt: p.updatedAt });
+  }
+  if (route === 'PUT /api/product/safety') {
+    const body = await readBody(req);
+    const next = writeProductPolicy({ safety: body?.safety ?? body });
+    return json(res, 200, { ok: true, safety: next.safety, updatedAt: next.updatedAt, message: '安全策略已保存' });
+  }
+  if (route === 'GET /api/product/quota') {
+    return json(res, 200, await getProductQuota(readEnvValues(), Object.fromEntries(url.searchParams)));
+  }
+  if (route === 'PUT /api/product/quota') {
+    const body = await readBody(req);
+    const next = writeProductPolicy({ quota: body?.quota ?? body });
+    return json(res, 200, { ok: true, quota: next.quota, updatedAt: next.updatedAt, message: '配额已保存' });
+  }
+  if (route === 'POST /api/product/safety/check') {
+    const body = await readBody(req);
+    const safety = readProductPolicy().safety;
+    return json(res, 200, { ok: true, ...checkMessageSafety(body?.text || '', safety) });
+  }
+  if (route === 'POST /api/product/delete') {
+    const body = await readBody(req);
+    return json(res, 200, await deleteScopeData(readEnvValues(), {
+      userId: body?.userId || url.searchParams.get('userId'),
+      companionId: body?.companionId || url.searchParams.get('companionId') || 'default',
+    }, { confirm: body?.confirm }));
+  }
   if (route === 'GET /api/health') return json(res, 200, await getSystemHealth(readEnvValues()));
   if (route === 'GET /api/memories') {
     try {
@@ -2510,13 +2705,37 @@ async function handle(req, res) {
     const message = String(body?.message ?? '').trim();
     if (!message) return json(res, 200, { ok: false, message: '消息为空' });
     const env = readEnvValues();
+    const userId = String(body?.userId || 'ui:playground');
+    const companionId = String(body?.companionId || env.TELEGRAM_COMPANION_ID || 'default');
+    // P2 安全门 + 配额门
+    const policy = readProductPolicy();
+    const safety = checkMessageSafety(message, policy.safety);
+    if (safety.block) {
+      return json(res, 200, {
+        ok: false,
+        blocked: true,
+        message: '消息触碰安全策略，未发送。',
+        safety,
+      });
+    }
+    const quotaView = await getProductQuota(env, { userId, companionId });
+    if (!canWriteAction(quotaView, 'message')) {
+      return json(res, 200, {
+        ok: false,
+        quotaExceeded: true,
+        message: '今日消息配额已用尽，请明天再聊或调整配额。',
+        quota: quotaView,
+      });
+    }
     const result = await runChat({
       message,
-      userId: String(body?.userId || 'ui:playground'),
-      companionId: String(body?.companionId || env.TELEGRAM_COMPANION_ID || 'default'),
+      userId,
+      companionId,
       debug: Boolean(body?.debug),
+      stopIntimate: safety.stopIntimate,
+      intimacyAllowed: safety.intimacyAllowed,
     });
-    return json(res, 200, result);
+    return json(res, 200, { ...result, safety: { stopIntimate: safety.stopIntimate, intimacyAllowed: safety.intimacyAllowed } });
   }
   if (route === 'GET /api/bot') return json(res, 200, botStatus());
   if (route === 'POST /api/bot/start') return json(res, 200, startBot());

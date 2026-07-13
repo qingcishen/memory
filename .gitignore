@@ -13,6 +13,7 @@ pnpm-debug.log*
 .feishu-bot.lock
 logs/
 config/params.json
+config/product-policy.json
 config/reference-images/
 
 coverage/

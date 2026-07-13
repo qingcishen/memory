@@ -1,14 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Activity, Bell, Bot, Brain, ChevronRight, CircleGauge, Clock, Database, Heart,
+  Activity, Bell, BookHeart, Bot, Brain, ChevronRight, CircleGauge, Clock, Database, Heart,
   Image, LoaderCircle, Menu, MessageCircle, Moon,
-  Network, Plus, Plug, RefreshCw, Save, Search, Settings2, ShieldCheck, Shirt, SlidersHorizontal, Sparkles,
+  Network, Plus, Plug, RefreshCw, Save, Search, Settings2, ShieldAlert, ShieldCheck, Shirt, SlidersHorizontal, Sparkles,
   SquareTerminal, Sun, UserRound, WandSparkles, X, Zap,
 } from 'lucide-react';
 import OutfitPage from './OutfitPage.jsx';
 import AlbumPage from './AlbumPage.jsx';
 import McpPage from './McpPage.jsx';
+import LifePage from './LifePage.jsx';
+import SafetyPage from './SafetyPage.jsx';
 // Self-hosted (no runtime dependency on an internet connection, matches the
 // console's local-first posture): Archivo covers Latin/numerals, Noto Sans SC
 // covers Chinese glyphs — the browser splits per-character by whichever face
@@ -38,32 +40,37 @@ const fmt = (value) => value ? new Intl.DateTimeFormat('zh-CN', { dateStyle: 'me
 const pct = (value) => `${Math.round(Number(value || 0) * 100)}%`;
 
 const nav = [
+  ['life', '一起过日子', BookHeart],
   ['overview', '运行总览', CircleGauge], ['companion-v2', '伴侣升级', Sparkles], ['state', '情绪与身体', Heart],
   ['outfit', '穿搭系统', Shirt], ['album', '穿搭相册', Image],
   ['personas', '角色人设', UserRound], ['world', '世界状态', Zap], ['gallery', '图片工作室', Image],
   ['memories', '记忆库', Brain], ['history', '聊天记录', Clock], ['prospective', '主动提醒', Bell], ['graph', '知识图谱', Network],
   ['operations', '自动化运维', SquareTerminal], ['chat', '试聊调试', MessageCircle],
+  ['safety', '安全与合规', ShieldAlert],
   ['mcp', 'MCP 连接', Plug],
   ['params', '运行参数', SlidersHorizontal], ['config', '设置与模型', Settings2],
 ];
 
 const navDescriptions = {
+  life: '时间线 · 关系 · 今日生活 · 相册（用户端）',
   overview: '关系与系统状态总览', 'companion-v2': '需求、亲密、故事与多模态', state: '情绪、需求、亲密与身体',
   outfit: '衣橱、包、妆台、内衣卡片与上身',
   album: '上身效果成片 · 正面图背面提示词',
   personas: '角色档案与人格管理', world: '连续背景与动态世界线', gallery: '参考图、自拍与照片资产',
   memories: '长期事实、事件与偏好', history: '跨渠道的完整对话原文', prospective: '定时与语境主动提醒', graph: '实体关系与知识联想',
   operations: '后台任务、健康与维护', chat: '使用真实管线试聊',
+  safety: '停止词、亲密级别、导出删除、配额',
   mcp: 'Cloudflare / Supabase 等 MCP 快捷接入',
   params: '记忆/需求/亲密/行为等系统的可调数值',
   config: '模型、数据库与服务凭证',
 };
 
 const navGroups = [
-  { id: 'inner', label: '内在', kana: '心', icon: Heart, items: ['overview', 'companion-v2', 'state', 'outfit', 'album'] },
+  { id: 'live', label: '生活', kana: '生', icon: BookHeart, items: ['life', 'chat', 'album'] },
+  { id: 'inner', label: '内在', kana: '心', icon: Heart, items: ['overview', 'companion-v2', 'state', 'outfit'] },
   { id: 'identity', label: '角色', kana: '人', icon: UserRound, items: ['personas', 'world', 'gallery'] },
   { id: 'memory', label: '记忆', kana: '忆', icon: Brain, items: ['memories', 'history', 'prospective', 'graph'] },
-  { id: 'system', label: '系统', kana: '控', icon: SquareTerminal, items: ['operations', 'chat', 'mcp', 'params', 'config'] },
+  { id: 'system', label: '系统', kana: '控', icon: SquareTerminal, items: ['operations', 'safety', 'mcp', 'params', 'config'] },
 ];
 
 function Sidebar({ active, go, scope, bot, startBot, mobile, closeMobile }) {
@@ -848,12 +855,14 @@ function App() {
   const [chatSeed, setChatSeed] = useState(null);
   const restoreChat = messages => { setChatSeed(messages); go('chat'); };
   const view = useMemo(() => ({
+    life: <LifePage scope={scope} api={api} qs={qs} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty} onGoChat={() => go('chat')} onGoAlbum={() => go('album')}/>,
     overview: <Overview scope={scope}/>, 'companion-v2': <CompanionV2 scope={scope}/>, state: <StateView scope={scope}/>,
     outfit: <OutfitPage scope={scope} api={api} qs={qs} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty}/>,
     album: <AlbumPage scope={scope} api={api} qs={qs} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty}/>,
     personas: <Personas scope={scope} onCompanion={companionId => setScope(value => ({ ...value, companionId }))}/>, world: <World scope={scope}/>, gallery: <Gallery scope={scope}/>,
     memories: <Memories scope={scope}/>, history: <HistoryPage scope={scope} onRestoreChat={restoreChat}/>, prospective: <Prospective scope={scope}/>, graph: <Graph scope={scope}/>,
     operations: <Operations scope={scope}/>, chat: <Chat scope={scope} seed={chatSeed} onSeedConsumed={() => setChatSeed(null)}/>,
+    safety: <SafetyPage scope={scope} api={api} qs={qs} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty}/>,
     mcp: <McpPage api={api} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty}/>,
     params: <Params/>, config: <Config/>,
   })[active], [active, scope.userId, scope.companionId, chatSeed]);
@@ -875,7 +884,7 @@ function App() {
           <span className="badge badge-ok"><span className="size-1.5 bg-emerald-500"/>Local</span>
         </div>
       </header>
-      <div className="app-content mx-auto max-w-7xl p-4 sm:p-7 lg:p-9"><div className="page-folio">{String(nav.findIndex(item => item[0] === active) + 1).padStart(2, '0')}</div>{scopesLoading ? <Loading/> : !scope.userId && !['config', 'personas', 'params', 'outfit', 'album', 'mcp'].includes(active) ? <Empty>先选择一个用户与角色，才能读取她此刻的状态。</Empty> : view}</div>
+      <div className="app-content mx-auto max-w-7xl p-4 sm:p-7 lg:p-9"><div className="page-folio">{String(nav.findIndex(item => item[0] === active) + 1).padStart(2, '0')}</div>{scopesLoading ? <Loading/> : !scope.userId && !['config', 'personas', 'params', 'outfit', 'album', 'mcp', 'safety'].includes(active) ? <Empty>先选择一个用户与角色，才能读取她此刻的状态。</Empty> : view}</div>
     </main>
     {mobile && <button className="fixed inset-0 z-30 bg-black/20 lg:hidden" onClick={() => setMobile(false)}/>}
   </div>;
