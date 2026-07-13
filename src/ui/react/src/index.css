@@ -467,6 +467,18 @@ textarea.input { padding: 12px !important; resize: vertical; }
 .outfit-now-stats b { display: block; font-size: 20px; letter-spacing: -.03em; }
 .outfit-now-stats span { display: block; margin-top: 4px; color: var(--sw-text-2); font-size: 10px; letter-spacing: .08em; }
 
+/* 新建自定义造型 */
+.outfit-create-look { margin-bottom: 16px; }
+.outfit-create-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+.outfit-create-full { grid-column: 1 / -1; }
+@media (max-width: 720px) {
+  .outfit-create-grid { grid-template-columns: 1fr; }
+}
+
 /* 生图配置 + 脸参考（今日穿搭旁） */
 .outfit-image-setup { margin-top: 14px; }
 .outfit-image-setup-head {

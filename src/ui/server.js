@@ -23,7 +23,15 @@ import { listReferenceImages, saveReferenceImage, deleteReferenceImage, referenc
 import {
   buildOutfitCatalog,
   lookToOutfitState,
+  cardId as outfitCardId,
 } from '../state/outfitCards.js';
+import {
+  readCustomLooks,
+  createCustomLook,
+  updateCustomLook,
+  deleteCustomLook,
+  findCustomLook,
+} from '../state/outfitCustomLooks.js';
 import {
   buildAlbumCatalog,
 } from '../state/album.js';
@@ -1695,8 +1703,10 @@ function attachOutfitCatalogAssets(catalog, assetMap, companionId) {
 
 async function getOutfitCatalog(env, scope = {}) {
   const companionId = safeCompanionId(scope.companionId) || 'default';
+  const root = companionRootForAssets(companionId);
   const raw = readCompanionOutfitRaw(companionId);
-  const catalog = buildOutfitCatalog(raw);
+  const customLooks = readCustomLooks(root);
+  const catalog = buildOutfitCatalog(raw, customLooks);
   const assets = await loadCardAssetMap(env, companionId, 'outfit');
   const enriched = attachOutfitCatalogAssets(catalog, assets.map || {}, companionId);
   let current = null;
@@ -1714,16 +1724,98 @@ async function getOutfitCatalog(env, scope = {}) {
     storage: 'supabase',
     assetsOk: assets.ok,
     assetsMessage: assets.ok ? null : assets.message,
+    customLooksCount: customLooks.length,
     ...enriched,
   };
+}
+
+function findLookForWear(companionId, lookId) {
+  const id = String(lookId || '');
+  const raw = readCompanionOutfitRaw(companionId);
+  const wardrobe = normalizeWardrobe(raw);
+  const fromWardrobe = (wardrobe.wardrobe || []).find((x) => x.id === id);
+  if (fromWardrobe) return fromWardrobe;
+  const custom = findCustomLook(companionRootForAssets(companionId), id);
+  if (custom) {
+    return {
+      id: custom.id,
+      context: custom.context,
+      summary: custom.summary,
+      style: custom.style,
+      pieces: custom.pieces,
+    };
+  }
+  return null;
+}
+
+async function createOutfitCustomLook(env, companionId, body = {}) {
+  const id = safeCompanionId(companionId) || 'default';
+  try {
+    const look = createCustomLook(companionRootForAssets(id), {
+      title: body.title || body.style,
+      style: body.style || body.title,
+      summary: body.summary || body.notes || body.title,
+      context: body.context || 'home',
+      pieces: body.pieces || {},
+      dress: body.dress,
+      top: body.top,
+      bottom: body.bottom,
+      outer: body.outer,
+      shoes: body.shoes,
+      bag: body.bag,
+      jewelry: body.jewelry,
+      watch: body.watch,
+      hair: body.hair,
+      makeup: body.makeup,
+      prompt: body.prompt || '',
+    });
+    const cardKey = outfitCardId('look', look.id);
+    if (body.prompt?.trim()) {
+      await upsertCardAsset(env, id, 'outfit', cardKey, { prompt: body.prompt.trim() });
+    }
+    return {
+      ok: true,
+      look,
+      cardId: cardKey,
+      message: `已创建造型：${look.style || look.summary}`,
+    };
+  } catch (error) {
+    return { ok: false, message: error.message || '创建失败' };
+  }
+}
+
+async function updateOutfitCustomLook(env, companionId, lookId, body = {}) {
+  const id = safeCompanionId(companionId) || 'default';
+  try {
+    const look = updateCustomLook(companionRootForAssets(id), lookId, body);
+    if (!look) return { ok: false, message: '找不到该自定义造型' };
+    if (body.prompt != null && String(body.prompt).trim()) {
+      await upsertCardAsset(env, id, 'outfit', outfitCardId('look', look.id), {
+        prompt: String(body.prompt).trim(),
+      });
+    }
+    return { ok: true, look, message: '造型已更新' };
+  } catch (error) {
+    return { ok: false, message: error.message || '更新失败' };
+  }
+}
+
+async function deleteOutfitCustomLook(env, companionId, lookId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const ok = deleteCustomLook(companionRootForAssets(id), lookId);
+  if (!ok) return { ok: false, message: '找不到该自定义造型（系统衣橱造型不可删）' };
+  // 尽量清掉卡片图/提示词资产
+  const cardKey = outfitCardId('look', lookId);
+  try {
+    await deleteOutfitCardImage(env, id, cardKey);
+  } catch { /* ignore */ }
+  return { ok: true, message: '已删除自定义造型' };
 }
 
 async function wearOutfitLook(env, scope, lookId) {
   if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
   const companionId = safeCompanionId(scope.companionId) || 'default';
-  const raw = readCompanionOutfitRaw(companionId);
-  const wardrobe = normalizeWardrobe(raw);
-  const look = (wardrobe.wardrobe || []).find((x) => x.id === String(lookId || ''));
+  const look = findLookForWear(companionId, lookId);
   if (!look) return { ok: false, message: `找不到造型：${lookId}` };
   const outfit = lookToOutfitState({
     lookId: look.id,
@@ -2907,6 +2999,22 @@ async function handle(req, res) {
     const body = await readBody(req);
     const scope = body?.scope || { userId: body?.userId, companionId: body?.companionId || 'default' };
     return json(res, 200, await wearOutfitLook(readEnvValues(), scope, body?.lookId));
+  }
+  if (route === 'POST /api/outfit/looks') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await createOutfitCustomLook(readEnvValues(), companionId, body));
+  }
+  if (route === 'PUT /api/outfit/looks') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await updateOutfitCustomLook(readEnvValues(), companionId, body?.lookId || body?.id, body));
+  }
+  if (route === 'DELETE /api/outfit/looks') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || url.searchParams.get('companionId') || 'default';
+    const lookId = body?.lookId || body?.id || url.searchParams.get('lookId');
+    return json(res, 200, await deleteOutfitCustomLook(readEnvValues(), companionId, lookId));
   }
   if (route === 'GET /api/outfit/daily') {
     const scope = {

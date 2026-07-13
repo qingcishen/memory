@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Check, Copy, ImagePlus, LoaderCircle, RefreshCw, Save, Shirt, Sparkles, Upload, WandSparkles, X,
+  Check, Copy, ImagePlus, LoaderCircle, Plus, RefreshCw, Save, Shirt, Sparkles, Trash2, Upload, WandSparkles, X,
 } from 'lucide-react';
 
 /** 穿搭页旁：IMAGE_* + 脸参考（与设置页共用 /api/config、/api/image-references） */
@@ -357,6 +357,7 @@ function OutfitFlipCard({
   onSavePrompt,
   onUpload,
   onClearImage,
+  onDeleteCustom,
   wearing,
   busyId,
 }) {
@@ -420,6 +421,7 @@ function OutfitFlipCard({
           <div className="outfit-card-meta">
             <div className="outfit-card-kicker">
               <span>{card.subtitle || card.kind}</span>
+              {card.source === 'custom' && <span className="outfit-chip">自定义</span>}
               {card.context && <span className="outfit-chip">{CONTEXT_LABEL[card.context] || card.context}</span>}
             </div>
             <h4>{card.title}</h4>
@@ -482,6 +484,18 @@ function OutfitFlipCard({
                 {worn ? '已上身' : wearing ? '上身中' : '上身'}
               </button>
             )}
+            {card.source === 'custom' && onDeleteCustom && (
+              <button
+                type="button"
+                className="btn"
+                onClick={() => onDeleteCustom(card)}
+                disabled={isBusy}
+                title="删除自定义造型"
+              >
+                <Trash2 size={14} />
+                删除
+              </button>
+            )}
           </div>
           <button type="button" className="outfit-card-flip-hint" onClick={() => setFlipped(false)}>点击标题或此处翻回正面</button>
           <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={onFile} />
@@ -502,6 +516,19 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   const [dailyBusy, setDailyBusy] = useState('');
   const [toast, setToast] = useState('');
   const [imageReadyState, setImageReadyState] = useState({ imageReady: false, refsReady: false, refCount: 0, model: '' });
+  const [showCreate, setShowCreate] = useState(false);
+  const [creating, setCreating] = useState(false);
+  const [draft, setDraft] = useState({
+    title: '',
+    summary: '',
+    context: 'date',
+    dress: '',
+    top: '',
+    bottom: '',
+    shoes: '',
+    bag: '',
+    prompt: '',
+  });
 
   const load = async () => {
     setState((s) => ({ ...s, loading: true, error: '' }));
@@ -610,6 +637,68 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
       flash(e.message);
     } finally {
       setWearingId('');
+    }
+  };
+
+  const onCreateLook = async () => {
+    if (!draft.title.trim() && !draft.summary.trim()) {
+      flash('请填写造型标题或摘要');
+      return;
+    }
+    setCreating(true);
+    try {
+      const pieces = {};
+      if (draft.dress.trim()) pieces.dress = draft.dress.trim();
+      if (draft.top.trim()) pieces.top = draft.top.trim();
+      if (draft.bottom.trim()) pieces.bottom = draft.bottom.trim();
+      if (draft.shoes.trim()) pieces.shoes = draft.shoes.trim();
+      if (draft.bag.trim()) pieces.bag = draft.bag.trim();
+      const result = await api('/api/outfit/looks', json('POST', {
+        companionId,
+        title: draft.title.trim() || draft.summary.trim().slice(0, 24),
+        style: draft.title.trim() || draft.summary.trim().slice(0, 24),
+        summary: draft.summary.trim() || draft.title.trim(),
+        context: draft.context,
+        pieces,
+        shoes: draft.shoes.trim(),
+        bag: draft.bag.trim(),
+        dress: draft.dress.trim(),
+        top: draft.top.trim(),
+        bottom: draft.bottom.trim(),
+        prompt: draft.prompt.trim(),
+      }));
+      if (!result.ok) throw new Error(result.message || '创建失败');
+      flash(result.message || '已创建造型');
+      setShowCreate(false);
+      setDraft({
+        title: '', summary: '', context: 'date',
+        dress: '', top: '', bottom: '', shoes: '', bag: '', prompt: '',
+      });
+      setTab('looks');
+      await load();
+    } catch (e) {
+      flash(e.message);
+    } finally {
+      setCreating(false);
+    }
+  };
+
+  const onDeleteCustom = async (card) => {
+    if (!card.lookId || card.source !== 'custom') return;
+    if (!confirm(`删除自定义造型「${card.title}」？正面图和提示词会一并清理。`)) return;
+    setBusyId(card.id);
+    try {
+      const result = await api('/api/outfit/looks', json('DELETE', {
+        companionId,
+        lookId: card.lookId,
+      }));
+      if (!result.ok) throw new Error(result.message || '删除失败');
+      flash(result.message || '已删除');
+      await load();
+    } catch (e) {
+      flash(e.message);
+    } finally {
+      setBusyId('');
     }
   };
 
@@ -802,10 +891,82 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
       <div className="outfit-section-head">
         <div>
           <h3>{meta.label}</h3>
-          <p>{meta.hint} · 点卡片翻转看提示词 · 用 AI 生成后点「上传图」挂到正面</p>
+          <p>
+            {meta.hint}
+            {tab === 'looks' ? ' · 可新建自定义造型 · 点卡片翻转存提示词/上传图 · 可上身' : ' · 点卡片翻转看提示词 · 生成后上传挂正面'}
+          </p>
         </div>
-        <span className="badge">{cards.length} 张卡片</span>
+        <div className="flex gap-2 items-center">
+          {tab === 'looks' && (
+            <button type="button" className="btn btn-primary" onClick={() => setShowCreate((v) => !v)}>
+              <Plus size={15} />
+              {showCreate ? '收起' : '新建造型'}
+            </button>
+          )}
+          <span className="badge">{cards.length} 张卡片</span>
+        </div>
       </div>
+
+      {tab === 'looks' && showCreate && (
+        <section className="panel outfit-create-look mb-4">
+          <div className="mb-3">
+            <span className="page-header-kicker">NEW LOOK</span>
+            <h3 className="mt-1 text-base font-bold">创建整套造型卡</h3>
+            <p className="mt-1 text-xs text-zinc-400">
+              与系统造型一样：可上身、可存提示词、可上传正面图。自定义保存在本机角色目录。
+            </p>
+          </div>
+          <div className="outfit-create-grid">
+            <label className="field">
+              <span>标题 *</span>
+              <input className="input" value={draft.title} onChange={(e) => setDraft((d) => ({ ...d, title: e.target.value }))} placeholder="例如：酒红晚宴裹身裙" />
+            </label>
+            <label className="field">
+              <span>情境</span>
+              <select className="input" value={draft.context} onChange={(e) => setDraft((d) => ({ ...d, context: e.target.value }))}>
+                {Object.entries(CONTEXT_LABEL).map(([k, label]) => (
+                  <option key={k} value={k}>{label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="field outfit-create-full">
+              <span>摘要 / 穿着描述</span>
+              <textarea className="input" rows={2} value={draft.summary} onChange={(e) => setDraft((d) => ({ ...d, summary: e.target.value }))} placeholder="一整句描述她穿什么、什么场合" />
+            </label>
+            <label className="field">
+              <span>裙装</span>
+              <input className="input" value={draft.dress} onChange={(e) => setDraft((d) => ({ ...d, dress: e.target.value }))} placeholder="可选" />
+            </label>
+            <label className="field">
+              <span>上衣</span>
+              <input className="input" value={draft.top} onChange={(e) => setDraft((d) => ({ ...d, top: e.target.value }))} placeholder="可选" />
+            </label>
+            <label className="field">
+              <span>下装</span>
+              <input className="input" value={draft.bottom} onChange={(e) => setDraft((d) => ({ ...d, bottom: e.target.value }))} placeholder="可选" />
+            </label>
+            <label className="field">
+              <span>鞋</span>
+              <input className="input" value={draft.shoes} onChange={(e) => setDraft((d) => ({ ...d, shoes: e.target.value }))} placeholder="可选，建议写明" />
+            </label>
+            <label className="field">
+              <span>包</span>
+              <input className="input" value={draft.bag} onChange={(e) => setDraft((d) => ({ ...d, bag: e.target.value }))} placeholder="可选" />
+            </label>
+            <label className="field outfit-create-full">
+              <span>出图提示词（可选，可建卡后再编辑）</span>
+              <textarea className="input" rows={4} value={draft.prompt} onChange={(e) => setDraft((d) => ({ ...d, prompt: e.target.value }))} placeholder="英文/中文均可；不填则按摘要自动生成人像套装提示词" spellCheck={false} />
+            </label>
+          </div>
+          <div className="mt-3 flex gap-2 flex-wrap">
+            <button type="button" className="btn btn-primary" disabled={creating} onClick={onCreateLook}>
+              {creating ? <LoaderCircle size={14} className="animate-spin" /> : <Plus size={14} />}
+              {creating ? '创建中…' : '创建并加入造型柜'}
+            </button>
+            <button type="button" className="btn" onClick={() => setShowCreate(false)}>取消</button>
+          </div>
+        </section>
+      )}
 
       {cards.length ? (
         <div className="outfit-grid">
@@ -818,6 +979,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
               onSavePrompt={onSavePrompt}
               onUpload={onUpload}
               onClearImage={onClearImage}
+              onDeleteCustom={onDeleteCustom}
               wearing={wearingId === card.id}
               busyId={busyId}
             />
@@ -832,10 +994,10 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
         <div>
           <h3>使用方式</h3>
           <ol>
+            <li>整套造型可点「新建造型」：填描述、提示词，再上传正面图，效果与系统卡相同（可上身）</li>
             <li>在「生图配置与脸参考」填 IMAGE 模型并上传脸照</li>
-            <li>每天自动从衣橱 + 包/鞋抽屉组合「今日穿搭」</li>
-            <li>点「生成今日照片」出人像成片（相册 + 冷却内可分享）</li>
-            <li>单品卡是产品图；整套可「上身」；对话问穿什么按今日组合答</li>
+            <li>每天自动从衣橱 + 包/鞋抽屉组合「今日穿搭」；可点「生成今日照片」</li>
+            <li>单品卡是产品图；对话问穿什么按当前穿着 / 今日组合答</li>
           </ol>
         </div>
       </section>

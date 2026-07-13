@@ -206,19 +206,40 @@ function drawerToCards(list, kind, subtitleDefault) {
 
 /**
  * 从规范化衣橱构建全部 UI 卡片（无图片状态）。
+ * @param rawWardrobe 角色 outfit.json
+ * @param customLooks 用户自定义造型（outfit-custom-looks.json）
  */
-export function buildOutfitCatalog(rawWardrobe = null) {
+export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
   const cat = normalizeWardrobe(rawWardrobe);
   const looks = [];
   const pieceMap = new Map();
+  const customItems = (Array.isArray(customLooks) ? customLooks : [])
+    .map((x) => {
+      if (!x || typeof x !== 'object') return null;
+      return {
+        id: x.id,
+        context: x.context || 'home',
+        summary: x.summary || x.style || '',
+        style: x.style || x.title || '',
+        pieces: x.pieces || {},
+        season: x.season || null,
+        source: 'custom',
+        prompt: x.prompt || '',
+      };
+    })
+    .filter((x) => x?.id && x.summary);
 
-  for (const look of cat.wardrobe || []) {
+  // 自定义造型置顶，再接衣橱默认
+  const allLooks = [...customItems, ...(cat.wardrobe || [])];
+
+  for (const look of allLooks) {
     const seasonLabel = { spring: '春', summer: '夏', autumn: '秋', winter: '冬' }[look.season] || null;
+    const isCustom = look.source === 'custom' || String(look.id || '').startsWith('custom_');
     const lookCard = {
       id: cardId('look', look.id),
       kind: 'look',
       title: look.style || look.summary?.slice(0, 24) || look.id,
-      subtitle: [look.context || 'home', seasonLabel, look.id].filter(Boolean).join(' · '),
+      subtitle: [isCustom ? '自定义' : null, look.context || 'home', seasonLabel, look.id].filter(Boolean).join(' · '),
       summary: look.summary || '',
       context: look.context || 'home',
       style: look.style || '',
@@ -226,7 +247,10 @@ export function buildOutfitCatalog(rawWardrobe = null) {
       lookId: look.id,
       pieces: look.pieces || {},
       wearable: true,
-      tags: [look.context, look.style, seasonLabel && `${seasonLabel}季`].filter(Boolean),
+      source: isCustom ? 'custom' : 'wardrobe',
+      // 创建时写入的初始提示词（enrich 时若无 asset 则用它）
+      seedPrompt: look.prompt || '',
+      tags: [isCustom ? '自定义' : null, look.context, look.style, seasonLabel && `${seasonLabel}季`].filter(Boolean),
     };
     looks.push(lookCard);
 
@@ -316,7 +340,7 @@ export function buildOutfitCatalog(rawWardrobe = null) {
   const withPrompts = (list) =>
     list.map((card) => ({
       ...card,
-      defaultPrompt: defaultPromptForCard(card),
+      defaultPrompt: (card.seedPrompt && String(card.seedPrompt).trim()) || defaultPromptForCard(card),
     }));
 
   return {
