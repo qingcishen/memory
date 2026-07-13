@@ -330,6 +330,19 @@ async function main() {
     sceneLocks: sceneLocks ?? replyDebug?.sceneLocks ?? null,
     ...(debugMode ? { debug: trace } : {}),
   };
+  // Presence：按 behaviorPolicy 做首条前节奏延迟（试聊 cap，让「委屈慢半拍」可感知）
+  if (behavior?.replyDelayMs && req.skipDelay !== true) {
+    try {
+      const { policyFirstDelayMs, sleep } = await import('../channels/humanSend.js');
+      const { PARAMS } = await import('../params.js');
+      const cap = Number(PARAMS.behavior?.uiDeliveryCapMs) || 5000;
+      const d = policyFirstDelayMs(behavior, { cap });
+      if (d > 0) await sleep(d);
+    } catch {
+      /* 延迟失败不挡回复 */
+    }
+  }
+
   process.stdout.write(`${JSON.stringify(payload)}\n`);
   await bot._lastAfterReply?.catch(() => {});
   await bot._lastHistoryPersist?.catch(() => {});

@@ -691,10 +691,19 @@ export class Orchestrator {
 
     const monologuePromise = turn.useMonologue
       ? this.llm
-          .think(buildMonologueContext({ userMessage, ...promptBase, memoryBlock: '' }), {
-            signal: opts.signal,
-            maxTokens: PARAMS.orchestrator.monologueMaxTokens,
-          })
+          .think(
+            buildMonologueContext({
+              userMessage,
+              ...promptBase,
+              memoryBlock: '',
+              emotionLabel,
+              emotionResidual: this._emotionResidue,
+            }),
+            {
+              signal: opts.signal,
+              maxTokens: PARAMS.orchestrator.monologueMaxTokens,
+            },
+          )
           .catch(() => '')
       : Promise.resolve('');
 

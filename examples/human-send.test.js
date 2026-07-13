@@ -1,6 +1,12 @@
 import assert from 'node:assert';
 import { pickReplyFormat } from '../src/orchestrator/llm.js';
-import { splitDialogueBubbles, buildHumanOutgoingMessages, deliverHumanBubbles } from '../src/channels/humanSend.js';
+import {
+  splitDialogueBubbles,
+  buildHumanOutgoingMessages,
+  deliverHumanBubbles,
+  policyFirstDelayMs,
+} from '../src/channels/humanSend.js';
+import { behaviorPolicy } from '../src/state/behavior.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -42,6 +48,25 @@ console.log('splitDialogueBubbles / human send');
     { skipDelay: true, minSplitLen: 5 },
   );
   ok('deliverHumanBubbles 发出多条', sent.length >= 2);
+}
+
+console.log('policyFirstDelayMs Presence');
+{
+  const angry = behaviorPolicy('生气', { relationship: { tension: 0.9, repair_debt: 0.7 } });
+  const calm = behaviorPolicy('平静', {});
+  const dAngry = policyFirstDelayMs(angry, { cap: 60000, rng: () => 0.5 });
+  const dCalm = policyFirstDelayMs(calm, { cap: 60000, rng: () => 0.5 });
+  ok('生气中位 delay > 平静', dAngry > dCalm);
+  const capped = policyFirstDelayMs(angry, { cap: 3000, rng: () => 1 });
+  ok('cap 生效', capped <= 3000);
+  const delays = [];
+  await deliverHumanBubbles([{ type: 'dialogue', text: '嗯' }], async () => {}, {
+    behaviorPolicy: calm,
+    policyCapMs: 5000,
+    sleep: async (ms) => delays.push(ms),
+    typing: { min: 0, max: 0, perChar: 0 },
+  });
+  ok('首条含 policy 延迟', delays.length >= 1 && delays[0] >= 0);
 }
 
 console.log(`\nhuman-send 全部 ${passed} 条断言通过 ✅`);

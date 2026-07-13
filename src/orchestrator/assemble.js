@@ -162,7 +162,10 @@ export function buildMonologueContext({
   statePrompt = '',
   emotionPrompt = '',
   memoryBlock = '',
+  emotionLabel = '',
+  emotionResidual = null,
 } = {}) {
+  const emotionHint = buildMonologueEmotionHint(emotionLabel, emotionResidual);
   const parts = [
     timePrompt,
     personaPrompt,
@@ -176,6 +179,7 @@ export function buildMonologueContext({
     episodePrompt,
     identityConstraintsPrompt,
     statePrompt || emotionPrompt,
+    emotionHint,
     memoryBlock,
   ].filter(
     (s) => s && s.trim()
@@ -183,4 +187,24 @@ export function buildMonologueContext({
   parts.push(situation != null ? situation : `对方刚说: "${userMessage}"`);
   parts.push('写一句她此刻心里冒出来的真实想法 (不会说出口), 一两句话, 不要加引号或标签。');
   return parts.join('\n\n');
+}
+
+/** 独白用情绪方向（不进台词播报） */
+export function buildMonologueEmotionHint(label = '', residual = null) {
+  const lab = label || residual?.label || '';
+  if (!lab || lab === '平静') return '';
+  const intensity = Number(residual?.intensity);
+  const strong = Number.isFinite(intensity) && intensity >= 0.55;
+  const map = {
+    委屈: strong ? '心里有点委屈、闷闷的' : '心里有一点点别扭',
+    吃醋: '心里夹着一点醋意',
+    生气: strong ? '还没完全顺气' : '有点不痛快',
+    失落: '有点蔫、提不起劲',
+    撒娇: '想黏他一点',
+    心疼: '有点心疼对方',
+    开心: '心里偏亮',
+  };
+  const tip = map[lab];
+  if (!tip) return '';
+  return `你此刻心里偏「${lab}」：${tip}。独白可以带这层感觉，但不要写「我委屈/我吃醋」这种自我标签。`;
 }

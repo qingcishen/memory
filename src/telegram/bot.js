@@ -21,6 +21,7 @@ import {
   typingDelayMs as sharedTypingDelayMs,
   buildHumanOutgoingMessages as sharedBuildHumanOutgoing,
   splitDialogueBubbles as sharedSplitDialogueBubbles,
+  policyFirstDelayMs as sharedPolicyFirstDelayMs,
 } from '../channels/humanSend.js';
 
 dotenv.config();
@@ -130,11 +131,9 @@ export function splitDialogueBubbles(text = '', max = 3, minSplitLen = 28) {
   return sharedSplitDialogueBubbles(text, max, minSplitLen);
 }
 
-export function pickPolicyDelay(policy = {}, rng = Math.random) {
-  const [rawMin, rawMax] = Array.isArray(policy.replyDelayMs) ? policy.replyDelayMs : [0, 0];
-  const min = Math.max(0, Number(rawMin) || 0);
-  const max = Math.max(min, Number(rawMax) || 0);
-  return Math.round(min + (max - min) * Math.min(1, Math.max(0, Number(rng()) || 0)));
+export function pickPolicyDelay(policy = {}, rng = Math.random, cap = 60000) {
+  // 与 humanSend.policyFirstDelayMs 对齐（情绪节奏 + 上限）
+  return sharedPolicyFirstDelayMs(policy, { cap, rng });
 }
 
 /** partsBudget 只限制台词条数，旁白作为场景信息保留。 */

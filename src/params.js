@@ -113,6 +113,14 @@ export const DEFAULT_PARAMS = {
       positiveMoodLink: 0.4,
       seedIntensity: 0.42,
     },
+    // P3 residual → 主动冷却
+    proactiveResidual: {
+      enabled: true,
+      minIntensity: 0.45,
+      hurtFactor: 0.75,
+      angryIntensity: 0.6,
+      angryFactor: 1.15,
+    },
   },
 
   // ---- D1 需求驱力 ----
@@ -189,6 +197,9 @@ export const DEFAULT_PARAMS = {
   // ---- B2 情绪行为策略 ----
   behavior: {
     maxReplyDelayMs: 10 * 60 * 1000,
+    // 试聊/本地 UI 首条延迟上限（ms），避免等太久；Telegram 用更高 cap
+    uiDeliveryCapMs: 5000,
+    channelDeliveryCapMs: 60000,
     stonewallPerDay: 1,
     stonewallTensionThreshold: 0.85,
     stonewallRepairDebtThreshold: 0.65,

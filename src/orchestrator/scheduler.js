@@ -175,6 +175,27 @@ export function pickBedtimeTier(now, sleepWindow, leadMinutes = PARAMS.proactive
 }
 
 /** D3: 从四项需求里选出当前最强驱力，并给主动消息提供口吻与冷却系数。 */
+/**
+ * residual → 主动冷却系数（越小越容易主动）
+ * 委屈/失落想确认；生气少主动
+ */
+export function residualProactiveCooldownFactor(residue = null, cfg = PARAMS.emotion?.proactiveResidual) {
+  if (cfg?.enabled === false || !residue?.label) return 1;
+  const intensity = Math.min(1, Math.max(0, Number(residue.intensity) || 0));
+  const minI = Number(cfg?.minIntensity) ?? 0.45;
+  if (intensity < minI) return 1;
+  const label = residue.label;
+  if (label === '生气' && intensity >= (Number(cfg?.angryIntensity) ?? 0.6)) {
+    return Number(cfg?.angryFactor) ?? 1.15;
+  }
+  if (label === '委屈' || label === '失落' || label === '吃醋') {
+    const base = Number(cfg?.hurtFactor) ?? 0.75;
+    // intensity 越高越短冷却
+    return Math.max(0.5, base - intensity * 0.1);
+  }
+  return 1;
+}
+
 export function desireUrgency(desires = {}, policy = PARAMS.proactive.desire) {
   const labels = { attention: 'attention', sharing: 'sharing', comfort: 'comfort', security: 'security' };
   const entries = Object.keys(labels).map((key) => [key, Math.min(1, Math.max(0, Number(desires?.[key]) || 0))]);
@@ -258,15 +279,28 @@ export class ProactiveScheduler {
       const snap = await this.orchestrator.story.current().catch(() => null);
       storyBeat = snap?.today ?? null;
     }
-    const emotionLabel = inferEmotionLabel({ ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} }, stateSnapshot?.desires, this.orchestrator.history?.slice(-4) ?? []);
+    const residue = this.orchestrator?._emotionResidue || null;
+    const emotionInferred = inferEmotionLabel(
+      { ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} },
+      stateSnapshot?.desires,
+      this.orchestrator.history?.slice(-4) ?? [],
+      { previousResidual: residue, withResidual: true },
+    );
+    const emotionLabel = typeof emotionInferred === 'string' ? emotionInferred : emotionInferred.label;
+    if (emotionInferred && typeof emotionInferred === 'object' && emotionInferred.residual) {
+      this.orchestrator._emotionResidue = emotionInferred.residual;
+    }
     const behavior = behaviorPolicy(emotionLabel, { relationship: relState?.relationship ?? relState ?? {} });
     const basePolicy = { ...this.policy, ...(ctx.policy ?? {}) };
     const behaviorCooldownFactor = clamp(1 - behavior.proactiveBias, 0.5, 1.5);
     const desireFactor = urgency.urgent ? urgency.cooldownFactor : 1;
     const intimacyFactor = intimacyUrg.urgent ? intimacyUrg.cooldownFactor : 1;
+    // P3：residual 委屈/失落 → 更想找他（冷却缩短）；高强生气 → 略拉长冷却少惹事
+    const residualFactor = residualProactiveCooldownFactor(this.orchestrator?._emotionResidue);
     const effectivePolicy = {
       ...basePolicy,
-      minIntervalMinutes: basePolicy.minIntervalMinutes * desireFactor * intimacyFactor * behaviorCooldownFactor,
+      minIntervalMinutes:
+        basePolicy.minIntervalMinutes * desireFactor * intimacyFactor * behaviorCooldownFactor * residualFactor,
     };
 
     const allowed = canSendProactive(state, now, effectivePolicy);

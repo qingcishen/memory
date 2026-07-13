@@ -54,4 +54,5 @@ export {
   pickSilenceTier,
   pickBedtimeTier,
   desireUrgency,
+  residualProactiveCooldownFactor,
 } from './scheduler.js';

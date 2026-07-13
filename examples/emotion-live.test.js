@@ -10,6 +10,8 @@ import {
 import { seedResidueFromStoryBeat, emptyEmotionResidue } from '../src/state/emotionResidue.js';
 import { decayState, defaultState, applyDeltas } from '../src/state/affect.js';
 import { buildProactiveContentPack } from '../src/companion/proactiveContent.js';
+import { residualProactiveCooldownFactor } from '../src/orchestrator/scheduler.js';
+import { buildMonologueEmotionHint } from '../src/orchestrator/assemble.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -83,6 +85,23 @@ console.log('L5 story seed');
     { mood_link: -0.5, content: '又黄了' },
   );
   ok('不盖过强生气', held.changed === false && held.residual.label === '生气');
+}
+
+console.log('P3 residual proactive cooldown');
+{
+  const hurt = residualProactiveCooldownFactor({ label: '委屈', intensity: 0.7 });
+  const angry = residualProactiveCooldownFactor({ label: '生气', intensity: 0.8 });
+  const calm = residualProactiveCooldownFactor({ label: '平静', intensity: 0.2 });
+  ok('委屈冷却缩短', hurt < 1);
+  ok('生气冷却略拉长', angry > 1);
+  ok('平静不改', calm === 1);
+}
+
+console.log('P2 monologue emotion hint');
+{
+  const h = buildMonologueEmotionHint('委屈', { intensity: 0.7 });
+  ok('独白提示含委屈方向', h.includes('委屈') && h.includes('不要写'));
+  ok('平静无提示', buildMonologueEmotionHint('平静') === '');
 }
 
 console.log(`\nemotion-live 全部 ${passed} 条断言通过 ✅`);
