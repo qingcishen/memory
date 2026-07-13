@@ -27,12 +27,25 @@ export function normalizeStoryline(line = {}, index = 0) {
   };
 }
 
-export function toStoryPrompt(snapshot) {
+export function toStoryPrompt(snapshot, { cast = [], forceToday = false } = {}) {
   const lines = snapshot?.lines ?? [];
   if (!lines.length && !snapshot?.today) return '';
-  const active = lines.filter((line) => line.stage !== 'closed').map((line) => `- ${line.title}（${line.stage}）${line.last_beat ? `：${line.last_beat}` : ''}`);
-  const today = snapshot?.today ? `\n今天的新进展：${snapshot.today.content ?? snapshot.today}` : '';
-  return `【她最近的生活】\n${active.join('\n')}${today}\n这些是连续发生的生活，不要像念设定；被问近况时优先从这里自然回答。`;
+  const active = lines
+    .filter((line) => line.stage !== 'closed')
+    .map((line) => `- ${line.title}（${line.stage}）${line.last_beat ? `：${line.last_beat}` : ''}`);
+  const todayRaw = snapshot?.today?.content ?? snapshot?.today;
+  const today = todayRaw
+    ? `\n【今天必知】${typeof todayRaw === 'string' ? todayRaw : snapshot.today.content}——被问「今天/最近/在忙什么」时优先从这里答，像她自己的生活，不要说「剧情线」。`
+    : '';
+  const castLine =
+    Array.isArray(cast) && cast.length
+      ? `\n配角名字固定：${cast.map((m) => m.name).filter(Boolean).slice(0, 6).join('、')}——禁止改名或换人。`
+      : '';
+  const force =
+    forceToday && todayRaw
+      ? '\n本轮若对方聊近况或闲聊开口，至少轻轻带一点今天的生活碎片，别整轮只客服式接话。'
+      : '';
+  return `【她最近的生活】\n${active.join('\n')}${today}${castLine}${force}\n这些是连续发生的生活，不要像念设定；上周的事这周可以有下文。`;
 }
 
 export function nextStoryStage(stage, requested = null) {
@@ -102,7 +115,9 @@ export class StoryEngine {
     return { lines, today };
   }
 
-  toPrompt(snapshot) { return toStoryPrompt(snapshot); }
+  toPrompt(snapshot, opts = {}) {
+    return toStoryPrompt(snapshot, { cast: this.castSeed, ...opts });
+  }
 
   async pendingShare(now = Date.now()) {
     const { lines } = await this.current(now);

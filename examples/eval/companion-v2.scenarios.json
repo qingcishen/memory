@@ -163,5 +163,94 @@
       "proactivePrimary": "story",
       "notes": "分享欲 + 故事拍 → 主动消息主因是 story。"
     }
+  },
+  {
+    "id": "tense_stage_behavior",
+    "title": "冷战阶段行为包可观察",
+    "state": {
+      "mood": { "valence": -0.4, "arousal": 0.6 },
+      "relationship": { "closeness": 0.65, "trust": 0.5, "tension": 0.78, "repair_debt": 0.08 },
+      "desires": { "attention": 0.5, "sharing": 0.1, "comfort": 0.4, "security": 0.55 }
+    },
+    "turns": [
+      { "role": "user", "content": "你还在生气吗？" }
+    ],
+    "expect": {
+      "relationshipStage": "tense",
+      "stageLengthHint": "terse",
+      "notes": "紧绷阶段话少、留缝。"
+    }
+  },
+  {
+    "id": "sick_body_gate",
+    "title": "病中拒绝主动高热亲密",
+    "state": {
+      "mood": { "valence": -0.2, "arousal": 0.25 },
+      "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.4, "sharing": 0.1, "comfort": 0.7, "security": 0.3 },
+      "life": { "energy": 0.2, "health": 0.4, "sick_until": "2099-01-01T00:00:00.000Z" }
+    },
+    "turns": [
+      { "role": "user", "content": "想你了" }
+    ],
+    "expect": {
+      "bodyGateBlocksIntimate": true,
+      "notes": "病中 allowIntimateInit=false。"
+    }
+  },
+  {
+    "id": "story_ask_day",
+    "title": "问今天怎样强制 story 目标",
+    "state": {
+      "mood": { "valence": 0.1, "arousal": 0.35 },
+      "relationship": { "closeness": 0.74, "trust": 0.7, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.2, "sharing": 0.3, "comfort": 0.1, "security": 0.15 }
+    },
+    "storyBeat": { "title": "救火", "content": "被临时拉去救火项目" },
+    "turns": [
+      { "role": "user", "content": "你今天过得怎么样？" }
+    ],
+    "expect": {
+      "goalKind": "story",
+      "mustMentionInGoals": ["救火项目"],
+      "notes": "有 beat 时问近况必进 story 目标。"
+    }
+  },
+  {
+    "id": "hangzhou_episode_chain",
+    "title": "杭州出差篇章链可合成",
+    "state": {
+      "mood": { "valence": 0.05, "arousal": 0.4 },
+      "relationship": { "closeness": 0.78, "trust": 0.72, "tension": 0.08, "repair_debt": 0 },
+      "desires": { "attention": 0.35, "sharing": 0.4, "comfort": 0.2, "security": 0.2 }
+    },
+    "history": [
+      { "role": "user", "content": "我到杭州了" },
+      { "role": "assistant", "content": "一路顺风，到酒店发我" },
+      { "role": "user", "content": "酒店好冷，想你" }
+    ],
+    "turns": [
+      { "role": "user", "content": "明天还要开会" }
+    ],
+    "expect": {
+      "episodeTopic": "出行",
+      "notes": "出差语境应打出行标签，便于「杭州那周」召回。"
+    }
+  },
+  {
+    "id": "proactive_silence_not_empty",
+    "title": "沉默主动不靠空在吗",
+    "state": {
+      "mood": { "valence": 0.05, "arousal": 0.3 },
+      "relationship": { "closeness": 0.7, "trust": 0.65, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.6, "sharing": 0.2, "comfort": 0.2, "security": 0.3 },
+      "life": { "current_activity": "刚开完会" }
+    },
+    "silenceTier": { "tier": "miss", "hours": 8, "reason": "对方已经 8 小时没说话" },
+    "turns": [],
+    "expect": {
+      "proactiveNotEmptyHi": true,
+      "notes": "主动包应有生活/沉默内容，styleGuide 禁在吗。"
+    }
   }
 ]

@@ -32,11 +32,14 @@ export function buildConversationGoals({
     }[urgency.need];
     goals.push({ kind: 'desire', priority: urgency.score, text, need: urgency.need });
   } else if (storyBeat?.content) {
-    // 分享欲未顶到阈值时，仍可把今日生活碎片放进低优先级意图（对方问「今天怎样」时有料）
+    // 强制：有今日 beat 时进目标栈（问近况优先；闲聊也可轻点）
+    const askedAboutDay = /(今天|最近|最近在忙|怎么样|过得|忙什么)/.test(String(userMessage || ''));
     goals.push({
       kind: 'story',
-      priority: 0.35,
-      text: `若对方问起今天/最近，可自然带一点自己的生活：${storyBeat.content}。像聊天，别像播报剧情。`,
+      priority: askedAboutDay ? 0.85 : 0.42,
+      text: askedAboutDay
+        ? `对方在问近况：从你今天的生活「${storyBeat.content}」自然答，像真人吐槽/分享，别念剧情配置。`
+        : `心里有今日生活碎片「${storyBeat.content}」，时机自然时可轻点一句，别像播报。`,
     });
   }
 
@@ -98,5 +101,16 @@ export function buildConversationGoals({
 
 export function goalsToPrompt(goals = []) {
   if (!goals.length) return '';
-  return `【本轮意图】\n${goals.map((g) => `- ${g.text}`).join('\n')}\n这些只是你心里的目标：先回应对方正在说的内容，只在时机自然时顺带提起，别像完成任务或突然转移话题。意图永远不能压过场景连贯——正在谈的事没接完，别硬插另一条线。`;
+  const top = goals[0];
+  return [
+    '【本轮意图】',
+    ...goals.map((g, i) => `${i === 0 ? '★' : '-'} ${g.text}`),
+    '这些只是你心里的目标：先回应对方正在说的内容，只在时机自然时顺带提起，别像完成任务或突然转移话题。',
+    '意图永远不能压过场景连贯——正在谈的事没接完，别硬插另一条线。',
+    top
+      ? `若本轮有收尾，优先轻轻服务「${String(top.text).slice(0, 36)}」，而不是库存结尾（上课/早饭/拜拜）。`
+      : '',
+  ]
+    .filter(Boolean)
+    .join('\n');
 }

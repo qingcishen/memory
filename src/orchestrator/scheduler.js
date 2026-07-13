@@ -294,6 +294,7 @@ export class ProactiveScheduler {
       silenceTier,
       bedtimeTier,
       lifeActivity: stateSnapshot?.life?.current_activity,
+      life: stateSnapshot?.life,
       defaultReason: this.defaultReason,
     });
 

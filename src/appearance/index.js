@@ -7,6 +7,8 @@ export {
   buildUnifiedLookPrompt,
   buildScenePrompt,
   decidePhoto,
+  imageQualityGate,
+  FACE_LOCK,
   Selfie,
   readAppearanceAssets,
   insertAppearanceAsset,

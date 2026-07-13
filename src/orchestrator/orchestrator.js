@@ -19,10 +19,11 @@ import { StoryEngine } from '../story/index.js';
 import { buildConversationGoals, goalsToPrompt } from './goals.js';
 import { prepareIntimacyForTurn, defaultIntimacy, mergeIntimacyConfig } from '../state/intimacy.js';
 import { normalizeWardrobe } from '../state/outfit.js';
-import { detectSceneLocks, sceneCoherenceToPrompt, extractUnfinishedHooks } from '../companion/sceneCoherence.js';
-import { inferRelationshipStage, relationshipStageToPrompt } from '../companion/relationshipStage.js';
-import { buildEpisodeHeuristic, episodesToPrompt } from '../companion/episode.js';
-import { buildProactiveContentPack } from '../companion/proactiveContent.js';
+import { detectSceneLocks, sceneCoherenceToPrompt, extractUnfinishedHooks, nonSequiturRepairHint } from '../companion/sceneCoherence.js';
+import { inferRelationshipStage, relationshipStageToPrompt, applyStageToBehavior } from '../companion/relationshipStage.js';
+import { buildEpisodeHeuristic, episodesToPrompt, synthesizeEpisodeChain } from '../companion/episode.js';
+import { buildProactiveContentPack, PROACTIVE_STYLE_GUIDE } from '../companion/proactiveContent.js';
+import { inferBodySituation, bodyStateToPrompt, applyBodyToBehavior, bodyIntimacyGate } from '../companion/bodyState.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
@@ -256,7 +257,6 @@ export class Orchestrator {
       stateSnapshot?.desires,
       [...this.history.slice(-4), { role: 'user', content: userMessage }]
     );
-    const behavior = behaviorPolicy(emotionLabel, { relationship: relState?.relationship ?? relState ?? {}, ...(opts.behaviorState ?? {}) });
     // I2: 回复前预演亲密阶段（不写库），驱动旁白细分与 prompt 指引
     const intimacyLive =
       PARAMS.intimacy?.enabled !== false
@@ -274,16 +274,25 @@ export class Orchestrator {
         : stateSnapshot?.intimacy ?? null;
     const stateForPrompt = stateSnapshot ? { ...stateSnapshot, intimacy: intimacyLive ?? stateSnapshot.intimacy } : stateSnapshot;
     const rel = relState?.relationship ?? relState ?? {};
+    const relStage = inferRelationshipStage(rel);
+    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual);
+    let behavior = behaviorPolicy(emotionLabel, { relationship: rel, ...(opts.behaviorState ?? {}) });
+    behavior = applyStageToBehavior(behavior, relStage);
+    behavior = applyBodyToBehavior(behavior, bodySit);
     // 场景连贯锁（纯逻辑）：从历史+本轮+亲密阶段推断，注入最高优先级 prompt
     const sceneLocks = detectSceneLocks(userMessage, this.history, intimacyLive?.scene_phase);
     this._lastSceneLocks = sceneLocks;
     const unfinished = extractUnfinishedHooks(this.history);
-    const relStage = inferRelationshipStage(rel);
     const episodeTexts = extractEpisodeTexts(memoryHits);
+    // 故事 beat：今日 + 未分享的 pending 都可作内容源
+    let storyBeat = storySnapshot?.today ?? null;
+    if (!storyBeat && typeof this.story?.pendingShare === 'function') {
+      storyBeat = await this.story.pendingShare().catch(() => null);
+    }
     const goals = buildConversationGoals({
       dueItems,
       desires: stateSnapshot?.desires,
-      storyBeat: storySnapshot?.today,
+      storyBeat,
       intimacy: intimacyLive ?? stateSnapshot?.intimacy,
       intimacyPolicy: this.stateLayer?.stateLayer?.intimacy?.config?.proactive,
       unfinished,
@@ -291,6 +300,18 @@ export class Orchestrator {
       userMessage,
       sceneLocks,
     });
+    // 身体门控：病中/经期时砍掉高主动亲密意图
+    const bodyGate = bodyIntimacyGate(bodySit);
+    if (!bodyGate.allowIntimateInit) {
+      for (const g of goals) {
+        if (g.kind === 'intimacy' && g.canInitiate) {
+          g.canInitiate = false;
+          g.text = '身体不适：可黏可要抱抱，别主动推高热；对方坚持也温柔设限。';
+          g.priority = Math.min(g.priority, 0.35);
+        }
+      }
+      goals.sort((a, b) => b.priority - a.priority);
+    }
     if (this.narration) this._lastSceneType = sceneType; // 供下一轮连续性提示; 未启用旁白则不维护
     this._lastSceneTypeForObserve = sceneType;
     if (typeof this.memory.setSceneType === 'function') this.memory.setSceneType(sceneType);
@@ -302,15 +323,21 @@ export class Orchestrator {
       return { text: '', parts: [], emotionLabel, behaviorPolicy: behavior };
     }
 
+    const askAboutDay = /(今天|最近|最近在忙|怎么样|过得|忙什么)/.test(userMessage);
     const promptParts = {
       timePrompt: buildTimePrompt(new Date(), { weather, gapHours }),
       personaPrompt: this.persona.toPrompt() ?? '',
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
-      storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
+      storyPrompt: this.story
+        ? this.story.toPrompt(storySnapshot, { forceToday: Boolean(storyBeat) || askAboutDay })
+        : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       relationshipStagePrompt: relationshipStageToPrompt(relStage, rel),
-      coherencePrompt: sceneCoherenceToPrompt(sceneLocks, { intimacyPhase: intimacyLive?.scene_phase }),
+      coherencePrompt: sceneCoherenceToPrompt(sceneLocks, {
+        intimacyPhase: intimacyLive?.scene_phase,
+        topGoalText: goals[0]?.text,
+      }),
       episodePrompt: episodesToPrompt(episodeTexts),
       statePrompt: [
         this.stateLayer.toPrompt(stateForPrompt, {
@@ -318,6 +345,7 @@ export class Orchestrator {
           hardBoundaries: this._config?.intimacyHardBoundaries,
           intimacyConfig: this.stateLayer?.stateLayer?.intimacy?.config,
         }),
+        bodyStateToPrompt(bodySit, intimacyLive ?? stateSnapshot?.intimacy),
         behaviorToPrompt(behavior),
       ]
         .filter(Boolean)
@@ -348,7 +376,28 @@ export class Orchestrator {
 
     const samplingHints =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
-    const { text: reply, parts } = normalizeReplyResult(await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal }));
+    let { text: reply, parts } = normalizeReplyResult(await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal }));
+
+    // 跳戏软修复：最多再生成一次（失败安全，不阻塞）
+    const repair = nonSequiturRepairHint(reply, sceneLocks);
+    if (repair.needsRetry && !opts.skipCoherenceRetry) {
+      try {
+        const retryMessages = [
+          ...messages,
+          { role: 'assistant', content: reply },
+          { role: 'user', content: repair.hint },
+        ];
+        const retried = normalizeReplyResult(
+          await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
+        );
+        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks).needsRetry) {
+          reply = retried.text;
+          parts = retried.parts;
+        }
+      } catch {
+        /* 保持原稿 */
+      }
+    }
 
     this.recordHistory([
       { role: 'user', content: userMessage },
@@ -372,10 +421,13 @@ export class Orchestrator {
       intimacyPhase: intimacyLive?.scene_phase ?? null,
       relationshipState: relState,
       relationshipStage: relStage,
+      bodySituation: bodySit,
       sceneLocks: sceneLocks.map((l) => l.id),
       unfinished,
+      coherenceRepair: repair.needsRetry ? repair.reasons : [],
       worldSnapshot,
       storySnapshot,
+      storyBeat,
       sceneType,
       emotionLabel,
       behaviorPolicy: behavior,
@@ -396,6 +448,7 @@ export class Orchestrator {
       intimacyPhase: intimacyLive?.scene_phase ?? null,
       relationshipStage: relStage?.id ?? null,
       sceneLocks: sceneLocks.map((l) => l.id),
+      bodySituation: bodySit,
       ...(debug ? { debug } : {}),
     };
   }
@@ -435,6 +488,7 @@ export class Orchestrator {
         silenceTier: ctx.silenceTier,
         bedtimeTier: ctx.bedtimeTier,
         lifeActivity: stateSnapshot?.life?.current_activity,
+        life: stateSnapshot?.life,
         defaultReason: ctx.reason ?? activityReason(stateSnapshot?.life) ?? '想主动找对方聊一句',
       });
     const effCtx = {
@@ -522,6 +576,8 @@ export class Orchestrator {
       if (typeof this.memory.story === 'function') tasks.push(this.memory.story());
       if (typeof this.memory.dedupe === 'function') tasks.push(this.memory.dedupe());
       if (typeof this.memory.train === 'function') tasks.push(this.trainNightly());
+      // Episode 夜间：把当日缓冲篇章合成关系故事链
+      tasks.push(this.synthesizeEpisodesNightly(now));
     }
     const results = await Promise.allSettled(tasks);
     // S2 故事拍在基础 settle 完成后再推进，避免两条 affect 写路径并发覆盖。
@@ -530,6 +586,28 @@ export class Orchestrator {
     }
     for (const r of results) if (r.status === 'rejected') console.error('[maintain]', r.reason);
     return results;
+  }
+
+  /**
+   * 夜间把缓冲的篇章启发式合成「关系故事链」写入 dyad episode。
+   * 无缓冲则从近期 history 抽一条。
+   */
+  async synthesizeEpisodesNightly(now = Date.now()) {
+    const buffer = this._episodeBuffer || [];
+    this._episodeBuffer = [];
+    let chain = null;
+    if (buffer.length >= 1) {
+      chain = synthesizeEpisodeChain(buffer, { label: new Date(now).toISOString().slice(0, 10) });
+    } else if (this.history?.length >= 4) {
+      const ep = buildEpisodeHeuristic(this.history.slice(-16), { now });
+      if (ep) chain = synthesizeEpisodeChain([ep], { label: new Date(now).toISOString().slice(0, 10) });
+    }
+    if (!chain) return null;
+    if (typeof this.memory.recordEpisode === 'function') return this.memory.recordEpisode(chain);
+    if (typeof this.memory.recordSelfEvent === 'function') {
+      return this.memory.recordSelfEvent(chain.content, { narrative: chain.title, importance: chain.importance });
+    }
+    return null;
   }
 
   /**
@@ -597,6 +675,8 @@ export class Orchestrator {
     const ep = buildEpisodeHeuristic(turns, { now });
     if (!ep) return null;
     this._lastEpisodeAt = now;
+    // 缓冲供夜间合成故事链；同时落一条即时篇章
+    this._episodeBuffer = [...(this._episodeBuffer || []), ep].slice(-8);
     if (typeof this.memory.recordEpisode === 'function') {
       return this.memory.recordEpisode(ep);
     }
@@ -667,7 +747,8 @@ function normalizeHistory(turns = []) {
 function buildProactiveInstruction(ctx = {}) {
   const reason = ctx.reason ? `触发原因: ${ctx.reason}\n` : '';
   const style = ctx.style ? `风格要求: ${ctx.style}\n` : '';
-  return `${reason}${style}现在不是用户刚发来消息, 而是你想主动找对方说一句话。生成一条自然、简短、不打扰人的主动开场, 不要解释你在执行任务。`;
+  const guide = ctx.contentPack?.styleGuide || PROACTIVE_STYLE_GUIDE;
+  return `${reason}${style}${guide}\n现在不是用户刚发来消息, 而是你想主动找对方说一句话。生成一条自然、简短、有生活信息、不打扰人的主动开场；禁止空「在吗」；不要解释你在执行任务。`;
 }
 
 /** L3: 把她此刻的生活活动转成一句主动开场的由头。无活动则返回 undefined (退回默认 reason)。 */

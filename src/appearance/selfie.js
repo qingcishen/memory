@@ -13,8 +13,31 @@ import { outfitToImageMods } from '../state/outfit.js';
 const DAY = 24 * 60 * 60 * 1000;
 
 /** 脸与气质一致性：所有自拍共用，尽量锁同一人。 */
-const FACE_LOCK =
+export const FACE_LOCK =
   'same woman consistently, natural East Asian features, soft jawline, realistic skin texture, photorealistic, not anime, not illustration';
+
+/**
+ * 质量门禁：缺脸锁/外貌/疑似崩脸提示词 → 拒出图（宁可少图不要崩脸）。
+ * @returns {{ ok: boolean, reason: string }}
+ */
+export function imageQualityGate({ prompt = '', appearance = '', kind = 'selfie', hasReferences = false } = {}) {
+  const p = String(prompt || '');
+  if (!p.trim()) return { ok: false, reason: 'empty_prompt' };
+  if (kind === 'selfie' || kind === 'lookbook') {
+    if (!appearance?.trim() && !hasReferences) {
+      // 无外貌描述且无参考脸：容易崩脸
+      return { ok: false, reason: 'no_face_anchor' };
+    }
+    if (!/same woman|consistent face|photorealistic/i.test(p) && !hasReferences) {
+      return { ok: false, reason: 'missing_face_lock' };
+    }
+  }
+  // 明确禁止崩脸关键词（若 provider 回灌了坏 prompt）
+  if (/\b(extra arms|deformed|mutated|disfigured)\b/i.test(p)) {
+    return { ok: false, reason: 'bad_prompt_tokens' };
+  }
+  return { ok: true, reason: 'ok' };
+}
 
 // ============================================================
 //  纯逻辑 (无 IO, 离线可测)
@@ -203,10 +226,11 @@ export class Selfie {
   async photo(snapshot, opts = {}) {
     const now = opts.now ?? Date.now();
     const kind = opts.kind ?? 'selfie';
+    const appearance = opts.appearance ?? '';
     const built =
       kind === 'scene'
         ? buildScenePrompt(snapshot, now)
-        : buildUnifiedLookPrompt(snapshot, opts.appearance ?? '', now, { kind });
+        : buildUnifiedLookPrompt(snapshot, appearance, now, { kind });
     if (!built) return null; // scene 没题材
     const { prompt, tags, lookSummary } = built;
 
@@ -229,6 +253,18 @@ export class Selfie {
       mime: item.mime,
       name: item.name,
     }));
+
+    // 质量门禁：宁可少图不要崩脸
+    const gate = imageQualityGate({
+      prompt,
+      appearance,
+      kind,
+      hasReferences: references.length > 0 || Boolean(opts.loraId || process.env.IMAGE_LORA_ID),
+    });
+    if (!gate.ok) {
+      return null;
+    }
+
     const providerOpts = {
       seed: opts.seed,
       loraId: opts.loraId ?? process.env.IMAGE_LORA_ID,
@@ -238,12 +274,13 @@ export class Selfie {
       references.length && typeof this.provider.edit === 'function'
         ? await this.provider.edit(prompt, references, providerOpts)
         : await this.provider.generate(prompt, providerOpts);
+    if (!img?.url) return null;
     await this.write(this.userId, this.companionId, {
       url: img.url,
       tags,
       prompt,
       seed: img.seed,
-      meta: { ...img.meta, kind, lookSummary: lookSummary || null },
+      meta: { ...img.meta, kind, lookSummary: lookSummary || null, qualityGate: gate.reason },
     }).catch(() => {});
     return {
       url: img.url,

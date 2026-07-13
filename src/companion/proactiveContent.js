@@ -1,6 +1,16 @@
 /**
  * 主动消息内容源：把「为什么找他」落成有生活的理由，而不是空 cron。
+ * 克制美学：短、有信息、有她自己的生活，不粘。
  */
+
+/** 主动消息风格硬指引（进 proactiveTick 指令） */
+export const PROACTIVE_STYLE_GUIDE = [
+  '【主动·克制美学】',
+  '一条短消息就够：有信息、有生活碎片，别连环追问。',
+  '禁止空「在吗」「忙吗」；禁止查岗腔、情绪勒索。',
+  '可以带一点点她自己的事（开会完/穿了某套/上次没聊完），像真人想起他。',
+  '冷淡/沉默后找他：留台阶，别一上来质问；想亲密也先像人说话。',
+].join('');
 
 /**
  * @param ctx {{
@@ -13,6 +23,7 @@
  *   silenceTier?: object|null,
  *   bedtimeTier?: object|null,
  *   lifeActivity?: string|null,
+ *   life?: object|null,
  *   defaultReason?: string,
  * }}
  */
@@ -23,12 +34,11 @@ export function buildProactiveContentPack(ctx = {}) {
     sources.push({ kind: 'prospective', weight: 1.0, reason: `你答应过要提醒他：${due.content}`, seed: due.content });
   }
   if (ctx.storyBeat?.content) {
-    // 分享欲高 + 有故事拍：故事作主因（压过裸 desire），这样主动消息有「生活内容」而不是空「想分享」
     const sharingBoost = ctx.urgency?.urgent && ctx.urgency?.need === 'sharing' ? 1.05 : 0.92;
     sources.push({
       kind: 'story',
       weight: sharingBoost,
-      reason: `你今天生活里刚发生：${ctx.storyBeat.title || ''}——${ctx.storyBeat.content}。想第一时间跟他说，像真人分享，不是播报。`,
+      reason: `你今天生活里刚发生：${ctx.storyBeat.title || ''}——${ctx.storyBeat.content}。想第一时间跟他说，像真人分享，不是播报。一句就够。`,
       seed: ctx.storyBeat.content,
     });
   }
@@ -40,20 +50,37 @@ export function buildProactiveContentPack(ctx = {}) {
       seed: ctx.unfinished[0].text,
     });
   }
-  if (ctx.outfit?.current?.summary && /date|intimate|outing/.test(String(ctx.outfit.context || ''))) {
+  if (ctx.outfit?.current?.summary && /date|intimate|outing|home/.test(String(ctx.outfit.context || ''))) {
+    const complimentHook = /date|outing/.test(String(ctx.outfit.context || ''));
     sources.push({
       kind: 'outfit',
-      weight: 0.7,
-      reason: `你今天穿着「${ctx.outfit.current.summary}」，想随口让他知道/让他夸，别像报货号。`,
+      weight: complimentHook ? 0.72 : 0.55,
+      reason: complimentHook
+        ? `你今天穿着「${ctx.outfit.current.summary}」，可以随口让他知道/让他夸一句，像真人晒，别报货号。`
+        : `你这会儿是「${ctx.outfit.current.summary}」，若提到样子可轻轻带一句。`,
       seed: ctx.outfit.current.summary,
     });
   }
-  if (ctx.lifeActivity) {
+  // 工作/梦/活动碎片
+  const activity = ctx.lifeActivity || ctx.life?.current_activity;
+  if (activity && !/睡着|睡了/.test(String(activity))) {
+    const isWork = /开会|加班|工位|项目|客户/.test(String(activity));
     sources.push({
-      kind: 'activity',
-      weight: 0.65,
-      reason: `你刚才在「${ctx.lifeActivity}」，忙里偷闲想起他，用生活碎片开场。`,
-      seed: ctx.lifeActivity,
+      kind: isWork ? 'work' : 'activity',
+      weight: isWork ? 0.7 : 0.65,
+      reason: isWork
+        ? `你刚忙完「${activity}」，有点累，想用一句生活碎片找他，不粘。`
+        : `你刚才在「${activity}」，忙里偷闲想起他，用生活碎片开场。`,
+      seed: activity,
+    });
+  }
+  // 病中：主动更克制，内容是想被轻轻关心，不是撒泼
+  if (ctx.life?.sick_until && new Date(ctx.life.sick_until).getTime() > Date.now()) {
+    sources.push({
+      kind: 'sick',
+      weight: 0.8,
+      reason: '你身体不太舒服，想轻轻让他知道你在，话少，别卖惨连环。',
+      seed: '不舒服',
     });
   }
   if (ctx.urgency?.urgent) {
@@ -67,7 +94,7 @@ export function buildProactiveContentPack(ctx = {}) {
     sources.push({
       kind: 'desire',
       weight: 0.75 + (Number(ctx.urgency.score) || 0) * 0.2,
-      reason: `${needMap[ctx.urgency.need] || '想找他'}。语气：${tone}`,
+      reason: `${needMap[ctx.urgency.need] || '想找他'}。语气：${tone}。仍要短、有生活，别空催。`,
       seed: ctx.urgency.need,
     });
   }
@@ -81,15 +108,19 @@ export function buildProactiveContentPack(ctx = {}) {
       seed: 'intimacy',
     });
   }
-  // 优先级与 scheduler 旧链一致: bedtime > silence（睡前晚安压过单纯沉默搭话）
   if (ctx.bedtimeTier?.reason) {
     sources.push({ kind: 'bedtime', weight: 0.88, reason: ctx.bedtimeTier.reason, seed: 'bedtime' });
   }
   if (ctx.silenceTier?.reason) {
+    // 沉默后：强调可恢复、不质问
+    const silenceReason =
+      ctx.silenceTier.tier === 'miss'
+        ? `${ctx.silenceTier.reason}。可以带一点小情绪，但留缝，别质问「是不是不想理我了」开场。`
+        : ctx.silenceTier.reason;
     sources.push({
       kind: 'silence',
       weight: 0.7 + (ctx.silenceTier.tier === 'miss' ? 0.1 : 0),
-      reason: ctx.silenceTier.reason,
+      reason: silenceReason,
       seed: 'silence',
     });
   }
@@ -102,8 +133,7 @@ export function buildProactiveContentPack(ctx = {}) {
     seed: 'hi',
   };
 
-  // 组合副线索：主理由 + 最多一条辅料（故事/穿搭/未完）
-  const secondary = sources.find((s) => s !== top && ['story', 'outfit', 'unfinished', 'activity'].includes(s.kind));
+  const secondary = sources.find((s) => s !== top && ['story', 'outfit', 'unfinished', 'activity', 'work'].includes(s.kind));
   let reason = top.reason;
   if (secondary && top.kind !== secondary.kind) {
     reason = `${top.reason} 也可以顺带一点点：${secondary.reason}`;
@@ -114,7 +144,19 @@ export function buildProactiveContentPack(ctx = {}) {
     secondary: secondary || null,
     reason,
     query: top.seed || secondary?.seed || '想主动找对方聊一句',
-    style: ctx.urgency?.urgent ? ctx.urgency.tone : ctx.intimacyUrg?.urgent ? ctx.intimacyUrg.tone : undefined,
+    style: buildProactiveStyle(ctx, top),
+    styleGuide: PROACTIVE_STYLE_GUIDE,
     sources,
   };
+}
+
+function buildProactiveStyle(ctx, top) {
+  const bits = [];
+  if (ctx.urgency?.urgent && ctx.urgency.tone) bits.push(ctx.urgency.tone);
+  if (ctx.intimacyUrg?.urgent && ctx.intimacyUrg.tone) bits.push(ctx.intimacyUrg.tone);
+  if (top?.kind === 'silence') bits.push('短、留缝、不质问');
+  if (top?.kind === 'sick') bits.push('话少、软、不卖惨');
+  if (top?.kind === 'story' || top?.kind === 'work') bits.push('像分享生活碎片，一句够');
+  bits.push('整条主动消息控制在一两句内');
+  return bits.filter(Boolean).join('；');
 }
