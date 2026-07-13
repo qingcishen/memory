@@ -14,6 +14,7 @@ import {
   normalizeWardrobe,
   pickOutfit,
   piecesToSummary,
+  sanitizeOutfitForImage,
 } from './outfit.js';
 import { buildUnifiedLookPrompt, imageQualityGate } from '../appearance/selfie.js';
 
@@ -285,7 +286,12 @@ export function shouldShareDailyPhoto(outfit, { force = false } = {}) {
  * 构建今日成片 prompt（人像 lookbook，非单品）。
  */
 export function buildDailyLookPrompt(snapshot, appearance = '', now = Date.now(), { hasReferences = false } = {}) {
-  return buildUnifiedLookPrompt(snapshot, appearance, now, { kind: 'lookbook', hasReferences });
+  // 出图前剥离内衣字段，避免 gpt-image 以 sexual 拒图
+  const safeSnap = {
+    ...(snapshot || {}),
+    outfit: sanitizeOutfitForImage(snapshot?.outfit),
+  };
+  return buildUnifiedLookPrompt(safeSnap, appearance, now, { kind: 'lookbook', hasReferences });
 }
 
 /**
@@ -347,12 +353,30 @@ export async function generateDailyLookPhoto({
 
   const providerOpts = {
     seed: `${o.daily_key}|${o.current?.id || 'look'}`,
+    // 日更：最多 2 张脸参考 + 4 分钟超时（实测 gpt-image 全身常要 1.5～2.5 分钟）
+    maxReferences: 2,
+    timeoutMs: 240_000,
   };
-  const img =
-    refs.length && typeof provider.edit === 'function'
-      ? await provider.edit(built.prompt, refs, providerOpts)
-      : await provider.generate(built.prompt, providerOpts);
+  let img = null;
+  let usedEdit = false;
+  if (refs.length && typeof provider.edit === 'function') {
+    try {
+      img = await provider.edit(built.prompt, refs.slice(0, 2), providerOpts);
+      usedEdit = true;
+    } catch (error) {
+      // 参考图编辑易因体积/网络 fetch failed；降级为纯文生图，保证能出片
+      console.error('[dailyLook] edit failed, fallback generate:', error?.message || error);
+      img = await provider.generate(built.prompt, providerOpts).catch((e2) => {
+        throw new Error(
+          `脸参考生成失败且纯生成也失败: ${error?.message || error} | ${e2?.message || e2}`,
+        );
+      });
+    }
+  } else {
+    img = await provider.generate(built.prompt, providerOpts);
+  }
   if (!img?.url) return { ok: false, reason: 'generate_failed', outfit: o };
+  if (img.meta) img.meta.dailyUsedEdit = usedEdit;
 
   const albumCardId = dailyAlbumCardId(o.daily_key);
   let publicUrl = img.url;

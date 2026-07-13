@@ -18,10 +18,11 @@ export const REFERENCE_SCOPE_BAN =
   'outfit, shoes, accessories, background, lighting, composition, or camera angle. ' +
   'Completely redesign expression, gaze, pose, and body language so they visibly differ from the reference.';
 
-/** 成熟人妻感气质（非幼态、非擦边） */
+/** 成熟韵味气质（非幼态、非擦边；措辞避开图模 sexual 审核敏感词） */
 export const MATURE_WIFE_AURA =
-  'mature elegant adult East Asian woman, refined married-woman elegance (renqi-gan), soft warmth, relaxed poise, tasteful femininity, ' +
-  'graceful body language, high-end lifestyle aesthetic, not schoolgirl, not childish, not vulgar sexy, not influencer thirst-trap';
+  'mature elegant adult East Asian woman, refined sophisticated presence, soft warmth, relaxed poise, tasteful femininity, ' +
+  'graceful body language, high-end lifestyle aesthetic, fully clothed, professional or polished casual styling, ' +
+  'not schoolgirl, not childish, not vulgar, not influencer thirst-trap';
 
 /** 写实胶片摄影 */
 export const REALISM_FILM =
@@ -33,12 +34,11 @@ export const FULL_BODY_SHOES =
   'full body head-to-toe full-length fashion portrait, entire figure in frame, feet not cropped, ' +
   'shoes fully visible and clearly described, footwear required, no barefoot, no bare feet, no missing shoes';
 
-/** 统一负向（并入 prompt 尾或独立 negative） */
+/** 统一负向（并入 prompt 尾或独立 negative；避免堆砌性相关词触发审核） */
 export const IMAGE_NEGATIVE =
   'copied pose from reference, copied expression from reference, copied gaze from reference, copied head angle from reference, ' +
   'copied body posture from reference, copied hand position from reference, same mood as reference, ' +
-  'minor, underage, childish face, schoolgirl, vulgar, cheap sexy, pornographic, explicit nudity, lingerie showcase, ' +
-  'transparent clothing, fetish pose, exaggerated breasts, exaggerated hips, barefoot, bare feet, no shoes, missing shoes, ' +
+  'minor, underage, childish face, schoolgirl, vulgar, barefoot, bare feet, no shoes, missing shoes, ' +
   'cropped feet, cropped ankles, incomplete outfit, bad anatomy, deformed, extra fingers, plastic skin, heavy beauty filter, ' +
   'western face, European face, collage, grid, multiple panels, multiple people, low quality, anime, illustration';
 
@@ -81,7 +81,7 @@ export function moodModsForImage(emotion = {}, life = {}, now = Date.now()) {
   if (life?.sick_until && new Date(life.sick_until).getTime() > now) {
     mods.push('slightly tired soft expression, gentle composure, still elegant');
   } else if (valence > 0.3) {
-    mods.push('soft warm almost-smile, tender mature gaze, relaxed married-woman charm');
+    mods.push('soft warm almost-smile, tender mature gaze, relaxed refined charm');
   } else if (valence < -0.2) {
     mods.push('quiet reserved expression, soft melancholy, restrained elegance');
   } else {

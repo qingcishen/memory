@@ -693,9 +693,45 @@ export function toOutfitPrompt(outfit, { force = false, justChanged = false, war
   return `【此刻穿搭】${core}。${photoHint}`;
 }
 
+/**
+ * 出图用穿搭：剥离内衣/文胸/内裤等易触发图模安全审核的字段。
+ * 对话仍可保留内衣细节；只影响 image mods。
+ */
+export function sanitizeOutfitForImage(outfit) {
+  const o = clampOutfitState(outfit);
+  if (!o.current) return o;
+  const intimate = o.context === 'intimate';
+  const p = { ...(o.current.pieces || {}) };
+  if (!intimate) {
+    delete p.lingerie;
+    delete p.bra;
+    delete p.panties;
+    delete p.hosiery;
+  }
+  // 摘要里去掉内衣品牌/描述（La Perla 等会被 piecesToSummary 拼进 summary）
+  let summary = String(o.current.summary || piecesToSummary(p));
+  if (!intimate) {
+    summary = summary
+      .replace(/[，,]?\s*La Perla[^，,]*/gi, '')
+      .replace(/[，,]?\s*Agent Provocateur[^，,]*/gi, '')
+      .replace(/[，,]?\s*(裸色无痕套装|无痕软钢圈|同色三角\/平角|文胸|内裤|内衣)[^，,]*/g, '')
+      .replace(/[，,]{2,}/g, '，')
+      .replace(/^[，,\s]+|[，,\s]+$/g, '')
+      .trim() || piecesToSummary(p);
+  }
+  return clampOutfitState({
+    ...o,
+    current: {
+      ...o.current,
+      summary,
+      pieces: p,
+    },
+  });
+}
+
 /** 给自拍/出图用的服装修饰语（禁止赤脚；强制可识别鞋履） */
 export function outfitToImageMods(outfit) {
-  const o = clampOutfitState(outfit);
+  const o = sanitizeOutfitForImage(outfit);
   if (!o.current?.summary) return [];
   const mods = [o.current.summary];
   const p = o.current.pieces || {};

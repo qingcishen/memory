@@ -1881,54 +1881,91 @@ async function recomposeDailyOutfit(env, scope = {}) {
   };
 }
 
+function loadCompanionAppearanceText(companionId) {
+  const id = safeCompanionId(companionId) || 'default';
+  // 1) appearance.json · anchor_prompt
+  try {
+    const aPath = path.join(companionDirPath(id), 'appearance.json');
+    if (fs.existsSync(aPath)) {
+      const a = JSON.parse(fs.readFileSync(aPath, 'utf8'));
+      const anchor = a?.appearance?.anchor_prompt || a?.anchor_prompt || a?.appearance;
+      if (typeof anchor === 'string' && anchor.trim()) return anchor.trim().slice(0, 800);
+    }
+  } catch { /* ignore */ }
+  // 2) profile.json
+  try {
+    const pPath = path.join(companionDirPath(id), 'profile.json');
+    if (fs.existsSync(pPath)) {
+      const p = JSON.parse(fs.readFileSync(pPath, 'utf8'));
+      const text = p.appearance || p.look || p?.profile?.appearance;
+      if (typeof text === 'string' && text.trim()) return text.trim().slice(0, 800);
+    }
+  } catch { /* ignore */ }
+  return 'elegant mature East Asian adult woman, refined facial proportions, polished executive presence';
+}
+
 async function generateDailyOutfitPhoto(env, scope = {}, { force = false } = {}) {
   if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
   const companionId = safeCompanionId(scope.companionId) || 'default';
   const daily = await getDailyOutfit(env, scope);
   if (!daily.ok) return daily;
   const provider = imageProviderFromEnv(env);
-  const appearance = (() => {
-    try {
-      const file = path.join(companionDirPath(companionId), 'profile.json');
-      if (!fs.existsSync(file)) return '';
-      const p = JSON.parse(fs.readFileSync(file, 'utf8'));
-      return String(p.appearance || p.look || '').slice(0, 800);
-    } catch {
-      return '';
+  const appearance = loadCompanionAppearanceText(companionId);
+  const t0 = Date.now();
+  try {
+    const result = await generateDailyLookPhoto({
+      outfit: daily.outfit,
+      appearance,
+      snapshot: { outfit: daily.outfit, life: {}, emotion: {} },
+      force: Boolean(force),
+      provider,
+      getReferences: () => {
+        const refs = listReferenceImages(scope.userId, companionId);
+        // 只取头像 + 1 张脸图，降低 edits 体积与失败率
+        return [...refs]
+          .sort((a, b) => Number(Boolean(b.isAvatar)) - Number(Boolean(a.isAvatar)))
+          .slice(0, 2)
+          .map((x) => ({ path: referenceFilePath(x), mime: x.mime, name: x.name }));
+      },
+      saveAlbum: (cardId, payload) => saveDailyAlbumImage(env, companionId, cardId, payload),
+      writeAppearance: (asset) => insertAppearanceAsset(scope.userId, companionId, asset),
+      writeOutfit: (outfit) => writeOutfit(scope.userId, companionId, outfit),
+      config: DEFAULT_PARAMS.outfit,
+    });
+    const ms = Date.now() - t0;
+    if (!result.ok && !result.skipped) {
+      return {
+        ok: false,
+        message: result.reason || '生成失败',
+        reason: result.reason,
+        ms,
+      };
     }
-  })();
-  const result = await generateDailyLookPhoto({
-    outfit: daily.outfit,
-    appearance,
-    snapshot: { outfit: daily.outfit, life: {}, emotion: {} },
-    force: Boolean(force),
-    provider,
-    getReferences: () => {
-      const refs = listReferenceImages(scope.userId, companionId);
-      return [...refs]
-        .sort((a, b) => Number(Boolean(b.isAvatar)) - Number(Boolean(a.isAvatar)))
-        .slice(0, 4)
-        .map((x) => ({ path: referenceFilePath(x), mime: x.mime, name: x.name }));
-    },
-    saveAlbum: (cardId, payload) => saveDailyAlbumImage(env, companionId, cardId, payload),
-    writeAppearance: (asset) => insertAppearanceAsset(scope.userId, companionId, asset),
-    writeOutfit: (outfit) => writeOutfit(scope.userId, companionId, outfit),
-    config: DEFAULT_PARAMS.outfit,
-  });
-  if (!result.ok && !result.skipped) {
-    return { ok: false, message: result.reason || '生成失败', reason: result.reason };
+    return {
+      ok: true,
+      skipped: Boolean(result.skipped),
+      message: result.skipped
+        ? (result.reason === 'already' ? '今日成片已存在' : result.reason)
+        : `今日穿搭成片已生成（${Math.round(ms / 1000)}s）`,
+      url: result.url,
+      albumCardId: result.albumCardId,
+      outfit: result.outfit,
+      lookSummary: result.lookSummary || null,
+      ms,
+    };
+  } catch (error) {
+    console.error('[generateDailyOutfitPhoto]', error);
+    const raw = error?.message || String(error);
+    // 图模安全审核 / 业务错误直接透出，不要再包一层「网络请求失败」
+    const message = /safety|sexual|生成失败|超时|参考图|质量|quality_gate/i.test(raw)
+      ? raw
+      : (describeNetworkError(error) || raw || '生成失败');
+    return {
+      ok: false,
+      message,
+      ms: Date.now() - t0,
+    };
   }
-  return {
-    ok: true,
-    skipped: Boolean(result.skipped),
-    message: result.skipped
-      ? (result.reason === 'already' ? '今日成片已存在' : result.reason)
-      : '今日穿搭成片已生成',
-    url: result.url,
-    albumCardId: result.albumCardId,
-    outfit: result.outfit,
-    lookSummary: result.lookSummary || null,
-  };
 }
 
 async function upsertCardAsset(env, companionId, collection, cardId, patch) {
@@ -2890,11 +2927,8 @@ async function handle(req, res) {
   if (route === 'POST /api/outfit/daily/photo') {
     const body = await readBody(req);
     const scope = body?.scope || { userId: body?.userId, companionId: body?.companionId || 'default' };
-    try {
-      return json(res, 200, await generateDailyOutfitPhoto(readEnvValues(), scope, { force: Boolean(body?.force) }));
-    } catch (error) {
-      return json(res, 200, { ok: false, message: error.message || '生成失败' });
-    }
+    // 生图 1～3 分钟常见；错误已在 generateDailyOutfitPhoto 内消化
+    return json(res, 200, await generateDailyOutfitPhoto(readEnvValues(), scope, { force: Boolean(body?.force) }));
   }
   if (route === 'PUT /api/outfit/card') {
     const body = await readBody(req);

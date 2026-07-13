@@ -646,6 +646,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
       flash('建议先上传脸参考图（下方），否则脸可能不稳定');
     }
     setDailyBusy('photo');
+    flash('正在生成今日照片，gpt-image 全身图通常要 1～3 分钟，请稍候…');
     try {
       const result = await api('/api/outfit/daily/photo', json('POST', {
         scope: { userId: scope.userId, companionId },
@@ -655,7 +656,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
       flash(result.message || (result.skipped ? '今日成片已存在' : '今日成片已生成'));
       await load();
     } catch (e) {
-      flash(e.message);
+      flash(e.message || '生成失败');
     } finally {
       setDailyBusy('');
     }
@@ -724,9 +725,14 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
               title={!imageReadyState.imageReady ? '请先配置下方 IMAGE 模型' : undefined}
             >
               {dailyBusy === 'photo' ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
-              {daily?.hasPhoto ? '重新生成今日照片' : '生成今日照片'}
+              {dailyBusy === 'photo'
+                ? '生成中 1～3 分钟…'
+                : (daily?.hasPhoto ? '重新生成今日照片' : '生成今日照片')}
             </button>
           </div>
+          {dailyBusy === 'photo' && (
+            <p className="mt-2 text-xs text-zinc-500">模型在画全身成片，请不要关闭页面；失败会自动降级重试。</p>
+          )}
           {!imageReadyState.imageReady && (
             <p className="mt-2 text-xs text-amber-700">生图未就绪：请在下方填写 IMAGE_MODEL / API Key 并保存。</p>
           )}
