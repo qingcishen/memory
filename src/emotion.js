@@ -7,6 +7,7 @@
 
 import { clampState, defaultState } from './state/affect.js';
 import { PARAMS } from './config.js';
+import { emotionLabelToPrompt } from './state/emotionLabel.js';
 
 const FIELD_RANGE = {
   valence: [-1, 1],
@@ -58,6 +59,16 @@ export function toEmotionPrompt(state) {
   const parts = [`你现在${mood}`];
   if (warmth) parts.push(warmth);
   return `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的情绪状态（禁止说「我现在心情不错/有点低落」这类自我播报）。`;
+}
+
+/**
+ * 标量温度 + 离散标签表现（E2 融合）
+ * labelToPrompt 默认用 emotionLabelToPrompt（调用方也可传入）
+ */
+export function fuseEmotionPrompt(emotion, label = null, residual = null, labelToPrompt = emotionLabelToPrompt) {
+  const scalar = toEmotionPrompt(emotion);
+  const discrete = label && typeof labelToPrompt === 'function' ? labelToPrompt(label, residual) || '' : '';
+  return [scalar, discrete].filter((s) => s && s.trim()).join('\n');
 }
 
 // ---- helpers (纯) ----

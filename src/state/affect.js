@@ -87,10 +87,12 @@ export function clampState(state = {}) {
  * 让状态随时间向基线回落。心情几小时就平复, 紧张缓和得慢, 亲密/信任/和好债不随时间动。
  * @param state 当前状态
  * @param hours 距上次更新过去的小时数
+ * @param overrides 可选 { halfLifeHours?, baseline? } 人设气质覆盖（E3）
  */
-export function decayState(state, hours) {
+export function decayState(state, hours, overrides = null) {
   const s = clampState(state);
-  const { halfLifeHours, baseline } = PARAMS.state;
+  const halfLifeHours = { ...PARAMS.state.halfLifeHours, ...(overrides?.halfLifeHours || {}) };
+  const baseline = { ...PARAMS.state.baseline, ...(overrides?.baseline || {}) };
   const out = { mood: { ...s.mood }, relationship: { ...s.relationship } };
   for (const f of MOOD_FIELDS) out.mood[f] = decayToward(s.mood[f], baseline[f], hours, halfLifeHours[f]);
   for (const f of REL_FIELDS)
@@ -103,6 +105,27 @@ export function decayState(state, hours) {
     out.relationship.tension_topic = null;
   }
   return clampState(out);
+}
+
+/**
+ * 从 CompanionConfig.emotionProfile / emotionBaseline 抽出 decay 覆盖
+ */
+export function emotionDecayOverridesFromConfig(config = null) {
+  if (!config) return null;
+  const profile = config.emotionProfile || {};
+  const halfLifeHours = {};
+  if (profile.valenceHalfLifeHours != null) halfLifeHours.valence = Number(profile.valenceHalfLifeHours);
+  if (profile.arousalHalfLifeHours != null) halfLifeHours.arousal = Number(profile.arousalHalfLifeHours);
+  const baseline = {};
+  const bv = profile.baselineValence ?? config.emotionBaseline?.valence;
+  if (bv != null) baseline.valence = Number(bv);
+  if (!Object.keys(halfLifeHours).length && !Object.keys(baseline).length) return null;
+  return {
+    halfLifeHours: Object.keys(halfLifeHours).length ? halfLifeHours : undefined,
+    baseline: Object.keys(baseline).length ? baseline : undefined,
+    recoverBias: profile.recoverBias != null ? Number(profile.recoverBias) : undefined,
+    sensitivity: profile.sensitivity != null ? Number(profile.sensitivity) : undefined,
+  };
 }
 
 /**

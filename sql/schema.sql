@@ -418,6 +418,16 @@ create table if not exists chat_session_state (
 );
 create index if not exists chat_session_state_updated_idx on chat_session_state (updated_at desc);
 
+-- 情绪残留（离散标签惯性）。进程重启后可接上「还在委屈」。
+create table if not exists chat_emotion_residue (
+  user_id      text not null,
+  companion_id text not null default 'default',
+  residue      jsonb not null default '{}'::jsonb,
+  updated_at   timestamptz not null default now(),
+  primary key (user_id, companion_id)
+);
+create index if not exists chat_emotion_residue_updated_idx on chat_emotion_residue (updated_at desc);
+
 -- 渠道事件幂等：飞书/Discord 重投或多进程时，同一事件只处理一次。
 create table if not exists channel_events (
   channel    text not null,
@@ -588,7 +598,7 @@ begin
     'memories','knowledge_entities','knowledge_relations','affective_state','life_state',
     'affective_state_history','prospective','proactive_rate_limits','behavior_state','story_lines',
     'companions','appearance_assets','companion_card_assets','album_custom_entries',
-    'jobs','chat_history','chat_session_state','channel_events','world_state'
+    'jobs','chat_history','chat_session_state','chat_emotion_residue','channel_events','world_state'
   ] loop
     if to_regclass('public.' || table_name) is not null then
       execute format('alter table public.%I enable row level security', table_name);

@@ -70,6 +70,20 @@ export const DEFAULT_PARAMS = {
     // #5 情绪指向性: tension 指向"外部话题"(为考试焦虑) 而非"用户"时, 只用这个比例的力度拉冷对你的温度。
     // = 1 时退化为旧行为(不区分指向); 越小越体现"她为别的事烦, 但对你还是温柔的"。
     externalTensionWarmthFactor: 0.25,
+    // E1 标签惯性 / 残留
+    residue: {
+      maxStickyTurns: 8,
+      minHoldIntensity: 0.22,
+      intensityHalfLifeHours: 3,
+    },
+    // E4 触景生情（默认只扰动本轮展示，不写库）
+    resonate: {
+      enabled: true,
+      minIntensity: 0.45,
+      maxAbsDelta: 0.12,
+      contrastGain: 0.25,
+      warmthCoupling: 0.15,
+    },
   },
 
   // ---- D1 需求驱力 ----

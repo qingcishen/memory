@@ -7,8 +7,9 @@
 //   - desires
 //   - intimacy (I 线)
 
-import { readState, decayState } from './affect.js';
-import { moodToEmotion, toEmotionPrompt } from '../emotion.js';
+import { readState, decayState, emotionDecayOverridesFromConfig } from './affect.js';
+import { moodToEmotion, toEmotionPrompt, fuseEmotionPrompt } from '../emotion.js';
+import { emotionLabelToPrompt } from './emotionLabel.js';
 import { LifeDimension, toLifePrompt, lifeSamplingHints } from './life.js';
 import { DesireDimension, toDesirePrompt } from './desire.js';
 import { IntimacyDimension, toIntimacyPrompt, defaultIntimacy } from './intimacy.js';
@@ -36,11 +37,13 @@ export class StateLayer {
     intimacyKnowledge = null,
     outfitWardrobe = null,
     outfitConfig = null,
+    emotionDecayOverrides = null,
   } = {}) {
     this.userId = userId;
     this.companionId = companionId;
     this.read = read;
     this.now = now;
+    this.emotionDecayOverrides = emotionDecayOverrides;
     this.life = life ?? new LifeDimension({ userId, companionId, now, ...(activityFn ? { activityFn } : {}), ...(lifeConfig ? { lifeConfig } : {}) });
     this.desire = desire ?? new DesireDimension({ userId, companionId, now, ...(desireConfig ? { config: desireConfig } : {}) });
     this.intimacy =
@@ -73,7 +76,7 @@ export class StateLayer {
       this.intimacy.snapshot().catch(() => defaultIntimacy()),
     ]);
     const hours = state.updated_at ? Math.max(0, (this.now() - new Date(state.updated_at).getTime()) / HOUR) : 0;
-    const decayed = decayState(state, hours);
+    const decayed = decayState(state, hours, this.emotionDecayOverrides);
     const outfit = await this.outfit.snapshot({ life, intimacy }).catch(() => defaultOutfitState());
     return {
       emotion: moodToEmotion(decayed),
@@ -86,6 +89,24 @@ export class StateLayer {
     };
   }
 
+  /** 人设加载后挂上半衰期/基线覆盖（可直接传 overrides 或 CompanionConfig） */
+  setEmotionDecayOverrides(overridesOrConfig) {
+    if (!overridesOrConfig) {
+      this.emotionDecayOverrides = null;
+      return;
+    }
+    if (
+      overridesOrConfig.halfLifeHours ||
+      overridesOrConfig.baseline ||
+      overridesOrConfig.recoverBias != null ||
+      overridesOrConfig.sensitivity != null
+    ) {
+      this.emotionDecayOverrides = overridesOrConfig;
+      return;
+    }
+    this.emotionDecayOverrides = emotionDecayOverridesFromConfig(overridesOrConfig);
+  }
+
   toPrompt(snapshot, ctx = {}) {
     if (!snapshot) return '';
     const intimacyCfg = ctx.intimacyConfig ?? this.intimacy?.config ?? PARAMS.intimacy;
@@ -95,8 +116,12 @@ export class StateLayer {
       desires: snapshot.desires,
       hardBoundaries: ctx.hardBoundaries ?? this.intimacy?.hardBoundaries,
     };
+    const emotionBlock =
+      ctx.emotionLabel != null
+        ? fuseEmotionPrompt(snapshot.emotion, ctx.emotionLabel, ctx.emotionResidual, emotionLabelToPrompt)
+        : toEmotionPrompt(snapshot.emotion);
     return [
-      toEmotionPrompt(snapshot.emotion),
+      emotionBlock,
       toLifePrompt(snapshot.life),
       toDesirePrompt(snapshot.desires),
       intimacyCfg?.enabled !== false ? toIntimacyPrompt(snapshot.intimacy, intimacyCtx, intimacyCfg) : '',

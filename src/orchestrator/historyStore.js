@@ -94,6 +94,38 @@ export class SupabaseHistoryStore {
     if (error) throw error;
     return true;
   }
+
+  /** 情绪残留快照（E1）；表不存在 → null */
+  async loadEmotionResidue({ userId, companionId = 'default' } = {}) {
+    if (!userId) return null;
+    try {
+      const { data, error } = await this.client
+        .from('chat_emotion_residue')
+        .select('residue, updated_at')
+        .eq('user_id', userId)
+        .eq('companion_id', companionId)
+        .maybeSingle();
+      if (error || !data?.residue) return null;
+      return data.residue;
+    } catch {
+      return null;
+    }
+  }
+
+  async saveEmotionResidue({ userId, companionId = 'default', residue = null } = {}) {
+    if (!userId || !residue) return null;
+    const { error } = await this.client.from('chat_emotion_residue').upsert(
+      {
+        user_id: userId,
+        companion_id: companionId,
+        residue,
+        updated_at: new Date().toISOString(),
+      },
+      { onConflict: 'user_id,companion_id' },
+    );
+    if (error) throw error;
+    return true;
+  }
 }
 
 /** 本地 JSON 短期历史。适合本机 Telegram bot: 不依赖 Supabase 表, 重启也能接上最近几轮。 */
@@ -165,28 +197,53 @@ export class LocalJsonHistoryStore {
     return task;
   }
 
+  async loadEmotionResidue({ userId, companionId = 'default' } = {}) {
+    if (!userId) return null;
+    const db = await this.migrateDb(await this.read());
+    return db.emotions?.[this.key(userId, companionId)]?.residue ?? null;
+  }
+
+  async saveEmotionResidue({ userId, companionId = 'default', residue = null } = {}) {
+    if (!userId || !residue) return null;
+    const task = this._lock.catch(() => {}).then(async () => {
+      const db = await this.migrateDb(await this.read());
+      if (!db.emotions) db.emotions = {};
+      db.emotions[this.key(userId, companionId)] = {
+        residue,
+        updated_at: new Date().toISOString(),
+      };
+      await this.write(db);
+    });
+    this._lock = task;
+    return task;
+  }
+
   key(userId, companionId) {
     return `${userId}::${companionId}`;
   }
 
-  /** 旧文件：顶层直接是 chat key → 迁到 { chats, sessions } */
+  /** 旧文件：顶层直接是 chat key → 迁到 { chats, sessions, emotions } */
   migrateDb(raw = {}) {
     if (raw && raw.chats && typeof raw.chats === 'object') {
-      return { chats: raw.chats, sessions: raw.sessions && typeof raw.sessions === 'object' ? raw.sessions : {} };
+      return {
+        chats: raw.chats,
+        sessions: raw.sessions && typeof raw.sessions === 'object' ? raw.sessions : {},
+        emotions: raw.emotions && typeof raw.emotions === 'object' ? raw.emotions : {},
+      };
     }
     const chats = {};
     for (const [k, v] of Object.entries(raw || {})) {
-      if (k === 'chats' || k === 'sessions') continue;
+      if (k === 'chats' || k === 'sessions' || k === 'emotions') continue;
       if (Array.isArray(v)) chats[k] = v;
     }
-    return { chats, sessions: {} };
+    return { chats, sessions: {}, emotions: {} };
   }
 
   async read() {
     try {
       return JSON.parse(await fs.readFile(this.file, 'utf8'));
     } catch (error) {
-      if (error?.code === 'ENOENT') return { chats: {}, sessions: {} };
+      if (error?.code === 'ENOENT') return { chats: {}, sessions: {}, emotions: {} };
       throw error;
     }
   }

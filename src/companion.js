@@ -77,6 +77,17 @@ export const CompanionConfigSchema = z.object({
   relationshipStartStage: z.string().min(1).nullable().default(null),
   // 情绪基线: 目前只用 valence (mood 的初始正负向); 同样只在首次建档时生效一次。
   emotionBaseline: z.object({ valence: z.number().min(-1).max(1) }).nullable().default(null),
+  // E3 人设气质：半衰期 / 敏感度 / 消气速度（可选）
+  emotionProfile: z
+    .object({
+      baselineValence: z.number().min(-1).max(1).optional(),
+      valenceHalfLifeHours: z.number().min(0.5).max(72).optional(),
+      arousalHalfLifeHours: z.number().min(0.5).max(48).optional(),
+      sensitivity: z.number().min(0).max(1).optional(),
+      recoverBias: z.number().min(0.4).max(2).optional(),
+    })
+    .nullable()
+    .default(null),
   // 旁白指令按场景覆盖 (romantic/tense/conflict/intimate/daily -> 指令文本)。
   // 角色专属的旁白写法 (含尺度/称呼) 属于人设, 不属于库代码; 缺省回退 src/narration.js 的通用默认。
   narrationDirectives: z.record(z.string(), z.string()).nullable().default(null),
@@ -196,6 +207,16 @@ export function personaJsonToConfig(json = {}) {
     identityConstraints: Array.isArray(p.identity_constraints) ? p.identity_constraints : [],
     relationshipStartStage: json.relationship?.start_stage ?? null,
     emotionBaseline: typeof json.emotion_baseline?.valence === 'number' ? { valence: json.emotion_baseline.valence } : null,
+    emotionProfile:
+      json.emotion_profile && typeof json.emotion_profile === 'object'
+        ? {
+            baselineValence: json.emotion_profile.baseline_valence ?? json.emotion_profile.baselineValence,
+            valenceHalfLifeHours: json.emotion_profile.valence_half_life_hours ?? json.emotion_profile.valenceHalfLifeHours,
+            arousalHalfLifeHours: json.emotion_profile.arousal_half_life_hours ?? json.emotion_profile.arousalHalfLifeHours,
+            sensitivity: json.emotion_profile.sensitivity,
+            recoverBias: json.emotion_profile.recover_bias ?? json.emotion_profile.recoverBias,
+          }
+        : null,
     // 旁白指令覆盖 (companions/<id>/narration.json 的 narration.directives): 只收字符串值
     narrationDirectives:
       json.narration?.directives && typeof json.narration.directives === 'object'
@@ -338,6 +359,7 @@ export function configToRow(userId, config) {
       identityConstraints: c.identityConstraints,
       relationshipStartStage: c.relationshipStartStage,
       emotionBaseline: c.emotionBaseline,
+      emotionProfile: c.emotionProfile,
       narrationDirectives: c.narrationDirectives,
       storyCast: c.storyCast,
       storylines: c.storylines,

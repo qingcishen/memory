@@ -13,7 +13,15 @@ import { getCompanion } from '../companion.js';
 import { Selfie, decidePhoto } from '../appearance/index.js';
 import { buildNarrationPrompt } from '../narration.js';
 import { PARAMS } from '../params.js';
-import { inferEmotionLabel } from '../state/emotionLabel.js';
+import { inferEmotionLabel, emotionLabelToPrompt } from '../state/emotionLabel.js';
+import {
+  emptyEmotionResidue,
+  normalizeEmotionResidue,
+  serializeEmotionResidue,
+} from '../state/emotionResidue.js';
+import { resonateFromMemoryHits, applyResonanceToEmotion } from '../state/emotionResonance.js';
+import { emotionDecayOverridesFromConfig } from '../state/affect.js';
+import { fuseEmotionPrompt } from '../emotion.js';
 import { behaviorPolicy, behaviorToPrompt } from '../state/behavior.js';
 import { StoryEngine } from '../story/index.js';
 import { buildConversationGoals, goalsToPrompt } from './goals.js';
@@ -146,6 +154,7 @@ export class Orchestrator {
     this._lastStructured = null;
     this._lastTurnPlan = null;
     this._sessionThread = emptySessionThread();
+    this._emotionResidue = emptyEmotionResidue();
   }
 
   /**
@@ -174,6 +183,13 @@ export class Orchestrator {
         // 只在这个 (user, companion) 还没有任何 affective_state 记录时生效一次, 见 RelationshipAdapter.seedIfNew。
         if (typeof this.relationship?.seedIfNew === 'function') {
           await this.relationship.seedIfNew(this._config);
+        }
+        // E3 人设气质 → 衰减半衰期/基线
+        const emoOv = emotionDecayOverridesFromConfig(this._config);
+        if (emoOv && this.stateLayer?.stateLayer?.setEmotionDecayOverrides) {
+          this.stateLayer.stateLayer.setEmotionDecayOverrides(emoOv);
+        } else if (emoOv && typeof this.stateLayer?.setEmotionDecayOverrides === 'function') {
+          this.stateLayer.setEmotionDecayOverrides(emoOv);
         }
         // I 线: 配置加载后把人设基线/硬边界/欲望 drive 挂到共享 IntimacyDimension
         const intimacyDim = this.stateLayer?.stateLayer?.intimacy;
@@ -270,7 +286,34 @@ export class Orchestrator {
       this.trimHistory();
     }
     await this.loadSessionThread().catch(() => {});
+    await this.loadEmotionResidue().catch(() => {});
     return this.history;
+  }
+
+  async loadEmotionResidue() {
+    let raw = null;
+    if (this.historyStore && typeof this.historyStore.loadEmotionResidue === 'function') {
+      raw = await this.historyStore
+        .loadEmotionResidue({ userId: this.userId, companionId: this.companionId })
+        .catch(() => null);
+    }
+    this._emotionResidue = raw ? normalizeEmotionResidue(raw) : emptyEmotionResidue();
+    return this._emotionResidue;
+  }
+
+  persistEmotionResidue() {
+    if (!this.historyStore || typeof this.historyStore.saveEmotionResidue !== 'function') return Promise.resolve();
+    const residue = serializeEmotionResidue(this._emotionResidue);
+    this._lastEmotionPersist = Promise.resolve(
+      this.historyStore.saveEmotionResidue({
+        userId: this.userId,
+        companionId: this.companionId,
+        residue,
+      }),
+    ).catch((reason) => {
+      console.error('[historyStore.emotion]', reason);
+    });
+    return this._lastEmotionPersist;
   }
 
   /**
@@ -374,11 +417,26 @@ export class Orchestrator {
         : Promise.resolve(null),
     ]);
     const gapHours = lastUserMessageAt != null ? hoursSince(lastUserMessageAt) : null;
-    const emotionLabel = inferEmotionLabel(
+    const recoverBias =
+      emotionDecayOverridesFromConfig(this._config)?.recoverBias ??
+      this.stateLayer?.stateLayer?.emotionDecayOverrides?.recoverBias;
+    const emotionInferred = inferEmotionLabel(
       { ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} },
       stateSnapshot?.desires,
-      [...this.history.slice(-4), { role: 'user', content: userMessage }]
+      [...this.history.slice(-4), { role: 'user', content: userMessage }],
+      {
+        previousResidual: this._emotionResidue,
+        userMessage,
+        recoverBias,
+        withResidual: true,
+        now: Date.now(),
+      },
     );
+    const emotionLabel = typeof emotionInferred === 'string' ? emotionInferred : emotionInferred.label;
+    if (emotionInferred && typeof emotionInferred === 'object' && emotionInferred.residual) {
+      this._emotionResidue = emotionInferred.residual;
+    }
+    this._lastEmotionLabel = emotionLabel;
     // I2: 回复前预演亲密阶段（不写库），驱动旁白细分与 prompt 指引
     const intimacyLive =
       PARAMS.intimacy?.enabled !== false
@@ -549,11 +607,17 @@ export class Orchestrator {
       userProfilePrompt: PARAMS.orchestrator?.residentSlots === false ? '' : this._userProfilePrompt || '',
       sessionThreadPrompt: sessionPeek ? sessionThreadToPrompt(sessionPeek) : '',
       statePrompt: [
+        // StateLayer 真实现会融合 label；mock adapter 无 ctx 时下面再补 emotionLabelToPrompt
         this.stateLayer.toPrompt(stateForPrompt, {
           relationship: rel,
           hardBoundaries: this._config?.intimacyHardBoundaries,
           intimacyConfig: this.stateLayer?.stateLayer?.intimacy?.config,
+          emotionLabel,
+          emotionResidual: this._emotionResidue,
         }),
+        ...(typeof this.stateLayer?.stateLayer?.toPrompt === 'function'
+          ? []
+          : [emotionLabelToPrompt(emotionLabel, this._emotionResidue)]),
         bodyStateToPrompt(bodySit, intimacyLive ?? stateSnapshot?.intimacy),
         behaviorToPrompt(behavior),
       ]
@@ -592,6 +656,24 @@ export class Orchestrator {
     const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
     const episodeTexts = extractEpisodeTexts(memoryHits);
     const recallExplain = explainRecallHits(memoryHits, turn.recallQuery || userMessage);
+
+    // E4 触景生情：只扰动本轮展示 emotion，重写 statePrompt 中的情绪段
+    const resonance = resonateFromMemoryHits(memoryHits, stateSnapshot?.emotion);
+    if (resonance && promptBase.statePrompt) {
+      const emoShow = applyResonanceToEmotion(stateSnapshot?.emotion || {}, resonance);
+      const fused = fuseEmotionPrompt(emoShow, emotionLabel, this._emotionResidue, emotionLabelToPrompt);
+      // 用融合段替换原 toEmotionPrompt 开头（简单：前缀注入触景提示）
+      promptBase.statePrompt = [
+        fused,
+        resonance.reasons?.length
+          ? `【触景余味】想起了：${resonance.reasons[0]}。只让语气轻轻偏一点，别说「我想起了某条记忆」。`
+          : '',
+        promptBase.statePrompt,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      this._lastResonance = resonance;
+    }
 
     const promptParts = {
       ...promptBase,
@@ -688,6 +770,7 @@ export class Orchestrator {
       });
       this.persistSessionThread();
     }
+    this.persistEmotionResidue();
 
     this.recordHistory([
       { role: 'user', content: userMessage },
@@ -748,6 +831,9 @@ export class Orchestrator {
       turnPlan: summarizeTurnPlan(turn),
       structuredPlan: summarizeStructured(structured),
       sessionThread: summarizeSessionThread(this._sessionThread),
+      emotionResidue: this._emotionResidue
+        ? { label: this._emotionResidue.label, intensity: this._emotionResidue.intensity }
+        : null,
       ...(debug ? { debug } : {}),
     };
   }
@@ -838,6 +924,7 @@ export class Orchestrator {
       });
       this.persistSessionThread();
     }
+    this.persistEmotionResidue();
 
     this.recordHistory(
       [
@@ -871,6 +958,9 @@ export class Orchestrator {
       turnPlan: summarizeTurnPlan(turn),
       structuredPlan: summarizeStructured(structured),
       sessionThread: summarizeSessionThread(this._sessionThread),
+      emotionResidue: this._emotionResidue
+        ? { label: this._emotionResidue.label, intensity: this._emotionResidue.intensity }
+        : null,
       streamed,
     };
     if (opts.debug) {
@@ -941,6 +1031,8 @@ export class Orchestrator {
       structuredPlan: summarizeStructured(structured ?? this._lastStructured),
       sessionThread: summarizeSessionThread(this._sessionThread),
       sessionDrift: sessionDrift?.drift ? sessionDrift.reasons : [],
+      emotionResidue: this._emotionResidue,
+      emotionResonance: this._lastResonance || null,
       relationshipNarrative: this._relationshipNarrative || '',
       userProfilePrompt: this._userProfilePrompt || '',
       recallExplain: recallExplain || [],
