@@ -7,6 +7,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeWardrobe, PIECE_KEYS } from './outfit.js';
+import { applyPromptKit } from '../appearance/promptKit.js';
 
 const ALLOWED = new Map([
   ['image/png', 'png'],
@@ -393,7 +394,8 @@ export function enrichCatalogWithAssets(catalog, companionRoot, { companionId = 
   const assets = readOutfitAssets(companionRoot);
   const enrich = (card) => {
     const entry = assets.cards?.[card.id] || {};
-    const prompt = entry.prompt?.trim() ? entry.prompt : card.defaultPrompt;
+    const rawPrompt = entry.prompt?.trim() ? entry.prompt : card.defaultPrompt;
+    const prompt = applyPromptKit(rawPrompt || '', { forceFullBody: true, appendNegative: true }).prompt;
     return {
       ...card,
       prompt,

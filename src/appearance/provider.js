@@ -114,7 +114,7 @@ export class OpenAIImageProvider {
   async edit(prompt, referenceImages = [], opts = {}) {
     if (!this.baseURL || !this.apiKey || !this.model || !referenceImages.length) return this.generate(prompt, opts);
     const settings = { ...this.defaults, ...opts };
-    const finalPrompt = withLoraTrigger(prompt, settings);
+    const finalPrompt = withLoraTrigger(withReferenceIdentityPrefix(prompt, { hasReferences: true }), settings);
     const form = new FormData();
     form.set('model', this.model);
     form.set('prompt', finalPrompt);
@@ -153,6 +153,20 @@ export function withLoraTrigger(prompt, opts = {}) {
   const trigger = String(opts.loraTrigger ?? IMAGE_LORA_TRIGGER ?? '').trim();
   if (!trigger || String(prompt).includes(trigger)) return prompt;
   return `${trigger}, ${prompt}`;
+}
+
+/** 参考图 edit：强制身份锁作用域前缀 */
+export function withReferenceIdentityPrefix(prompt, { hasReferences = true } = {}) {
+  if (!hasReferences) return prompt;
+  const p = String(prompt || '');
+  if (/face shape|facial (feature )?proportion|ONLY for face/i.test(p)) return p;
+  // 动态 import 避免循环
+  const ban =
+    'Use reference image ONLY for face shape contour and facial feature proportions. ' +
+    'Do not copy expression, gaze, pose, hairstyle, outfit, or mood from the reference. ';
+  const lock =
+    'Same woman identity: East Asian adult face proportions consistent. ';
+  return `${ban}${lock}${p}`;
 }
 
 export function loraMeta(opts = {}) {

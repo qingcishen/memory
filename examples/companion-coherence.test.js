@@ -201,7 +201,9 @@ console.log('unified selfie + quality gate');
     },
   };
   const look = buildUnifiedLookPrompt(snap, '瓜子脸杏眼', Date.now());
-  ok('统一管线含穿搭+脸锁', look.prompt.includes('真丝吊带') && look.prompt.includes('same woman'));
+  ok('统一管线含穿搭+脸锁', look.prompt.includes('真丝吊带') && /same woman|identity lock/i.test(look.prompt));
+  ok('人妻感/成熟气质', /married-woman|mature elegant/i.test(look.prompt));
+  ok('出图鞋履', /shoe|footwear|heel/i.test(look.prompt));
   ok('有外貌+脸锁过门禁', imageQualityGate({ prompt: look.prompt, appearance: '瓜子脸', kind: 'selfie' }).ok);
   ok('无锚拒绝出图', imageQualityGate({ prompt: 'a girl', appearance: '', kind: 'selfie', hasReferences: false }).ok === false);
   ok('buildSelfiePrompt 走统一管线', buildSelfiePrompt(snap, '瓜子脸杏眼').prompt.includes('真丝吊带'));

@@ -9,12 +9,12 @@ import { supabase, PARAMS } from '../config.js';
 import { defaultImageProvider } from './provider.js';
 import { listReferenceImages, referenceFilePath } from './references.js';
 import { outfitToImageMods } from '../state/outfit.js';
+import { IDENTITY_LOCK, assemblePersonImagePrompt, moodModsForImage } from './promptKit.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
-/** 脸与气质一致性：所有自拍共用，尽量锁同一人。 */
-export const FACE_LOCK =
-  'same woman consistently, natural East Asian features, soft jawline, realistic skin texture, photorealistic, not anime, not illustration';
+/** 兼容旧名：身份锁（仅脸型轮廓 + 五官比例） */
+export const FACE_LOCK = IDENTITY_LOCK;
 
 /**
  * 质量门禁：缺脸锁/外貌/疑似崩脸提示词 → 拒出图（宁可少图不要崩脸）。
@@ -23,18 +23,36 @@ export const FACE_LOCK =
 export function imageQualityGate({ prompt = '', appearance = '', kind = 'selfie', hasReferences = false } = {}) {
   const p = String(prompt || '');
   if (!p.trim()) return { ok: false, reason: 'empty_prompt' };
-  if (kind === 'selfie' || kind === 'lookbook') {
+  if (kind === 'selfie' || kind === 'lookbook' || kind === 'album') {
     if (!appearance?.trim() && !hasReferences) {
-      // 无外貌描述且无参考脸：容易崩脸
       return { ok: false, reason: 'no_face_anchor' };
     }
-    if (!/same woman|consistent face|photorealistic/i.test(p) && !hasReferences) {
+    if (
+      !/same woman|consistent face|photorealistic|identity lock|face shape|facial (feature )?proportion/i.test(p) &&
+      !hasReferences
+    ) {
       return { ok: false, reason: 'missing_face_lock' };
     }
   }
-  // 明确禁止崩脸关键词（若 provider 回灌了坏 prompt）
-  if (/\b(extra arms|deformed|mutated|disfigured)\b/i.test(p)) {
+  if (kind === 'lookbook' || kind === 'album') {
+    if (!/full body|head-to-toe|full-length|全身/i.test(p)) {
+      return { ok: false, reason: 'missing_full_body' };
+    }
+    if (!/shoe|heel|footwear|靴|鞋|mule|sandal/i.test(p)) {
+      return { ok: false, reason: 'missing_shoes' };
+    }
+  }
+  // 只检查正向段：Avoid: 后的负向词表里会含 deformed 等，不能误杀
+  const positive = p.split(/\bAvoid\s*:/i)[0];
+  if (/\b(extra arms|deformed|mutated|disfigured)\b/i.test(positive)) {
     return { ok: false, reason: 'bad_prompt_tokens' };
+  }
+  if (
+    (kind === 'lookbook' || kind === 'album') &&
+    (/\bbarefoot\b/i.test(positive) || /赤脚|光脚/.test(positive)) &&
+    !/not barefoot|no barefoot|禁止赤脚|鞋子完整/i.test(positive)
+  ) {
+    return { ok: false, reason: 'barefoot_forbidden' };
   }
   return { ok: true, reason: 'ok' };
 }
@@ -95,49 +113,54 @@ export function canSendSelfie(rateState = {}, now = Date.now(), policy = {}) {
  * 对话「今天穿什么」、自拍出图、相册成片共用同一 current look 描述。
  * @returns { prompt:string, tags:string[], lookSummary:string }
  */
-export function buildUnifiedLookPrompt(snapshot, appearance = '', now = Date.now(), { kind = 'selfie' } = {}) {
+export function buildUnifiedLookPrompt(snapshot, appearance = '', now = Date.now(), { kind = 'selfie', hasReferences = false } = {}) {
   const emotion = snapshot?.emotion ?? {};
   const life = snapshot?.life ?? {};
   const tags = [];
-  const mods = [];
+  const moodMods = [];
 
   if (isSickLife(life, now)) {
     tags.push('sick');
-    mods.push('脸色有些憔悴、没什么精神、像是生病了');
   } else if (/健身/.test(String(life.current_activity ?? ''))) {
     tags.push('post-workout');
-    mods.push('刚健身完, 微微出汗、运动装、气色红润');
+    moodMods.push('post-workout glow, sporty-elegant transition, still refined');
   }
-  if (num(emotion.valence, 0) > 0.3) {
-    tags.push('happy');
-    mods.push('笑容明媚、心情很好');
-  } else if (num(emotion.valence, 0) < -0.2) {
-    tags.push('low');
-    mods.push('表情有点淡淡的、没什么精神');
-  }
+  if (num(emotion.valence, 0) > 0.3) tags.push('happy');
+  else if (num(emotion.valence, 0) < -0.2) tags.push('low');
+
   const hour = new Date(now).getHours();
+  let scene = '';
   if (hour >= 21 || hour < 7) {
     tags.push('home');
-    mods.push('在家、灯光柔和');
+    scene = 'soft home lifestyle lighting, warm interior';
   }
+  moodMods.push(...moodModsForImage(emotion, life, now));
 
-  // O 线：outfitToImageMods 与对话 toOutfitPrompt 同源
   const outfitMods = outfitToImageMods(snapshot?.outfit);
+  const pieces = snapshot?.outfit?.current?.pieces || {};
   if (outfitMods.length) {
     tags.push('outfit', snapshot?.outfit?.context || 'dressed');
-    mods.push(...outfitMods);
   } else if (hour >= 21 || hour < 7) {
-    mods.push('居家穿着');
+    outfitMods.push('elegant loungewear with visible soft house footwear');
   }
 
   if (tags.length === 0) tags.push('default');
   if (kind === 'selfie') tags.unshift('selfie');
 
-  const base = appearance ? appearance.trim() : '一个年轻女生';
+  const base = appearance ? appearance.trim() : 'elegant adult East Asian woman with refined facial proportions';
   const lookSummary = [base, ...outfitMods].filter(Boolean).join(' · ');
-  const framing = kind === 'selfie' ? 'selfie angle, natural phone photo, candid' : 'full-body fashion lookbook, natural light';
-  const prompt = [base, FACE_LOCK, ...mods, framing, 'consistent face identity'].join(', ');
-  return { prompt, tags, lookSummary };
+  const imageKind = kind === 'selfie' ? 'selfie' : 'lookbook';
+  const assembled = assemblePersonImagePrompt({
+    appearance: base,
+    outfitMods,
+    moodMods,
+    scene,
+    kind: imageKind,
+    hasReferences,
+    pieces,
+    appendNegative: PARAMS.appearance?.prompt?.appendNegativeInPrompt !== false,
+  });
+  return { prompt: assembled.prompt, negative: assembled.negative, tags, lookSummary };
 }
 
 /**
@@ -227,10 +250,18 @@ export class Selfie {
     const now = opts.now ?? Date.now();
     const kind = opts.kind ?? 'selfie';
     const appearance = opts.appearance ?? '';
+    // 有参考图优先 edit 锁脸；否则 generate。LoRA 来自 env / opts。
+    const references = listReferenceImages(this.userId, this.companionId).map((item) => ({
+      path: referenceFilePath(item),
+      mime: item.mime,
+      name: item.name,
+    }));
+    const hasReferences = references.length > 0 || Boolean(opts.loraId || process.env.IMAGE_LORA_ID);
+
     const built =
       kind === 'scene'
         ? buildScenePrompt(snapshot, now)
-        : buildUnifiedLookPrompt(snapshot, appearance, now, { kind });
+        : buildUnifiedLookPrompt(snapshot, appearance, now, { kind, hasReferences: references.length > 0 });
     if (!built) return null; // scene 没题材
     const { prompt, tags, lookSummary } = built;
 
@@ -247,19 +278,12 @@ export class Selfie {
       };
     }
 
-    // 有参考图优先 edit 锁脸；否则 generate。LoRA 来自 env / opts。
-    const references = listReferenceImages(this.userId, this.companionId).map((item) => ({
-      path: referenceFilePath(item),
-      mime: item.mime,
-      name: item.name,
-    }));
-
     // 质量门禁：宁可少图不要崩脸
     const gate = imageQualityGate({
       prompt,
       appearance,
       kind,
-      hasReferences: references.length > 0 || Boolean(opts.loraId || process.env.IMAGE_LORA_ID),
+      hasReferences,
     });
     if (!gate.ok) {
       return null;

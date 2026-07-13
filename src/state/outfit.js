@@ -439,15 +439,15 @@ export function defaultWardrobeCatalog() {
       id: 'home_lounge',
       context: 'home',
       style: '居家',
-      summary: 'Loro Piana 羊绒家居针织，Brunello Cucinelli 长裤，赤脚或羊绒拖鞋',
-      pieces: { top: 'Loro Piana 羊绒衫', bottom: 'Brunello Cucinelli 休闲裤', shoes: 'Loro Piana 家居拖鞋', makeup: '护肤后极淡', hair: '披肩' },
+      summary: 'Loro Piana 羊绒家居针织，Brunello Cucinelli 长裤，Loro Piana 羊绒拖鞋，松弛有女人味',
+      pieces: { top: 'Loro Piana 羊绒衫', bottom: 'Brunello Cucinelli 休闲裤', shoes: 'Loro Piana 羊绒拖鞋', makeup: '护肤后极淡', hair: '披肩' },
     },
     {
       id: 'home_shirt',
       context: 'intimate',
       style: '亲密',
-      summary: '只穿他的白衬衫，下摆到大腿，赤脚，头发微乱',
-      pieces: { top: '他的白衬衫', lingerie: 'La Perla 或真空', shoes: '赤脚', hair: '微乱', perfume: '他留下的气息' },
+      summary: '只穿他的白衬衫，下摆到大腿，米白家居穆勒鞋，头发微乱，克制私密感',
+      pieces: { top: '他的白衬衫', lingerie: 'La Perla 或真空', shoes: '米白家居穆勒鞋', hair: '微乱', perfume: '他留下的气息' },
     },
     {
       id: 'date_night',
@@ -640,35 +640,49 @@ export function toOutfitPrompt(outfit, { force = false, justChanged = false, war
   if (!o.current?.summary) return '';
   const wealthHint =
     wardrobe?.style || wardrobe?.beauty?.notes
-      ? '你的衣服、包、表、化妆品、内衣都是一线奢侈/贵妇线（La Perla 等），不碰杂牌；提品牌时自然点到即可，别像导购报货号。'
-      : '穿搭品味高级，不廉价。';
+      ? '你的衣服、包、表、化妆品、内衣都是一线奢侈/轻熟贵妇线，有韵味、得体、有女人味；提品牌时自然点到即可，别像导购报货号，也别走幼态网红风。'
+      : '穿搭成熟有韵味、得体有女人味，不廉价、不幼态。';
   const bag = o.current.pieces?.bag;
   const makeup = o.current.pieces?.makeup || o.current.pieces?.lips;
+  const shoes = o.current.pieces?.shoes;
   const lingerie = o.current.pieces?.lingerie || [o.current.pieces?.bra, o.current.pieces?.panties].filter(Boolean).join(' + ');
   const intimateCtx = o.context === 'intimate' || /衬衫|蕾丝|真空|私密/.test(o.current.summary || '');
   const extras = [
     bag && `包：${bag}`,
+    shoes && `鞋：${shoes}`,
     makeup && `妆：${makeup}`,
     intimateCtx && lingerie && `内衣：${lingerie}`,
   ].filter(Boolean).join('；');
   const core = extras ? `${o.current.summary}（${extras}）` : o.current.summary;
+  const photoHint =
+    '若拍照/发图：必须完整鞋履出镜（禁止赤脚出镜），全身或至少脚部清楚；气质成熟温柔、克制体面。';
   if (!force && !justChanged) {
-    return `【此刻穿搭】你现在：${core}。${wealthHint}对方问起穿什么/包/妆/内衣时按这个说；日常不要主动报内裤文胸，亲密相关或对方问到再说；不要每轮主动报清单。`;
+    return `【此刻穿搭】你现在：${core}。${wealthHint}${photoHint}对方问起穿什么/包/妆/鞋/内衣时按这个说；日常不要主动报内裤文胸，亲密相关或对方问到再说；不要每轮主动报清单。`;
   }
   if (justChanged) {
-    return `【此刻穿搭·刚换过】你刚换成：${core}。${wealthHint}相关时可以自然提一句，别硬宣布「我换好了全套」。`;
+    return `【此刻穿搭·刚换过】你刚换成：${core}。${wealthHint}${photoHint}相关时可以自然提一句，别硬宣布「我换好了全套」。`;
   }
-  return `【此刻穿搭】${core}`;
+  return `【此刻穿搭】${core}。${photoHint}`;
 }
 
-/** 给自拍/出图用的服装修饰语 */
+/** 给自拍/出图用的服装修饰语（禁止赤脚；强制可识别鞋履） */
 export function outfitToImageMods(outfit) {
   const o = clampOutfitState(outfit);
   if (!o.current?.summary) return [];
   const mods = [o.current.summary];
   const p = o.current.pieces || {};
-  if (p.hair) mods.push(p.hair);
-  if (p.makeup) mods.push(p.makeup);
+  if (p.hair) mods.push(String(p.hair));
+  if (p.makeup) mods.push(String(p.makeup));
+  if (p.dress) mods.push(String(p.dress));
+  if (p.outer) mods.push(String(p.outer));
+  // 出图：赤脚/光脚 → 得体可见鞋
+  const rawShoes = String(p.shoes || '');
+  if (/赤脚|光脚|barefoot/i.test(rawShoes) || !rawShoes) {
+    mods.push('elegant visible footwear (soft house mules or low heels), shoes fully visible, not barefoot');
+  } else {
+    mods.push(`shoes: ${rawShoes}, footwear fully visible`);
+  }
+  mods.push('full-length outfit readable, mature refined styling');
   return mods;
 }
 

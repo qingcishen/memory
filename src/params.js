@@ -342,6 +342,13 @@ export const DEFAULT_PARAMS = {
       minIntervalMinutes: 720, // 自拍冷却比闲聊更克制 (12h)
       maxPerDay: 2, // 每天最多主动发几张
     },
+    // 出图提示词套件（脸锁 / 人妻感 / 全身鞋履）
+    prompt: {
+      appendNegativeInPrompt: true,
+      forceFullBodyLookbook: true,
+      forceShoes: true,
+      matureAura: true,
+    },
   },
 
   // ---- 编排器 ----

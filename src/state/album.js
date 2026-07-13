@@ -44,14 +44,25 @@ export function defaultWearingPrompt(look) {
   const summary = look.summary || look.title || look.style || '';
   const pieces = piecesLine(look.pieces || {});
   const scene = CONTEXT_SCENE[look.context] || 'refined lifestyle setting';
-  const season = look.season ? ` Season mood: ${look.season}.` : '';
+  const season = look.season ? `Season mood: ${look.season}` : '';
+  const shoes = look.pieces?.shoes;
+  // 延迟 import 避免环依赖：album ← outfit ← appearance
+  // assemble 用字符串拼接，与 promptKit 语义对齐
+  const shoeLine = shoes && !/赤脚|光脚|barefoot/i.test(String(shoes))
+    ? `Shoes fully visible: ${shoes}.`
+    : 'Complete visible elegant footwear required, no barefoot.';
   return [
-    'Photorealistic portrait of an elegant East Asian woman, reserved heiress aura, consistent face identity,',
-    'full-body or three-quarter shot showing the complete outfit she is wearing:',
-    summary + '.',
+    'Photorealistic full-body head-to-toe fashion portrait of a mature elegant adult East Asian woman,',
+    'refined married-woman elegance, soft warmth, tasteful femininity, identity lock: face shape and facial proportions only,',
+    'same woman consistently, not schoolgirl, not vulgar sexy.',
+    `Wearing: ${summary}.`,
     pieces ? `Outfit details: ${pieces}.` : '',
-    `Setting: ${scene}.${season}`,
-    'Luxury fashion editorial, soft natural or cinematic light, refined color grading, photorealistic, no text, no watermark, no logo.',
+    shoeLine,
+    `Setting: ${scene}.${season ? ` ${season}.` : ''}`,
+    'Full-length figure, feet not cropped, shoes complete and clear, fabric drape and tailoring detail,',
+    'soft film grain, low saturation, shallow DOF, realistic skin pores, luxury lifestyle editorial,',
+    'no text, no watermark, no logo.',
+    'Avoid: barefoot, cropped feet, childish face, copied generic stock pose, cheap sexy, plastic skin, collage.',
   ].filter(Boolean).join(' ');
 }
 
