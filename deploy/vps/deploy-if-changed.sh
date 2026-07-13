@@ -37,7 +37,19 @@ systemctl restart memory-system-ui.service memory-system-telegram.service memory
 systemctl is-active --quiet memory-system-ui.service
 systemctl is-active --quiet memory-system-telegram.service
 systemctl is-active --quiet memory-system-feishu.service
-curl -fsS --max-time 10 http://127.0.0.1:8787/api/health >/dev/null
+
+healthy=false
+for _ in {1..10}; do
+  if curl -fsS --max-time 3 http://127.0.0.1:8787/api/health >/dev/null; then
+    healthy=true
+    break
+  fi
+  sleep 2
+done
+if [[ "$healthy" != true ]]; then
+  echo "[deploy] UI health check failed after restart" >&2
+  exit 1
+fi
 
 install -d -m 0755 "$STATE_DIR"
 printf '%s\n' "$remote_sha" > "$STATE_DIR/deployed-sha"
