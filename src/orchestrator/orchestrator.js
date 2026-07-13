@@ -50,6 +50,9 @@ import {
   sessionHooksToUnfinished,
   shouldResetSession,
   detectSessionDrift,
+  normalizeSessionThread,
+  serializeSessionThread,
+  rebuildSessionThreadFromHistory,
 } from '../companion/sessionThread.js';
 import { readUserProfilePrompt } from '../profile.js';
 
@@ -257,7 +260,7 @@ export class Orchestrator {
     return this;
   }
 
-  /** 从可选 historyStore 拉最近短期历史; 默认内存版什么也不做。 */
+  /** 从可选 historyStore 拉最近短期历史 + 会话线; 默认内存版什么也不做。 */
   async loadHistory() {
     if (!this.historyStore || typeof this.historyStore.load !== 'function') return this.history;
     const limit = this.options.historyTurns * 2;
@@ -266,7 +269,54 @@ export class Orchestrator {
       this.history = normalizeHistory(loaded).slice(-limit);
       this.trimHistory();
     }
+    await this.loadSessionThread().catch(() => {});
     return this.history;
+  }
+
+  /**
+   * 加载本场会话线：优先 historyStore 快照；否则从短期历史重建。
+   * 超时（4h）则空会话。
+   */
+  async loadSessionThread() {
+    if (PARAMS.orchestrator?.sessionThread === false) {
+      this._sessionThread = emptySessionThread();
+      return this._sessionThread;
+    }
+    let raw = null;
+    if (this.historyStore && typeof this.historyStore.loadSessionThread === 'function') {
+      raw = await this.historyStore
+        .loadSessionThread({ userId: this.userId, companionId: this.companionId })
+        .catch(() => null);
+    }
+    let thread = raw ? normalizeSessionThread(raw) : null;
+    if (!thread || !thread.turnCount) {
+      // 冷启动：从已 load 的 history 重建
+      if (this.history?.length) {
+        thread = rebuildSessionThreadFromHistory(this.history);
+      } else {
+        thread = emptySessionThread();
+      }
+    }
+    if (shouldResetSession(thread)) thread = emptySessionThread();
+    this._sessionThread = thread;
+    return this._sessionThread;
+  }
+
+  /** 异步持久化会话线（失败只打日志） */
+  persistSessionThread() {
+    if (PARAMS.orchestrator?.sessionThread === false) return Promise.resolve();
+    if (!this.historyStore || typeof this.historyStore.saveSessionThread !== 'function') return Promise.resolve();
+    const thread = serializeSessionThread(this._sessionThread);
+    this._lastSessionPersist = Promise.resolve(
+      this.historyStore.saveSessionThread({
+        userId: this.userId,
+        companionId: this.companionId,
+        thread,
+      }),
+    ).catch((reason) => {
+      console.error('[historyStore.session]', reason);
+    });
+    return this._lastSessionPersist;
   }
 
   /** 只保留最近 historyTurns 轮(user+assistant 各一条)。 */
@@ -301,10 +351,12 @@ export class Orchestrator {
       this.history = [];
       this._lastSceneType = null; // 隔了这么久, 场景连续性提示也该重新开始判断, 不该沿用几小时前的场景
       this._sessionThread = emptySessionThread(); // 新会话线
+      this.persistSessionThread();
     }
     // 会话线超时重置（即使 history 已空）
     if (PARAMS.orchestrator?.sessionThread !== false && shouldResetSession(this._sessionThread)) {
       this._sessionThread = emptySessionThread();
+      this.persistSessionThread();
     }
     this._lastUserMessageAt = Date.now();
 
@@ -626,7 +678,7 @@ export class Orchestrator {
 
     ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
-    // 会话线落盘：用户句 + 她的回复（含她的承诺）
+    // 会话线落盘：用户句 + 她的回复（含她的承诺）→ 持久化
     if (PARAMS.orchestrator?.sessionThread !== false) {
       this._sessionThread = updateSessionThread(this._sessionThread, {
         userMessage,
@@ -634,6 +686,7 @@ export class Orchestrator {
         sceneLocks,
         now: Date.now(),
       });
+      this.persistSessionThread();
     }
 
     this.recordHistory([
@@ -783,6 +836,7 @@ export class Orchestrator {
         sceneLocks,
         now: Date.now(),
       });
+      this.persistSessionThread();
     }
 
     this.recordHistory(

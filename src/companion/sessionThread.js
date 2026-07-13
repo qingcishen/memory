@@ -29,6 +29,71 @@ export function emptySessionThread(now = Date.now()) {
 }
 
 /**
+ * 反序列化 / 校验持久化会话线（坏数据 → empty）
+ */
+export function normalizeSessionThread(raw, now = Date.now()) {
+  if (!raw || typeof raw !== 'object') return emptySessionThread(now);
+  const base = emptySessionThread(now);
+  const n = (v, d) => (v == null ? d : v);
+  return {
+    startedAt: Number(raw.startedAt) || base.startedAt,
+    updatedAt: Number(raw.updatedAt) || base.updatedAt,
+    turnCount: Math.max(0, Number(raw.turnCount) || 0),
+    topics: Array.isArray(raw.topics) ? raw.topics.map(String).slice(0, MAX_TOPICS) : [],
+    primaryTopic: raw.primaryTopic ? String(raw.primaryTopic) : null,
+    openQuestions: Array.isArray(raw.openQuestions)
+      ? raw.openQuestions
+          .filter((q) => q && q.text)
+          .map((q) => ({ text: String(q.text).slice(0, 60), kind: q.kind || 'question', at: q.at, status: q.status || 'open' }))
+          .slice(0, MAX_QUESTIONS)
+      : [],
+    commitments: Array.isArray(raw.commitments)
+      ? raw.commitments
+          .filter((c) => c && c.text)
+          .map((c) => ({
+            who: c.who === 'her' ? 'her' : 'user',
+            text: String(c.text).slice(0, 48),
+            kind: 'commitment',
+            at: c.at,
+            status: c.status === 'done' ? 'done' : 'open',
+            resolvedAt: c.resolvedAt,
+          }))
+          .slice(0, MAX_COMMITMENTS + 2)
+      : [],
+    lastUserFocus: String(n(raw.lastUserFocus, '')).slice(0, 48),
+    emotionalTone: ['neutral', 'tense', 'intimate', 'soft', 'warm', 'tired'].includes(raw.emotionalTone)
+      ? raw.emotionalTone
+      : 'neutral',
+  };
+}
+
+/** 可 JSON 落盘的纯对象 */
+export function serializeSessionThread(thread) {
+  return normalizeSessionThread(thread);
+}
+
+/**
+ * 从历史 turns 重建会话线（无持久化快照时的冷启动）
+ */
+export function rebuildSessionThreadFromHistory(history = [], { now = Date.now() } = {}) {
+  let thread = emptySessionThread(now);
+  const turns = Array.isArray(history) ? history : [];
+  for (let i = 0; i < turns.length; i++) {
+    const t = turns[i];
+    if (!t || t.role !== 'user') continue;
+    const userMessage = String(t.content || '');
+    const next = turns[i + 1];
+    const reply = next?.role === 'assistant' ? String(next.content || '') : '';
+    thread = updateSessionThread(thread, {
+      userMessage,
+      reply,
+      now: now - (turns.length - i) * 60_000,
+    });
+  }
+  return thread;
+}
+
+/**
  * 长时间沉默 → 新会话
  */
 export function shouldResetSession(thread, now = Date.now(), idleMs = SESSION_IDLE_MS) {
