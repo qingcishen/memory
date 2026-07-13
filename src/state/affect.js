@@ -93,10 +93,22 @@ export function decayState(state, hours, overrides = null) {
   const s = clampState(state);
   const halfLifeHours = { ...PARAMS.state.halfLifeHours, ...(overrides?.halfLifeHours || {}) };
   const baseline = { ...PARAMS.state.baseline, ...(overrides?.baseline || {}) };
+  // 人设 recoverBias>1 时负向余味略短（更快消气）
+  const recoverBias = Number(overrides?.recoverBias);
+  const asymmetric = {
+    ...(PARAMS.state.asymmetricDecay || {}),
+    negativeHalfLifeFactor:
+      Number.isFinite(recoverBias) && recoverBias > 0
+        ? (PARAMS.state.asymmetricDecay?.negativeHalfLifeFactor ?? 1.75) / recoverBias
+        : PARAMS.state.asymmetricDecay?.negativeHalfLifeFactor,
+  };
   const out = { mood: { ...s.mood }, relationship: { ...s.relationship } };
-  for (const f of MOOD_FIELDS) out.mood[f] = decayToward(s.mood[f], baseline[f], hours, halfLifeHours[f]);
-  for (const f of REL_FIELDS)
-    out.relationship[f] = decayToward(s.relationship[f], baseline[f], hours, halfLifeHours[f]);
+  for (const f of MOOD_FIELDS) {
+    out.mood[f] = decayToward(s.mood[f], baseline[f], hours, halfLifeHours[f], { field: f, asymmetric });
+  }
+  for (const f of REL_FIELDS) {
+    out.relationship[f] = decayToward(s.relationship[f], baseline[f], hours, halfLifeHours[f], { field: f });
+  }
   // #5: tension 缓和到基线附近后, 指向信息也随之失效 —— 这桩紧张已经消了, 别再让旧话题影响门控。
   out.relationship.tension_target = s.relationship.tension_target;
   out.relationship.tension_topic = s.relationship.tension_topic;
@@ -357,10 +369,23 @@ function clampTopic(v) {
 function clampMag(x, cap) {
   return Math.min(cap, Math.max(-cap, Number(x) || 0));
 }
-function decayToward(value, baseline, hours, halfLife) {
+/**
+ * 向基线回落。L2：valence 大负向偏移时有效半衰期加长（伤得重消气慢）。
+ * @param opts {{ field?: string, asymmetric?: object }}
+ */
+function decayToward(value, baseline, hours, halfLife, opts = {}) {
   if (halfLife == null || !(hours > 0)) return value; // null = 不随时间衰减
-  const factor = Math.pow(0.5, hours / halfLife);
-  return baseline + (value - baseline) * factor;
+  let hl = halfLife;
+  const asym = opts.asymmetric ?? PARAMS.state?.asymmetricDecay;
+  if (asym?.enabled !== false && opts.field === 'valence') {
+    const threshold = Number(asym.negativeThreshold) ?? 0.35;
+    const factor = Number(asym.negativeHalfLifeFactor) ?? 1.75;
+    if (value < baseline && baseline - value >= threshold) {
+      hl = halfLife * factor;
+    }
+  }
+  const k = Math.pow(0.5, hours / hl);
+  return baseline + (value - baseline) * k;
 }
 /** 比较首尾值给出趋势标签。 */
 function trend(from, to, eps = 0.05) {

@@ -101,29 +101,40 @@ export class SupabaseHistoryStore {
     try {
       const { data, error } = await this.client
         .from('chat_emotion_residue')
-        .select('residue, updated_at')
+        .select('residue, journal, updated_at')
         .eq('user_id', userId)
         .eq('companion_id', companionId)
         .maybeSingle();
       if (error || !data?.residue) return null;
-      return data.residue;
+      // 兼容：journal 可在列上，也可嵌在 residue 里
+      return { ...data.residue, journal: data.journal ?? data.residue?.journal };
     } catch {
       return null;
     }
   }
 
-  async saveEmotionResidue({ userId, companionId = 'default', residue = null } = {}) {
+  async saveEmotionResidue({ userId, companionId = 'default', residue = null, journal = null } = {}) {
     if (!userId || !residue) return null;
-    const { error } = await this.client.from('chat_emotion_residue').upsert(
-      {
-        user_id: userId,
-        companion_id: companionId,
-        residue,
-        updated_at: new Date().toISOString(),
-      },
-      { onConflict: 'user_id,companion_id' },
-    );
-    if (error) throw error;
+    const payload = {
+      user_id: userId,
+      companion_id: companionId,
+      residue,
+      updated_at: new Date().toISOString(),
+    };
+    if (journal != null) payload.journal = journal;
+    const { error } = await this.client.from('chat_emotion_residue').upsert(payload, { onConflict: 'user_id,companion_id' });
+    if (error) {
+      // 无 journal 列时降级只写 residue
+      if (String(error.message || error).includes('journal')) {
+        const { error: e2 } = await this.client.from('chat_emotion_residue').upsert(
+          { user_id: userId, companion_id: companionId, residue: { ...residue, journal }, updated_at: payload.updated_at },
+          { onConflict: 'user_id,companion_id' },
+        );
+        if (e2) throw e2;
+        return true;
+      }
+      throw error;
+    }
     return true;
   }
 }
@@ -200,16 +211,20 @@ export class LocalJsonHistoryStore {
   async loadEmotionResidue({ userId, companionId = 'default' } = {}) {
     if (!userId) return null;
     const db = await this.migrateDb(await this.read());
-    return db.emotions?.[this.key(userId, companionId)]?.residue ?? null;
+    const row = db.emotions?.[this.key(userId, companionId)];
+    if (!row?.residue) return null;
+    return { ...row.residue, journal: row.journal ?? row.residue?.journal };
   }
 
-  async saveEmotionResidue({ userId, companionId = 'default', residue = null } = {}) {
+  async saveEmotionResidue({ userId, companionId = 'default', residue = null, journal = null } = {}) {
     if (!userId || !residue) return null;
     const task = this._lock.catch(() => {}).then(async () => {
       const db = await this.migrateDb(await this.read());
       if (!db.emotions) db.emotions = {};
+      const prev = db.emotions[this.key(userId, companionId)] || {};
       db.emotions[this.key(userId, companionId)] = {
         residue,
+        journal: journal != null ? journal : prev.journal || [],
         updated_at: new Date().toISOString(),
       };
       await this.write(db);

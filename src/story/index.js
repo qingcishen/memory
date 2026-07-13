@@ -64,8 +64,8 @@ export function composeTickPrompt(line, cast = [], facts = []) {
 }
 
 export class StoryEngine {
-  constructor({ userId, companionId = 'default', companionName = '她', cast = [], lines = [], client = supabase, entityWriter = upsertEntities, relationWriter = upsertRelations, llmClient = defaultLlm, model = LLM_MODEL, memory = null, desire = null, affectUpdater = updateFromTurn, worldRead = readWorldState, worldWrite = writeWorldState, factProvider = null } = {}) {
-    Object.assign(this, { userId, companionId, companionName, client, entityWriter, relationWriter, llmClient, model, memory, desire, affectUpdater, worldRead, worldWrite, factProvider });
+  constructor({ userId, companionId = 'default', companionName = '她', cast = [], lines = [], client = supabase, entityWriter = upsertEntities, relationWriter = upsertRelations, llmClient = defaultLlm, model = LLM_MODEL, memory = null, desire = null, affectUpdater = updateFromTurn, worldRead = readWorldState, worldWrite = writeWorldState, factProvider = null, onStoryBeat = null } = {}) {
+    Object.assign(this, { userId, companionId, companionName, client, entityWriter, relationWriter, llmClient, model, memory, desire, affectUpdater, worldRead, worldWrite, factProvider, onStoryBeat });
     this.castSeed = normalizeCast(cast);
     this.lineSeeds = (lines ?? []).map(normalizeStoryline).filter((line) => line.title);
     this.entityIds = new Map();
@@ -177,6 +177,8 @@ export class StoryEngine {
       this.desire?.accumulate?.({ sharing: beat.sharing, comfort: beat.mood_link < 0 ? Math.abs(beat.mood_link) * 0.5 : 0 }),
       this.affectUpdater?.(this.userId, this.companionId, [], { useLLM: false, extraDeltas: { mood: { valence: beat.mood_link * 0.35, arousal: Math.abs(beat.mood_link) * 0.15 } } }),
       this.updateWorld(beat),
+      // L5：故事拍软种子情绪残留（编排器注入 onStoryBeat 时）
+      typeof this.onStoryBeat === 'function' ? Promise.resolve(this.onStoryBeat(beat)) : null,
     ].filter(Boolean));
   }
 

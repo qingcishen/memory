@@ -25,10 +25,14 @@ export const PROACTIVE_STYLE_GUIDE = [
  *   lifeActivity?: string|null,
  *   life?: object|null,
  *   defaultReason?: string,
+ *   emotionLabel?: string,
+ *   emotionResidue?: { label, intensity }|null,
  * }}
  */
 export function buildProactiveContentPack(ctx = {}) {
   const sources = [];
+  const emoLabel = ctx.emotionLabel || ctx.emotionResidue?.label || null;
+  const emoI = Number(ctx.emotionResidue?.intensity) || 0;
   const due = ctx.dueItems?.[0];
   if (due?.content) {
     sources.push({ kind: 'prospective', weight: 1.0, reason: `你答应过要提醒他：${due.content}`, seed: due.content });
@@ -112,16 +116,27 @@ export function buildProactiveContentPack(ctx = {}) {
     sources.push({ kind: 'bedtime', weight: 0.88, reason: ctx.bedtimeTier.reason, seed: 'bedtime' });
   }
   if (ctx.silenceTier?.reason) {
-    // 沉默后：强调可恢复、不质问
-    const silenceReason =
+    // 沉默后：强调可恢复、不质问；叠当前情绪标签（L4）
+    let silenceReason =
       ctx.silenceTier.tier === 'miss'
         ? `${ctx.silenceTier.reason}。可以带一点小情绪，但留缝，别质问「是不是不想理我了」开场。`
         : ctx.silenceTier.reason;
+    silenceReason = applyEmotionToSilenceReason(silenceReason, emoLabel, emoI, ctx.silenceTier);
     sources.push({
       kind: 'silence',
-      weight: 0.7 + (ctx.silenceTier.tier === 'miss' ? 0.1 : 0),
+      weight: 0.7 + (ctx.silenceTier.tier === 'miss' ? 0.1 : 0) + (emoLabel === '委屈' || emoLabel === '失落' ? 0.08 : 0),
       reason: silenceReason,
       seed: 'silence',
+    });
+  }
+
+  // L4：纯情绪动机源（有 residual 时给主动一条「心里还挂着」的辅料）
+  if (emoLabel && emoI >= 0.4 && ['委屈', '失落', '吃醋', '生气'].includes(emoLabel)) {
+    sources.push({
+      kind: 'emotion',
+      weight: 0.62 + emoI * 0.15,
+      reason: emotionProactiveReason(emoLabel),
+      seed: emoLabel,
     });
   }
 
@@ -157,6 +172,40 @@ function buildProactiveStyle(ctx, top) {
   if (top?.kind === 'silence') bits.push('短、留缝、不质问');
   if (top?.kind === 'sick') bits.push('话少、软、不卖惨');
   if (top?.kind === 'story' || top?.kind === 'work') bits.push('像分享生活碎片，一句够');
+  if (top?.kind === 'emotion' || ctx.emotionLabel) {
+    const lab = ctx.emotionLabel || ctx.emotionResidue?.label;
+    if (lab === '委屈') bits.push('别扭一点、可闷，不连环质问');
+    if (lab === '生气') bits.push('极短、冷一点，留缝');
+    if (lab === '失落') bits.push('轻、软，不假开心');
+    if (lab === '吃醋') bits.push('试探、嘴硬心软');
+  }
   bits.push('整条主动消息控制在一两句内');
   return bits.filter(Boolean).join('；');
+}
+
+function applyEmotionToSilenceReason(base, label, intensity, silenceTier) {
+  if (!label || intensity < 0.35) return base;
+  if (label === '委屈') {
+    return `${base} 你心里还有点委屈余味，可以闷闷地想确认他还在，别一上来控诉。`;
+  }
+  if (label === '失落') {
+    return `${base} 你有点蔫，找他时话少软一点，别假开朗。`;
+  }
+  if (label === '生气' && silenceTier?.tier === 'miss') {
+    return `${base} 你还没完全消气：极短、冷一点也行，但留一点可回复的缝，别判死刑。`;
+  }
+  if (label === '吃醋') {
+    return `${base} 可以带一点别扭试探，别审讯。`;
+  }
+  return base;
+}
+
+function emotionProactiveReason(label) {
+  const map = {
+    委屈: '你心里还挂着一点委屈，想用一句短消息确认他还在意你；别扭可以，别连环追问。',
+    失落: '你有点低落，想轻轻找他待一会儿；话少，别卖惨。',
+    吃醋: '心里有点别扭，想自然地被他多看一眼；嘴硬心软，别审犯人。',
+    生气: '还没完全顺气，若找他只发极短一句，留缝，别长篇指责。',
+  };
+  return map[label] || '你心里还挂着一点情绪，找他时自然带一点，别播报情绪名。';
 }

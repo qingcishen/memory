@@ -426,6 +426,7 @@ create table if not exists chat_emotion_residue (
   updated_at   timestamptz not null default now(),
   primary key (user_id, companion_id)
 );
+alter table chat_emotion_residue add column if not exists journal jsonb not null default '[]'::jsonb;
 create index if not exists chat_emotion_residue_updated_idx on chat_emotion_residue (updated_at desc);
 
 -- 渠道事件幂等：飞书/Discord 重投或多进程时，同一事件只处理一次。

@@ -284,6 +284,8 @@ export class ProactiveScheduler {
     // 统一内容包：主触发仍是 prospective/需求/亲密/睡前/沉默；
     // 故事拍仅在分享欲高时作主因；穿搭/未完/活动作辅料丰富开场，不单独开闸（防 cron 刷屏）。
     const shareBeat = urgency.urgent && urgency.need === 'sharing' ? storyBeat : null;
+    // L4：主动包读编排器情绪残留（进程内）；失败则空
+    const emotionResidue = this.orchestrator?._emotionResidue || null;
     const contentPack = buildProactiveContentPack({
       dueItems,
       urgency,
@@ -296,6 +298,8 @@ export class ProactiveScheduler {
       lifeActivity: stateSnapshot?.life?.current_activity,
       life: stateSnapshot?.life,
       defaultReason: this.defaultReason,
+      emotionLabel: emotionResidue?.label || null,
+      emotionResidue,
     });
 
     const gateKinds = new Set(['prospective', 'story', 'desire', 'intimacy', 'bedtime', 'silence']);

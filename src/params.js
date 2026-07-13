@@ -49,6 +49,12 @@ export const DEFAULT_PARAMS = {
     snapshotMinDelta: 0.08,
     // #5 情绪指向性: tension 衰减回这个值以下时, 视为"这桩紧张消了", 清空 tension_target/tension_topic。
     tensionTargetClearBelow: 0.08,
+    // L2 非对称衰减：大负向 valence 回落更慢
+    asymmetricDecay: {
+      enabled: true,
+      negativeThreshold: 0.35, // |baseline-value| 超过才加长半衰期
+      negativeHalfLifeFactor: 1.75,
+    },
   },
 
   // ---- 情绪 → 记忆重要性 (emotion-design.md §8) ----
@@ -83,6 +89,29 @@ export const DEFAULT_PARAMS = {
       maxAbsDelta: 0.12,
       contrastGain: 0.25,
       warmthCoupling: 0.15,
+    },
+    // L1 residual → desire
+    desireBridge: {
+      enabled: true,
+      minIntensity: 0.4,
+      scale: 0.22,
+      comfortFactor: 1,
+      securityFactor: 0.7,
+      angrySecurityFactor: 0.9,
+      angryAttentionFactor: 0.5,
+      jealousSecurityFactor: 0.6,
+    },
+    // L3 journal prompt
+    journal: {
+      enabled: true,
+      promptLimit: 2,
+    },
+    // L5 story → residual
+    storySeed: {
+      enabled: true,
+      negativeMoodLink: -0.3,
+      positiveMoodLink: 0.4,
+      seedIntensity: 0.42,
     },
   },
 

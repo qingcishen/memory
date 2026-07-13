@@ -148,6 +148,69 @@ export function applyLabelInertia(prev = null, candidateLabel = '平静', ctx = 
   return { label, residual };
 }
 
+/**
+ * L5 · 故事 beat 软种子残留（不覆盖更强负面）
+ * @returns {{ residual, changed: boolean, event? }}
+ */
+export function seedResidueFromStoryBeat(prev = null, beat = {}, now = Date.now()) {
+  const cfg = PARAMS.emotion?.storySeed ?? {};
+  if (cfg.enabled === false) return { residual: normalizeEmotionResidue(prev, now), changed: false };
+  const moodLink = Number(beat?.mood_link ?? beat?.moodLink);
+  if (!Number.isFinite(moodLink)) return { residual: normalizeEmotionResidue(prev, now), changed: false };
+
+  let residual = normalizeEmotionResidue(prev, now);
+  const seedI = Number(cfg.seedIntensity) ?? 0.42;
+  const negTh = Number(cfg.negativeMoodLink) ?? -0.3;
+  const posTh = Number(cfg.positiveMoodLink) ?? 0.4;
+  const cause = String(beat?.content || beat?.title || '').slice(0, 80);
+
+  if (moodLink <= negTh) {
+    // 不强行盖过 生气 / 高强度委屈
+    if (residual.label === '生气' && residual.intensity >= 0.5) {
+      return { residual, changed: false };
+    }
+    if (residual.label === '委屈' && residual.intensity >= 0.65) {
+      return { residual, changed: false };
+    }
+    residual = {
+      ...residual,
+      label: '失落',
+      intensity: Math.max(residual.intensity, seedI * Math.min(1, Math.abs(moodLink))),
+      cause: cause || residual.cause,
+      turnsHeld: residual.label === '失落' ? residual.turnsHeld + 1 : 1,
+      stickyTurnsLeft: Math.max(residual.stickyTurnsLeft, 2),
+      updatedAt: now,
+    };
+    return {
+      residual: normalizeEmotionResidue(residual, now),
+      changed: true,
+      event: { fromLabel: prev?.label || '', toLabel: '失落', intensity: residual.intensity, cause, source: 'story', at: now },
+    };
+  }
+
+  if (moodLink >= posTh) {
+    if (NEGATIVE_EMOTION_LABELS.has(residual.label) && residual.intensity >= 0.35) {
+      return { residual, changed: false };
+    }
+    residual = {
+      ...residual,
+      label: '开心',
+      intensity: Math.max(0.3, seedI * Math.min(1, moodLink)),
+      cause: cause || residual.cause,
+      turnsHeld: residual.label === '开心' ? residual.turnsHeld + 1 : 1,
+      stickyTurnsLeft: 1,
+      updatedAt: now,
+    };
+    return {
+      residual: normalizeEmotionResidue(residual, now),
+      changed: true,
+      event: { fromLabel: prev?.label || '', toLabel: '开心', intensity: residual.intensity, cause, source: 'story', at: now },
+    };
+  }
+
+  return { residual, changed: false };
+}
+
 function rankNegative(label) {
   if (label === '生气') return 4;
   if (label === '委屈') return 3;

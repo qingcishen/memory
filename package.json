@@ -28,6 +28,7 @@
     "test:emotion": "node examples/emotion.test.js",
     "test:emotion-label": "node examples/emotion-label.test.js",
     "test:emotion-v3": "node examples/emotion-v3.test.js",
+    "test:emotion-live": "node examples/emotion-live.test.js",
     "test:behavior": "node examples/behavior.test.js",
     "test:story": "node examples/story.test.js",
     "test:profile": "node examples/profile.test.js",

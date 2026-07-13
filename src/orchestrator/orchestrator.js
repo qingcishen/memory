@@ -18,8 +18,17 @@ import {
   emptyEmotionResidue,
   normalizeEmotionResidue,
   serializeEmotionResidue,
+  seedResidueFromStoryBeat,
 } from '../state/emotionResidue.js';
 import { resonateFromMemoryHits, applyResonanceToEmotion } from '../state/emotionResonance.js';
+import { residueToDesireEvent } from '../state/emotionDesireBridge.js';
+import {
+  emptyEmotionJournal,
+  normalizeEmotionJournal,
+  appendEmotionEvent,
+  shouldLogEmotionTransition,
+  emotionJournalToPrompt,
+} from '../state/emotionJournal.js';
 import { emotionDecayOverridesFromConfig } from '../state/affect.js';
 import { fuseEmotionPrompt } from '../emotion.js';
 import { behaviorPolicy, behaviorToPrompt } from '../state/behavior.js';
@@ -155,6 +164,7 @@ export class Orchestrator {
     this._lastTurnPlan = null;
     this._sessionThread = emptySessionThread();
     this._emotionResidue = emptyEmotionResidue();
+    this._emotionJournal = emptyEmotionJournal();
   }
 
   /**
@@ -217,6 +227,7 @@ export class Orchestrator {
             userId: this.userId, companionId: this.companionId, companionName: this.companionName,
             cast: this._config.storyCast, lines: this._config.storylines, memory: this.memory,
             desire: this.stateLayer?.stateLayer?.desire ?? null,
+            onStoryBeat: (beat) => this.applyStoryBeatToEmotion(beat),
           });
         }
       }
@@ -298,22 +309,62 @@ export class Orchestrator {
         .catch(() => null);
     }
     this._emotionResidue = raw ? normalizeEmotionResidue(raw) : emptyEmotionResidue();
+    this._emotionJournal = normalizeEmotionJournal(raw?.journal);
     return this._emotionResidue;
   }
 
   persistEmotionResidue() {
     if (!this.historyStore || typeof this.historyStore.saveEmotionResidue !== 'function') return Promise.resolve();
     const residue = serializeEmotionResidue(this._emotionResidue);
+    const journal = normalizeEmotionJournal(this._emotionJournal);
     this._lastEmotionPersist = Promise.resolve(
       this.historyStore.saveEmotionResidue({
         userId: this.userId,
         companionId: this.companionId,
         residue,
+        journal,
       }),
     ).catch((reason) => {
       console.error('[historyStore.emotion]', reason);
     });
     return this._lastEmotionPersist;
+  }
+
+  /** 标签变化时记 journal + residual→desire 耦合 */
+  applyEmotionSideEffects(prevResidue, nextResidue, { userMessage = '', source = 'turn' } = {}) {
+    const prev = normalizeEmotionResidue(prevResidue);
+    const next = normalizeEmotionResidue(nextResidue);
+    if (shouldLogEmotionTransition(prev.label, next.label, prev.intensity, next.intensity)) {
+      this._emotionJournal = appendEmotionEvent(this._emotionJournal, {
+        fromLabel: prev.label,
+        toLabel: next.label,
+        intensity: next.intensity,
+        cause: userMessage || next.cause,
+        source,
+        at: Date.now(),
+      });
+    }
+    this._emotionResidue = next;
+    // desire bridge（异步，不阻塞）
+    const desireEvent = residueToDesireEvent(next);
+    if (desireEvent) {
+      const dim = this.stateLayer?.stateLayer?.desire ?? this.stateLayer?.desire;
+      if (dim && typeof dim.accumulate === 'function') {
+        const { reason, ...deltas } = desireEvent;
+        this._lastDesireBridge = Promise.resolve(dim.accumulate(deltas)).catch(() => null);
+      }
+    }
+  }
+
+  /** 故事 beat 软种子 residual（maintain/story 回调） */
+  applyStoryBeatToEmotion(beat) {
+    const prev = this._emotionResidue;
+    const { residual, changed, event } = seedResidueFromStoryBeat(prev, beat, Date.now());
+    if (changed && event) {
+      this.applyEmotionSideEffects(prev, residual, { userMessage: event.cause, source: 'story' });
+      this.persistEmotionResidue();
+    }
+    return residual;
   }
 
   /**
@@ -434,7 +485,8 @@ export class Orchestrator {
     );
     const emotionLabel = typeof emotionInferred === 'string' ? emotionInferred : emotionInferred.label;
     if (emotionInferred && typeof emotionInferred === 'object' && emotionInferred.residual) {
-      this._emotionResidue = emotionInferred.residual;
+      const prevRes = this._emotionResidue;
+      this.applyEmotionSideEffects(prevRes, emotionInferred.residual, { userMessage, source: 'turn' });
     }
     this._lastEmotionLabel = emotionLabel;
     // I2: 回复前预演亲密阶段（不写库），驱动旁白细分与 prompt 指引
@@ -618,6 +670,9 @@ export class Orchestrator {
         ...(typeof this.stateLayer?.stateLayer?.toPrompt === 'function'
           ? []
           : [emotionLabelToPrompt(emotionLabel, this._emotionResidue)]),
+        PARAMS.emotion?.journal?.enabled !== false
+          ? emotionJournalToPrompt(this._emotionJournal, PARAMS.emotion?.journal?.promptLimit ?? 2)
+          : '',
         bodyStateToPrompt(bodySit, intimacyLive ?? stateSnapshot?.intimacy),
         behaviorToPrompt(behavior),
       ]
@@ -1032,6 +1087,7 @@ export class Orchestrator {
       sessionThread: summarizeSessionThread(this._sessionThread),
       sessionDrift: sessionDrift?.drift ? sessionDrift.reasons : [],
       emotionResidue: this._emotionResidue,
+      emotionJournal: this._emotionJournal?.slice?.(-5) || [],
       emotionResonance: this._lastResonance || null,
       relationshipNarrative: this._relationshipNarrative || '',
       userProfilePrompt: this._userProfilePrompt || '',
@@ -1090,6 +1146,8 @@ export class Orchestrator {
         lifeActivity: stateSnapshot?.life?.current_activity,
         life: stateSnapshot?.life,
         defaultReason: ctx.reason ?? activityReason(stateSnapshot?.life) ?? '想主动找对方聊一句',
+        emotionLabel: this._emotionResidue?.label || this._lastEmotionLabel || null,
+        emotionResidue: this._emotionResidue,
       });
     const effCtx = {
       ...ctx,
