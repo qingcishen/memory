@@ -225,21 +225,38 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
         season: x.season || null,
         source: 'custom',
         prompt: x.prompt || '',
+        seriesId: x.seriesId || null,
+        seriesIndex: x.seriesIndex ?? null,
+        seriesTitle: x.seriesTitle || null,
+        gallery: Array.isArray(x.gallery) ? x.gallery : [],
       };
     })
     .filter((x) => x?.id && x.summary);
 
-  // 自定义造型置顶，再接衣橱默认
-  const allLooks = [...customItems, ...(cat.wardrobe || [])];
+  // 自定义：系列按 seriesIndex，再按更新；系统衣橱接后
+  const customSorted = [...customItems].sort((a, b) => {
+    if (a.seriesId && b.seriesId && a.seriesId === b.seriesId) {
+      return (a.seriesIndex || 0) - (b.seriesIndex || 0);
+    }
+    if (a.seriesId && !b.seriesId) return -1;
+    if (!a.seriesId && b.seriesId) return 1;
+    return 0;
+  });
+  const allLooks = [...customSorted, ...(cat.wardrobe || [])];
 
   for (const look of allLooks) {
     const seasonLabel = { spring: '春', summer: '夏', autumn: '秋', winter: '冬' }[look.season] || null;
     const isCustom = look.source === 'custom' || String(look.id || '').startsWith('custom_');
+    const seriesTag = look.seriesTitle
+      ? `${look.seriesTitle}${look.seriesIndex != null ? ` · ${look.seriesIndex}` : ''}`
+      : null;
     const lookCard = {
       id: cardId('look', look.id),
       kind: 'look',
       title: look.style || look.summary?.slice(0, 24) || look.id,
-      subtitle: [isCustom ? '自定义' : null, look.context || 'home', seasonLabel, look.id].filter(Boolean).join(' · '),
+      subtitle: [isCustom ? '自定义' : null, seriesTag, look.context || 'home', seasonLabel, look.id]
+        .filter(Boolean)
+        .join(' · '),
       summary: look.summary || '',
       context: look.context || 'home',
       style: look.style || '',
@@ -248,9 +265,19 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
       pieces: look.pieces || {},
       wearable: true,
       source: isCustom ? 'custom' : 'wardrobe',
+      seriesId: look.seriesId || null,
+      seriesIndex: look.seriesIndex ?? null,
+      seriesTitle: look.seriesTitle || null,
+      gallery: look.gallery || [],
       // 创建时写入的初始提示词（enrich 时若无 asset 则用它）
       seedPrompt: look.prompt || '',
-      tags: [isCustom ? '自定义' : null, look.context, look.style, seasonLabel && `${seasonLabel}季`].filter(Boolean),
+      tags: [
+        isCustom ? '自定义' : null,
+        look.seriesId ? '系列' : null,
+        look.context,
+        look.style,
+        seasonLabel && `${seasonLabel}季`,
+      ].filter(Boolean),
     };
     looks.push(lookCard);
 

@@ -479,6 +479,41 @@ textarea.input { padding: 12px !important; resize: vertical; }
   .outfit-create-grid { grid-template-columns: 1fr; }
 }
 
+.outfit-import-series { margin-bottom: 16px; }
+.outfit-import-textarea {
+  font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.45;
+}
+.outfit-parse-list {
+  margin: 0;
+  padding: 0 0 0 1.2rem;
+  display: grid;
+  gap: 8px;
+}
+.outfit-parse-list li {
+  display: grid;
+  gap: 2px;
+  font-size: 12px;
+  color: var(--sw-text-2);
+}
+.outfit-parse-list b { color: var(--sw-text); font-size: 13px; }
+.outfit-parse-list small { color: var(--sw-text-2); opacity: .85; }
+.outfit-chip-btn {
+  border: 1px solid var(--sw-border);
+  background: var(--sw-surface);
+  color: var(--sw-text-2);
+  border-radius: 999px;
+  padding: 4px 10px;
+  font-size: 11px;
+  cursor: pointer;
+}
+.outfit-chip-btn.is-active {
+  border-color: var(--sw-accent);
+  color: var(--sw-accent);
+  background: color-mix(in srgb, var(--sw-accent) 10%, transparent);
+}
+
 /* 生图配置 + 脸参考（今日穿搭旁） */
 .outfit-image-setup { margin-top: 14px; }
 .outfit-image-setup-head {

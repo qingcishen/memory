@@ -72,14 +72,81 @@ export function normalizeCustomLook(raw) {
     season: raw.season || null,
   });
   if (!look) return null;
+  // 系列多图槽：每槽 { id, prompt, title?, url?, mime? }；url 也可走 card assets
+  let gallery = [];
+  if (Array.isArray(raw.gallery)) {
+    gallery = raw.gallery
+      .map((g, i) => {
+        if (!g || typeof g !== 'object') return null;
+        return {
+          id: String(g.id || `slot${i + 1}`).slice(0, 40),
+          title: g.title ? String(g.title).slice(0, 80) : '',
+          prompt: g.prompt ? String(g.prompt).slice(0, 6000) : '',
+          url: g.url ? String(g.url).slice(0, 2000) : null,
+          mime: g.mime || null,
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 16);
+  }
   return {
     ...look,
     source: 'custom',
     created_at: raw.created_at || new Date().toISOString(),
     updated_at: raw.updated_at || new Date().toISOString(),
     // 创建时可选初始提示词（也会写入 card assets）
-    prompt: raw.prompt ? String(raw.prompt).slice(0, 4000) : '',
+    prompt: raw.prompt ? String(raw.prompt).slice(0, 6000) : '',
+    seriesId: raw.seriesId ? String(raw.seriesId).slice(0, 60) : null,
+    seriesIndex: Number.isFinite(Number(raw.seriesIndex)) ? Number(raw.seriesIndex) : null,
+    seriesTitle: raw.seriesTitle ? String(raw.seriesTitle).slice(0, 80) : null,
+    gallery,
   };
+}
+
+/**
+ * 从解析结果批量创建系列造型卡
+ */
+export function importSeriesLooks(companionRoot, parsed, { replaceSeriesId = null } = {}) {
+  if (!parsed?.looks?.length) throw new Error('没有可导入的造型');
+  const seriesId = replaceSeriesId || parsed.seriesId || `series_${crypto.randomBytes(4).toString('hex')}`;
+  const seriesTitle = parsed.seriesTitle || `造型系列 ${parsed.looks.length} 张`;
+  let list = readCustomLooks(companionRoot);
+  // 可选：替换同 seriesId 旧卡
+  if (replaceSeriesId) {
+    list = list.filter((x) => x.seriesId !== replaceSeriesId);
+  }
+  const created = [];
+  // 从后往前 unshift 保持 1..N 顺序（list 顶部最新；导入后按 index 排序展示）
+  const sorted = [...parsed.looks].sort((a, b) => (a.index || 0) - (b.index || 0));
+  for (const item of sorted) {
+    const look = normalizeCustomLook({
+      title: item.title,
+      style: item.title,
+      summary: item.summary || item.title,
+      context: item.context || 'home',
+      pieces: item.pieces || {},
+      prompt: item.imagePrompt || item.prompt || '',
+      seriesId,
+      seriesIndex: item.index || created.length + 1,
+      seriesTitle,
+      gallery: [
+        {
+          id: 'main',
+          title: item.title,
+          prompt: item.imagePrompt || item.prompt || '',
+        },
+      ],
+    });
+    if (!look) continue;
+    // 避免 id 冲突
+    if (list.some((x) => x.id === look.id)) {
+      look.id = `${look.id}_${crypto.randomBytes(2).toString('hex')}`.slice(0, 60);
+    }
+    list.unshift(look);
+    created.push(look);
+  }
+  writeCustomLooks(companionRoot, list);
+  return { seriesId, seriesTitle, looks: created };
 }
 
 /**

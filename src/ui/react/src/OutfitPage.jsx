@@ -422,6 +422,11 @@ function OutfitFlipCard({
             <div className="outfit-card-kicker">
               <span>{card.subtitle || card.kind}</span>
               {card.source === 'custom' && <span className="outfit-chip">自定义</span>}
+              {card.seriesId && (
+                <span className="outfit-chip">
+                  系列{card.seriesIndex != null ? ` ${card.seriesIndex}` : ''}
+                </span>
+              )}
               {card.context && <span className="outfit-chip">{CONTEXT_LABEL[card.context] || card.context}</span>}
             </div>
             <h4>{card.title}</h4>
@@ -518,6 +523,11 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   const [imageReadyState, setImageReadyState] = useState({ imageReady: false, refsReady: false, refCount: 0, model: '' });
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
+  const [showImport, setShowImport] = useState(false);
+  const [importText, setImportText] = useState('');
+  const [importing, setImporting] = useState(false);
+  const [parsePreview, setParsePreview] = useState(null);
+  const [seriesFilter, setSeriesFilter] = useState('');
   const [draft, setDraft] = useState({
     title: '',
     summary: '',
@@ -556,15 +566,31 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   const current = state.data?.current;
   const currentLookId = current?.current?.id || null;
 
+  const seriesOptions = useMemo(() => {
+    const looks = state.data?.looks || [];
+    const map = new Map();
+    for (const c of looks) {
+      if (!c.seriesId) continue;
+      if (!map.has(c.seriesId)) {
+        map.set(c.seriesId, { id: c.seriesId, title: c.seriesTitle || c.seriesId, count: 0 });
+      }
+      map.get(c.seriesId).count += 1;
+    }
+    return [...map.values()];
+  }, [state.data]);
+
   const cards = useMemo(() => {
-    const list = state.data?.[tab] || [];
+    let list = state.data?.[tab] || [];
+    if (tab === 'looks' && seriesFilter) {
+      list = list.filter((c) => c.seriesId === seriesFilter);
+    }
     const q = query.trim().toLowerCase();
     if (!q) return list;
     return list.filter((card) => {
       const blob = [card.title, card.subtitle, card.summary, card.prompt, ...(card.tags || [])].join(' ').toLowerCase();
       return blob.includes(q);
     });
-  }, [state.data, tab, query]);
+  }, [state.data, tab, query, seriesFilter]);
 
   const counts = state.data?.counts || {};
 
@@ -699,6 +725,61 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
       flash(e.message);
     } finally {
       setBusyId('');
+    }
+  };
+
+  const onParseSeries = async () => {
+    if (!importText.trim()) {
+      flash('请先粘贴系列提示词');
+      return;
+    }
+    setImporting(true);
+    setParsePreview(null);
+    try {
+      const result = await api('/api/outfit/looks/parse-series', json('POST', {
+        text: importText,
+        useLlm: true,
+      }));
+      if (!result.ok) throw new Error(result.message || '识别失败');
+      setParsePreview(result);
+      flash(result.message || `识别到 ${result.count} 套`);
+    } catch (e) {
+      flash(e.message);
+    } finally {
+      setImporting(false);
+    }
+  };
+
+  const onImportSeries = async () => {
+    if (!importText.trim() && !parsePreview?.looks?.length) {
+      flash('请先粘贴系列提示词');
+      return;
+    }
+    setImporting(true);
+    try {
+      const result = await api('/api/outfit/looks/import-series', json('POST', {
+        companionId,
+        text: importText,
+        useLlm: true,
+        parsed: parsePreview?.looks ? {
+          seriesTitle: parsePreview.seriesTitle,
+          seriesId: parsePreview.seriesId,
+          looks: parsePreview.looks,
+          method: parsePreview.method,
+        } : undefined,
+      }));
+      if (!result.ok) throw new Error(result.message || '导入失败');
+      flash(result.message || `已创建 ${result.count} 张`);
+      setShowImport(false);
+      setImportText('');
+      setParsePreview(null);
+      if (result.seriesId) setSeriesFilter(result.seriesId);
+      setTab('looks');
+      await load();
+    } catch (e) {
+      flash(e.message);
+    } finally {
+      setImporting(false);
     }
   };
 
@@ -896,16 +977,113 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
             {tab === 'looks' ? ' · 可新建自定义造型 · 点卡片翻转存提示词/上传图 · 可上身' : ' · 点卡片翻转看提示词 · 生成后上传挂正面'}
           </p>
         </div>
-        <div className="flex gap-2 items-center">
+        <div className="flex gap-2 items-center flex-wrap">
           {tab === 'looks' && (
-            <button type="button" className="btn btn-primary" onClick={() => setShowCreate((v) => !v)}>
-              <Plus size={15} />
-              {showCreate ? '收起' : '新建造型'}
-            </button>
+            <>
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={() => { setShowImport((v) => !v); setShowCreate(false); }}
+              >
+                <Sparkles size={15} />
+                {showImport ? '收起导入' : '导入系列提示词'}
+              </button>
+              <button type="button" className="btn" onClick={() => { setShowCreate((v) => !v); setShowImport(false); }}>
+                <Plus size={15} />
+                {showCreate ? '收起' : '新建造型'}
+              </button>
+            </>
           )}
           <span className="badge">{cards.length} 张卡片</span>
         </div>
       </div>
+
+      {tab === 'looks' && seriesOptions.length > 0 && (
+        <div className="outfit-series-filter mb-3 flex flex-wrap gap-2 items-center">
+          <span className="text-xs text-zinc-400">系列小相册</span>
+          <button
+            type="button"
+            className={`outfit-chip-btn ${!seriesFilter ? 'is-active' : ''}`}
+            onClick={() => setSeriesFilter('')}
+          >
+            全部
+          </button>
+          {seriesOptions.map((s) => (
+            <button
+              key={s.id}
+              type="button"
+              className={`outfit-chip-btn ${seriesFilter === s.id ? 'is-active' : ''}`}
+              onClick={() => setSeriesFilter(s.id)}
+            >
+              {s.title} · {s.count} 张
+            </button>
+          ))}
+        </div>
+      )}
+
+      {tab === 'looks' && showImport && (
+        <section className="panel outfit-import-series mb-4">
+          <div className="mb-3">
+            <span className="page-header-kicker">SERIES IMPORT · DEEPSEEK</span>
+            <h3 className="mt-1 text-base font-bold">粘贴系列提示词 → 自动拆成多张造型卡</h3>
+            <p className="mt-1 text-xs text-zinc-400">
+              支持「1 暖灰针织… 2 酒红…」格式。用 DeepSeek 识别每张的裙/鞋/包/发，并生成独立出图提示词填入卡片背面。
+              导入后形成系列小相册（筛选查看）；每张卡仍是正面图 + 背面提示词，可上身、可上传成片。
+            </p>
+          </div>
+          <label className="field">
+            <span>完整系列提示词</span>
+            <textarea
+              className="input outfit-import-textarea"
+              rows={12}
+              value={importText}
+              onChange={(e) => setImportText(e.target.value)}
+              placeholder="粘贴整段系列提示词（含编号 1～8 的造型描述）…"
+              spellCheck={false}
+            />
+          </label>
+          <div className="mt-3 flex gap-2 flex-wrap">
+            <button type="button" className="btn" disabled={importing || !importText.trim()} onClick={onParseSeries}>
+              {importing ? <LoaderCircle size={14} className="animate-spin" /> : <WandSparkles size={14} />}
+              仅识别预览
+            </button>
+            <button type="button" className="btn btn-primary" disabled={importing || !importText.trim()} onClick={onImportSeries}>
+              {importing ? <LoaderCircle size={14} className="animate-spin" /> : <Plus size={14} />}
+              识别并创建全部卡片
+            </button>
+            <button type="button" className="btn" onClick={() => { setShowImport(false); setParsePreview(null); }}>取消</button>
+          </div>
+          {parsePreview?.looks?.length > 0 && (
+            <div className="outfit-parse-preview mt-4">
+              <div className="flex items-center justify-between gap-2 mb-2">
+                <strong className="text-sm">
+                  预览 · {parsePreview.seriesTitle} · {parsePreview.count} 张
+                  <em className="ml-2 text-xs font-normal text-zinc-400">
+                    {parsePreview.method}
+                    {parsePreview.llmError ? `（${parsePreview.llmError}）` : ''}
+                  </em>
+                </strong>
+              </div>
+              <ol className="outfit-parse-list">
+                {parsePreview.looks.map((look) => (
+                  <li key={look.index || look.title}>
+                    <b>{look.index}. {look.title}</b>
+                    <span>{look.summary}</span>
+                    <small>
+                      {[
+                        look.pieces?.dress || look.pieces?.top,
+                        look.pieces?.shoes,
+                        look.pieces?.bag,
+                        look.context,
+                      ].filter(Boolean).join(' · ')}
+                    </small>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+        </section>
+      )}
 
       {tab === 'looks' && showCreate && (
         <section className="panel outfit-create-look mb-4">

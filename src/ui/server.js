@@ -31,7 +31,9 @@ import {
   updateCustomLook,
   deleteCustomLook,
   findCustomLook,
+  importSeriesLooks,
 } from '../state/outfitCustomLooks.js';
+import { parseLookSeries } from '../state/lookSeriesParse.js';
 import {
   buildAlbumCatalog,
 } from '../state/album.js';
@@ -1812,6 +1814,84 @@ async function deleteOutfitCustomLook(env, companionId, lookId) {
   return { ok: true, message: '已删除自定义造型' };
 }
 
+/** 解析系列提示词（DeepSeek 优先，失败启发式） */
+async function parseOutfitSeries(env, body = {}) {
+  const text = String(body.text || body.prompt || '').trim();
+  if (!text) return { ok: false, message: '请粘贴系列提示词' };
+  const useLlm = body.useLlm !== false;
+  try {
+    const parsed = await parseLookSeries(text, {
+      useLlm,
+      baseURL: env.LLM_BASE_URL || 'https://api.deepseek.com',
+      apiKey: env.LLM_API_KEY || '',
+      model: env.LLM_MODEL || 'deepseek-chat',
+      timeoutMs: 120_000,
+    });
+    return {
+      ok: true,
+      method: parsed.method,
+      seriesTitle: parsed.seriesTitle,
+      seriesId: parsed.seriesId,
+      count: parsed.looks?.length || 0,
+      looks: parsed.looks,
+      llmError: parsed.llmError || null,
+      message: parsed.method === 'llm'
+        ? `已识别 ${parsed.looks.length} 套造型（DeepSeek）`
+        : `已识别 ${parsed.looks.length} 套造型（${parsed.method}${parsed.llmError ? ` · ${parsed.llmError}` : ''}）`,
+    };
+  } catch (error) {
+    return { ok: false, message: error.message || '解析失败' };
+  }
+}
+
+/** 解析并批量创建造型卡 + 写入各卡提示词资产 */
+async function importOutfitSeries(env, companionId, body = {}) {
+  const id = safeCompanionId(companionId) || 'default';
+  const text = String(body.text || body.prompt || '').trim();
+  if (!text && !body.parsed?.looks) return { ok: false, message: '请粘贴系列提示词' };
+  try {
+    let parsed = body.parsed;
+    if (!parsed?.looks?.length) {
+      parsed = await parseLookSeries(text, {
+        useLlm: body.useLlm !== false,
+        baseURL: env.LLM_BASE_URL || 'https://api.deepseek.com',
+        apiKey: env.LLM_API_KEY || '',
+        model: env.LLM_MODEL || 'deepseek-chat',
+        timeoutMs: 120_000,
+      });
+    }
+    const root = companionRootForAssets(id);
+    const result = importSeriesLooks(root, parsed, {
+      replaceSeriesId: body.replaceSeriesId || null,
+    });
+    // 每张卡的提示词写入 Supabase card assets（与翻面编辑一致）
+    for (const look of result.looks) {
+      const cardKey = outfitCardId('look', look.id);
+      if (look.prompt) {
+        await upsertCardAsset(env, id, 'outfit', cardKey, { prompt: look.prompt }).catch(() => null);
+      }
+    }
+    return {
+      ok: true,
+      method: parsed.method,
+      seriesId: result.seriesId,
+      seriesTitle: result.seriesTitle,
+      count: result.looks.length,
+      looks: result.looks.map((l) => ({
+        id: l.id,
+        title: l.style,
+        summary: l.summary,
+        seriesIndex: l.seriesIndex,
+        cardId: outfitCardId('look', l.id),
+      })),
+      llmError: parsed.llmError || null,
+      message: `已创建系列「${result.seriesTitle}」共 ${result.looks.length} 张造型卡，提示词已分别填入`,
+    };
+  } catch (error) {
+    return { ok: false, message: error.message || '导入失败' };
+  }
+}
+
 async function wearOutfitLook(env, scope, lookId) {
   if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
   const companionId = safeCompanionId(scope.companionId) || 'default';
@@ -3004,6 +3084,15 @@ async function handle(req, res) {
     const body = await readBody(req);
     const companionId = body?.companionId || body?.scope?.companionId || 'default';
     return json(res, 200, await createOutfitCustomLook(readEnvValues(), companionId, body));
+  }
+  if (route === 'POST /api/outfit/looks/parse-series') {
+    const body = await readBody(req);
+    return json(res, 200, await parseOutfitSeries(readEnvValues(), body));
+  }
+  if (route === 'POST /api/outfit/looks/import-series') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await importOutfitSeries(readEnvValues(), companionId, body));
   }
   if (route === 'PUT /api/outfit/looks') {
     const body = await readBody(req);
