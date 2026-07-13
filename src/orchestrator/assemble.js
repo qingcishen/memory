@@ -19,6 +19,7 @@ export function buildSystemPrompt({
   structuredPlanPrompt = '',
   relationshipNarrativePrompt = '',
   userProfilePrompt = '',
+  sessionThreadPrompt = '',
   episodePrompt = '',
   statePrompt = '',
   emotionPrompt = '',
@@ -27,7 +28,7 @@ export function buildSystemPrompt({
   identityConstraintsPrompt = '',
   narrationPrompt = '',
 } = {}) {
-  // 连贯性/本轮简报/常驻关系槽放在业务段靠前。
+  // 连贯性/本轮简报/常驻关系槽/本场会话线放在业务段靠前。
   const sections = [
     timePrompt,
     personaPrompt,
@@ -37,6 +38,7 @@ export function buildSystemPrompt({
     relationshipStagePrompt,
     relationshipNarrativePrompt,
     userProfilePrompt,
+    sessionThreadPrompt,
     coherencePrompt,
     turnBriefPrompt,
     structuredPlanPrompt,

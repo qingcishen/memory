@@ -314,6 +314,8 @@ export const DEFAULT_PARAMS = {
     coherenceRetry: true,
     // 关系周记 / 用户画像常驻槽
     residentSlots: true,
+    // 本场会话线（主话题 / 开放问题 / 约定）
+    sessionThread: true,
   },
 
   // ---- P1 双向关系触发规则 ----

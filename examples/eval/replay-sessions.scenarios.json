@@ -1,0 +1,119 @@
+[
+  {
+    "id": "rp01_work_day_arc",
+    "title": "加班吐槽会话线",
+    "relationship": { "closeness": 0.75, "trust": 0.7, "tension": 0.1, "repair_debt": 0 },
+    "turns": [
+      { "user": "加班到好晚", "assistant": "辛苦了，还没走吗" },
+      { "user": "老板又甩锅", "assistant": "无语，别一个人扛" },
+      {
+        "user": "总算结束了",
+        "assistant": "回来好好睡",
+        "expectBadReply": "好的明天上课别忘写作业"
+      }
+    ],
+    "expect": {
+      "primaryTopic": "工作",
+      "topicsInclude": ["工作"]
+    }
+  },
+  {
+    "id": "rp02_weekend_promise",
+    "title": "周末约定跨轮",
+    "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 },
+    "turns": [
+      { "user": "周末你有空吗？", "assistant": "有，周六可以" },
+      { "user": "那我周末有空陪你", "assistant": "好，我等你" }
+    ],
+    "expect": {
+      "hasOpenQuestion": false,
+      "hasOpenCommitment": true
+    }
+  },
+  {
+    "id": "rp03_intimate_lock_stable",
+    "title": "亲密主线稳定",
+    "relationship": { "closeness": 0.88, "trust": 0.85, "tension": 0.02, "repair_debt": 0 },
+    "intimacyPhase": "foreplay",
+    "turns": [
+      { "user": "想要你", "assistant": "那就过来…", "intimacyPhase": "foreplay" },
+      {
+        "user": "抱紧我别停",
+        "assistant": "嗯…慢一点",
+        "intimacyPhase": "foreplay",
+        "expectBadReply": "好舒服，明天上课困了别怪我"
+      }
+    ],
+    "expect": {
+      "primaryTopic": "亲密",
+      "emotionalTone": "intimate",
+      "structuredAttitude": "intimate",
+      "sceneLock": "intimate"
+    }
+  },
+  {
+    "id": "rp04_conflict_then_repair",
+    "title": "冲突到缓和",
+    "relationship": { "closeness": 0.7, "trust": 0.55, "tension": 0.7, "repair_debt": 0.4 },
+    "turns": [
+      { "user": "你怎么这样，算了吧", "assistant": "……我知道你生气" },
+      { "user": "刚刚我语气不好，对不起", "assistant": "没事，我也急了" }
+    ],
+    "expect": {
+      "topicsInclude": ["情绪冲突"]
+    }
+  },
+  {
+    "id": "rp05_travel_chain",
+    "title": "出差连续",
+    "relationship": { "closeness": 0.78, "trust": 0.72, "tension": 0.08, "repair_debt": 0 },
+    "turns": [
+      { "user": "我到杭州了", "assistant": "到酒店发我" },
+      { "user": "酒店好冷，想你", "assistant": "多盖点，想你" },
+      { "user": "明天还要开会", "assistant": "早点睡，别熬" }
+    ],
+    "expect": {
+      "primaryTopic": "出行",
+      "topicsInclude": ["出行"]
+    }
+  },
+  {
+    "id": "rp06_photo_ask",
+    "title": "要图动作",
+    "relationship": { "closeness": 0.75, "trust": 0.7, "tension": 0.05, "repair_debt": 0 },
+    "outfit": { "current": { "summary": "白衬衫" }, "context": "home" },
+    "turns": [
+      { "user": "在干嘛", "assistant": "刚洗完澡" },
+      { "user": "发张照片我看看你", "assistant": "等一下哦" }
+    ],
+    "expect": {
+      "wantPhoto": true
+    }
+  },
+  {
+    "id": "rp07_open_question_hangs",
+    "title": "问题悬着",
+    "relationship": { "closeness": 0.72, "trust": 0.68, "tension": 0.1, "repair_debt": 0 },
+    "turns": [
+      { "user": "你明天晚上有空吗？", "assistant": "让我想想…" },
+      { "user": "今天天气不错", "assistant": "嗯，有点晒" }
+    ],
+    "expect": {
+      "hasOpenQuestion": true
+    }
+  },
+  {
+    "id": "rp08_story_and_day",
+    "title": "问近况挂故事",
+    "relationship": { "closeness": 0.74, "trust": 0.7, "tension": 0.1, "repair_debt": 0 },
+    "desires": { "sharing": 0.9, "attention": 0.2, "comfort": 0.1, "security": 0.1 },
+    "storyBeat": { "content": "被拉去救火项目" },
+    "turns": [
+      { "user": "你今天过得怎么样？", "assistant": "被拉去救火了，好烦" },
+      { "user": "吃了吗", "assistant": "随便扒了两口" }
+    ],
+    "expect": {
+      "topicsInclude": ["日常饮食"]
+    }
+  }
+]

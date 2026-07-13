@@ -124,6 +124,7 @@ console.log('coherence retry defaults');
   ok('params 默认 coherenceRetry', PARAMS.orchestrator.coherenceRetry === true);
   ok('params 默认 structuredPlanLlm', PARAMS.orchestrator.structuredPlanLlm === true);
   ok('params 默认 residentSlots', PARAMS.orchestrator.residentSlots === true);
+  ok('params 默认 sessionThread', PARAMS.orchestrator.sessionThread === true);
   const bad = detectNonSequitur('好舒服。明天上课别怪我', [{ id: 'intimate', forbidJump: /明天上课/, detect: /想要/ }]);
   ok('跳戏可检', bad.bad);
   const repair = nonSequiturRepairHint('好舒服明天上课', [{ id: 'intimate', forbidJump: /明天上课/, detect: /./ }]);

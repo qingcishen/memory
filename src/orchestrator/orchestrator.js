@@ -43,6 +43,14 @@ import {
   readRelationshipNarrative,
   saveRelationshipNarrative,
 } from '../companion/relationshipNarrative.js';
+import {
+  emptySessionThread,
+  updateSessionThread,
+  sessionThreadToPrompt,
+  sessionHooksToUnfinished,
+  shouldResetSession,
+  detectSessionDrift,
+} from '../companion/sessionThread.js';
 import { readUserProfilePrompt } from '../profile.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
@@ -134,6 +142,7 @@ export class Orchestrator {
     this._episodeBuffer = [];
     this._lastStructured = null;
     this._lastTurnPlan = null;
+    this._sessionThread = emptySessionThread();
   }
 
   /**
@@ -291,6 +300,11 @@ export class Orchestrator {
     if (idleHours >= 4 && this.history.length > 0) {
       this.history = [];
       this._lastSceneType = null; // 隔了这么久, 场景连续性提示也该重新开始判断, 不该沿用几小时前的场景
+      this._sessionThread = emptySessionThread(); // 新会话线
+    }
+    // 会话线超时重置（即使 history 已空）
+    if (PARAMS.orchestrator?.sessionThread !== false && shouldResetSession(this._sessionThread)) {
+      this._sessionThread = emptySessionThread();
     }
     this._lastUserMessageAt = Date.now();
 
@@ -338,7 +352,19 @@ export class Orchestrator {
     // 场景连贯锁（纯逻辑）：从历史+本轮+亲密阶段推断，注入最高优先级 prompt
     const sceneLocks = detectSceneLocks(userMessage, this.history, intimacyLive?.scene_phase);
     this._lastSceneLocks = sceneLocks;
-    const unfinished = extractUnfinishedHooks(this.history);
+    // 会话线 peek：仅用户句预览（不写回），合并历史未完钩子 + 本场问题/约定
+    const sessionPeek =
+      PARAMS.orchestrator?.sessionThread === false
+        ? null
+        : updateSessionThread(this._sessionThread, {
+            userMessage,
+            sceneLocks,
+            now: Date.now(),
+          });
+    const unfinished = [
+      ...extractUnfinishedHooks(this.history),
+      ...(sessionPeek ? sessionHooksToUnfinished(sessionPeek) : []),
+    ].slice(0, 4);
     // 故事 beat：今日 + 未分享的 pending 都可作内容源
     let storyBeat = storySnapshot?.today ?? null;
     if (!storyBeat && typeof this.story?.pendingShare === 'function') {
@@ -469,6 +495,7 @@ export class Orchestrator {
           ? ''
           : relationshipNarrativeToPrompt(this._relationshipNarrative || ''),
       userProfilePrompt: PARAMS.orchestrator?.residentSlots === false ? '' : this._userProfilePrompt || '',
+      sessionThreadPrompt: sessionPeek ? sessionThreadToPrompt(sessionPeek) : '',
       statePrompt: [
         this.stateLayer.toPrompt(stateForPrompt, {
           relationship: rel,
@@ -599,6 +626,16 @@ export class Orchestrator {
 
     ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
+    // 会话线落盘：用户句 + 她的回复（含她的承诺）
+    if (PARAMS.orchestrator?.sessionThread !== false) {
+      this._sessionThread = updateSessionThread(this._sessionThread, {
+        userMessage,
+        reply,
+        sceneLocks,
+        now: Date.now(),
+      });
+    }
+
     this.recordHistory([
       { role: 'user', content: userMessage },
       { role: 'assistant', content: reply },
@@ -615,6 +652,7 @@ export class Orchestrator {
       this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto });
     }
 
+    const sessionDrift = detectSessionDrift(reply, this._sessionThread);
     const debug = opts.debug
       ? this._buildDebug({
           stateForPrompt,
@@ -627,6 +665,7 @@ export class Orchestrator {
           turn,
           structured,
           repair,
+          sessionDrift,
           worldSnapshot,
           storySnapshot,
           storyBeat,
@@ -655,6 +694,7 @@ export class Orchestrator {
       recallExplain,
       turnPlan: summarizeTurnPlan(turn),
       structuredPlan: summarizeStructured(structured),
+      sessionThread: summarizeSessionThread(this._sessionThread),
       ...(debug ? { debug } : {}),
     };
   }
@@ -736,6 +776,15 @@ export class Orchestrator {
 
     ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
+    if (PARAMS.orchestrator?.sessionThread !== false) {
+      this._sessionThread = updateSessionThread(this._sessionThread, {
+        userMessage,
+        reply,
+        sceneLocks,
+        now: Date.now(),
+      });
+    }
+
     this.recordHistory(
       [
         { role: 'user', content: userMessage },
@@ -767,6 +816,7 @@ export class Orchestrator {
       recallExplain,
       turnPlan: summarizeTurnPlan(turn),
       structuredPlan: summarizeStructured(structured),
+      sessionThread: summarizeSessionThread(this._sessionThread),
       streamed,
     };
     if (opts.debug) {
@@ -810,6 +860,7 @@ export class Orchestrator {
     turn,
     structured,
     repair,
+    sessionDrift,
     worldSnapshot,
     storySnapshot,
     storyBeat,
@@ -834,6 +885,8 @@ export class Orchestrator {
       unfinished,
       turnPlan: summarizeTurnPlan(turn),
       structuredPlan: summarizeStructured(structured ?? this._lastStructured),
+      sessionThread: summarizeSessionThread(this._sessionThread),
+      sessionDrift: sessionDrift?.drift ? sessionDrift.reasons : [],
       relationshipNarrative: this._relationshipNarrative || '',
       userProfilePrompt: this._userProfilePrompt || '',
       recallExplain: recallExplain || [],
@@ -945,6 +998,10 @@ export class Orchestrator {
           ? ''
           : relationshipNarrativeToPrompt(this._relationshipNarrative || ''),
       userProfilePrompt: PARAMS.orchestrator?.residentSlots === false ? '' : this._userProfilePrompt || '',
+      sessionThreadPrompt:
+        PARAMS.orchestrator?.sessionThread === false
+          ? ''
+          : sessionThreadToPrompt(this._sessionThread),
       turnBriefPrompt: turn.turnBrief || '',
       statePrompt: [
         this.stateLayer.toPrompt(stateSnapshot) ?? '',
@@ -1297,5 +1354,20 @@ function summarizeStructured(structured) {
     actions: structured.actions || [],
     note: structured.note || '',
     source: structured.source,
+  };
+}
+
+/** 对外暴露的本场会话线摘要 */
+function summarizeSessionThread(thread) {
+  if (!thread || !thread.turnCount) return null;
+  return {
+    turnCount: thread.turnCount,
+    primaryTopic: thread.primaryTopic,
+    topics: thread.topics || [],
+    emotionalTone: thread.emotionalTone,
+    openQuestions: (thread.openQuestions || []).map((q) => q.text),
+    openCommitments: (thread.commitments || [])
+      .filter((c) => c.status === 'open')
+      .map((c) => ({ who: c.who, text: c.text })),
   };
 }

@@ -31,6 +31,7 @@ export {
   structuredPlanToPrompt,
   mergeStructured,
 } from './structuredPlan.js';
+// sessionThread 在 companion 包；编排器已接线，测试可直接 import companion 路径
 export { LocalJsonHistoryStore, SupabaseHistoryStore } from './historyStore.js';
 export {
   DEFAULT_PROACTIVE_POLICY,

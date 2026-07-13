@@ -292,7 +292,12 @@ console.log('Orchestrator.reply 完整管线 (deps 全 mock)');
   ok('reply 返回 text + parts', reply1.text === '嗯嗯, 我记得呀!' && reply1.parts[0].type === 'dialogue');
   ok('debug 模式返回最终 messages 和状态快照', Array.isArray(reply1.debug?.messages) && reply1.debug?.stateSnapshot?.life?.energy === 0.4);
   ok('persona.load 只在首轮调用一次', deps.persona.loadCalls === 1);
-  ok('memory.recall 收到当前用户消息', deps.memory.recallCalls[0] === '诗雅最近怎么样?');
+  // turnPlan 会增强 recallQuery（可拼 unfinished/故事种子），至少应覆盖用户原话关键词
+  ok(
+    'memory.recall 覆盖用户消息关键词',
+    typeof deps.memory.recallCalls[0] === 'string' &&
+      (deps.memory.recallCalls[0].includes('诗雅') || deps.memory.recallCalls[0].includes('最近怎么样')),
+  );
   ok('stateLayer.snapshot 被调用', deps.stateLayer.snapshotCalls === 1);
   ok('relationship.current 被调用', deps.relationship.currentCalls === 1);
   ok('useMonologue 默认开启, llm.think 被调用一次', deps.llm.thinkCalls.length === 1);
