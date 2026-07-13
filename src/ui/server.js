@@ -41,7 +41,14 @@ import {
   normalizeCardKey,
 } from '../state/cardAssetsDb.js';
 import { uploadBase64ToR2, deleteFromR2, resolveR2Config } from '../media/r2.js';
-import { normalizeWardrobe } from '../state/outfit.js';
+import { normalizeWardrobe, clampOutfitState, writeOutfit, readOutfit } from '../state/outfit.js';
+import {
+  ensureDailyLookState,
+  generateDailyLookPhoto,
+  localDayKey,
+  dailyAlbumCardId,
+} from '../state/dailyLook.js';
+import { insertAppearanceAsset } from '../appearance/selfie.js';
 import {
   listMcpCatalog,
   installMcpToClient,
@@ -1737,6 +1744,14 @@ async function wearOutfitLook(env, scope, lookId) {
     }, { userId: scope.userId, companionId }));
   }
   const prev = life.ok && life.data?.[0] ? life.data[0] : {};
+  const prevOutfit = prev.outfit && typeof prev.outfit === 'object' ? prev.outfit : {};
+  const dayKey = localDayKey(Date.now(), DEFAULT_PARAMS.outfit?.dailyLook?.timezoneOffsetMinutes ?? 480);
+  const outfitWithDaily = clampOutfitState({
+    ...outfit,
+    daily_key: dayKey,
+    composed_from: { lookId: look.id, source: 'manual_wear' },
+    daily_photo: prevOutfit.daily_key === dayKey ? prevOutfit.daily_photo : null,
+  });
   const row = {
     user_id: scope.userId,
     companion_id: companionId,
@@ -1748,7 +1763,7 @@ async function wearOutfitLook(env, scope, lookId) {
     sick_until: prev.sick_until ?? null,
     late_night_streak: prev.late_night_streak ?? 0,
     last_late_night_day: prev.last_late_night_day ?? null,
-    outfit,
+    outfit: outfitWithDaily,
     updated_at: new Date().toISOString(),
   };
   const result = await supabaseRequest(env, 'life_state?on_conflict=user_id,companion_id', {
@@ -1757,7 +1772,163 @@ async function wearOutfitLook(env, scope, lookId) {
     headers: { prefer: 'resolution=merge-duplicates,return=representation' },
   });
   if (!result.ok) return result;
-  return { ok: true, outfit, message: `已上身：${look.summary || look.id}` };
+  return { ok: true, outfit: outfitWithDaily, message: `已上身：${look.summary || look.id}` };
+}
+
+/** 保存日更成片到相册（data URL → R2；http/mock → 直接写 url） */
+async function saveDailyAlbumImage(env, companionId, cardId, payload = {}) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = normalizeCardKey(cardId) || cardId;
+  const url = String(payload.url || '');
+  if (payload.prompt) {
+    await upsertCardAsset(env, id, 'album', key, { prompt: payload.prompt }).catch(() => null);
+  }
+  if (url.startsWith('data:')) {
+    const m = url.match(/^data:([^;]+);base64,(.+)$/s);
+    if (m) {
+      return uploadCardImageToR2AndDb(env, id, 'album', key, {
+        mime: m[1] || payload.mime || 'image/png',
+        data: m[2],
+        name: `${key}.png`,
+      });
+    }
+  }
+  if (url) {
+    const r = await upsertCardAsset(env, id, 'album', key, {
+      prompt: payload.prompt,
+      url,
+      mime: payload.mime || 'image/png',
+      meta: {
+        has_image: true,
+        storage: url.startsWith('mock://') ? 'mock' : 'remote',
+        lookSummary: payload.lookSummary || null,
+        daily: true,
+      },
+    });
+    if (!r.ok) return r;
+    return { ok: true, imageUrl: url, url, entry: r.entry };
+  }
+  return { ok: false, message: '无图片 URL' };
+}
+
+async function getDailyOutfit(env, scope = {}) {
+  if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const raw = readCompanionOutfitRaw(companionId);
+  const wardrobe = normalizeWardrobe(raw);
+  let stored = defaultOutfitSafe(await readOutfit(scope.userId, companionId).catch(() => null));
+  // 若 life 走 REST 失败则用 supabase 客户端 readOutfit
+  const life = await supabaseRest(env, scopedPath('life_state', { select: 'outfit,updated_at', limit: '1' }, {
+    userId: scope.userId,
+    companionId,
+  }));
+  if (life.ok && life.data?.[0]?.outfit) {
+    stored = clampOutfitState(life.data[0].outfit);
+  }
+  const ensured = ensureDailyLookState(stored, {
+    wardrobe,
+    now: Date.now(),
+    config: DEFAULT_PARAMS.outfit,
+  });
+  if (ensured.composed) {
+    await writeOutfit(scope.userId, companionId, ensured.state).catch(() => null);
+  }
+  const o = ensured.state;
+  return {
+    ok: true,
+    companionId,
+    dailyKey: o.daily_key,
+    outfit: o,
+    summary: o.current?.summary || null,
+    pieces: o.current?.pieces || {},
+    composedFrom: o.composed_from,
+    photo: o.daily_photo,
+    albumCardId: o.daily_photo?.albumCardId || (o.daily_key ? dailyAlbumCardId(o.daily_key) : null),
+    hasPhoto: Boolean(o.daily_photo?.url),
+  };
+}
+
+function defaultOutfitSafe(v) {
+  return clampOutfitState(v || {});
+}
+
+async function recomposeDailyOutfit(env, scope = {}) {
+  if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const raw = readCompanionOutfitRaw(companionId);
+  const wardrobe = normalizeWardrobe(raw);
+  const life = await supabaseRest(env, scopedPath('life_state', { select: 'outfit', limit: '1' }, {
+    userId: scope.userId,
+    companionId,
+  }));
+  const stored = clampOutfitState(life.ok && life.data?.[0]?.outfit ? life.data[0].outfit : {});
+  const ensured = ensureDailyLookState(stored, {
+    wardrobe,
+    now: Date.now(),
+    config: DEFAULT_PARAMS.outfit,
+    force: true,
+  });
+  await writeOutfit(scope.userId, companionId, ensured.state).catch((e) => {
+    throw e;
+  });
+  return {
+    ok: true,
+    message: '已重新组合今日穿搭',
+    outfit: ensured.state,
+    dailyKey: ensured.state.daily_key,
+    summary: ensured.state.current?.summary,
+    composedFrom: ensured.state.composed_from,
+  };
+}
+
+async function generateDailyOutfitPhoto(env, scope = {}, { force = false } = {}) {
+  if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const daily = await getDailyOutfit(env, scope);
+  if (!daily.ok) return daily;
+  const provider = imageProviderFromEnv(env);
+  const appearance = (() => {
+    try {
+      const file = path.join(companionDirPath(companionId), 'profile.json');
+      if (!fs.existsSync(file)) return '';
+      const p = JSON.parse(fs.readFileSync(file, 'utf8'));
+      return String(p.appearance || p.look || '').slice(0, 800);
+    } catch {
+      return '';
+    }
+  })();
+  const result = await generateDailyLookPhoto({
+    outfit: daily.outfit,
+    appearance,
+    snapshot: { outfit: daily.outfit, life: {}, emotion: {} },
+    force: Boolean(force),
+    provider,
+    getReferences: () => {
+      const refs = listReferenceImages(scope.userId, companionId);
+      return [...refs]
+        .sort((a, b) => Number(Boolean(b.isAvatar)) - Number(Boolean(a.isAvatar)))
+        .slice(0, 4)
+        .map((x) => ({ path: referenceFilePath(x), mime: x.mime, name: x.name }));
+    },
+    saveAlbum: (cardId, payload) => saveDailyAlbumImage(env, companionId, cardId, payload),
+    writeAppearance: (asset) => insertAppearanceAsset(scope.userId, companionId, asset),
+    writeOutfit: (outfit) => writeOutfit(scope.userId, companionId, outfit),
+    config: DEFAULT_PARAMS.outfit,
+  });
+  if (!result.ok && !result.skipped) {
+    return { ok: false, message: result.reason || '生成失败', reason: result.reason };
+  }
+  return {
+    ok: true,
+    skipped: Boolean(result.skipped),
+    message: result.skipped
+      ? (result.reason === 'already' ? '今日成片已存在' : result.reason)
+      : '今日穿搭成片已生成',
+    url: result.url,
+    albumCardId: result.albumCardId,
+    outfit: result.outfit,
+    lookSummary: result.lookSummary || null,
+  };
 }
 
 async function upsertCardAsset(env, companionId, collection, cardId, patch) {
@@ -1940,7 +2111,40 @@ async function getAlbumCatalog(env, scope = {}) {
   }
   const catalog = buildAlbumCatalog(raw, custom);
   const assets = await loadCardAssetMap(env, companionId, 'album');
-  const cards = attachAssetsToCards(catalog.cards, assets.map || {}, { companionId, collection: 'album' });
+  let cards = attachAssetsToCards(catalog.cards, assets.map || {}, { companionId, collection: 'album' });
+
+  // 今日日更成片置顶
+  if (scope.userId) {
+    const daily = await getDailyOutfit(env, { userId: scope.userId, companionId }).catch(() => null);
+    if (daily?.ok && daily.dailyKey) {
+      const cardId = daily.albumCardId || dailyAlbumCardId(daily.dailyKey);
+      const asset = (assets.map || {})[cardId];
+      const dailyCard = {
+        id: cardId,
+        kind: 'wearing',
+        source: 'daily',
+        lookId: daily.composedFrom?.lookId || daily.outfit?.current?.id || null,
+        title: `今日穿搭 · ${daily.dailyKey}`,
+        subtitle: 'daily lookbook',
+        summary: daily.summary || '',
+        context: daily.outfit?.context || 'home',
+        season: null,
+        style: '今日',
+        pieces: daily.pieces || {},
+        tags: ['今日', daily.outfit?.context, '日更'].filter(Boolean),
+        defaultPrompt: '',
+        prompt: asset?.prompt || '',
+        promptMode: 'person_look',
+        hasCustomPrompt: Boolean(asset?.prompt),
+        imageUrl: daily.photo?.url || (asset?.file ? `/api/album/media/${encodeURIComponent(cardId)}/file?companionId=${encodeURIComponent(companionId)}` : null),
+        hasImage: Boolean(daily.photo?.url || asset?.file || asset?.url),
+        updatedAt: daily.photo?.at || asset?.updatedAt || null,
+      };
+      // 若 attach 已有同 id，替换并置顶
+      cards = [dailyCard, ...cards.filter((c) => c.id !== cardId)];
+    }
+  }
+
   const withImage = cards.filter((c) => c.hasImage).length;
   return {
     ok: true,
@@ -2666,6 +2870,31 @@ async function handle(req, res) {
     const body = await readBody(req);
     const scope = body?.scope || { userId: body?.userId, companionId: body?.companionId || 'default' };
     return json(res, 200, await wearOutfitLook(readEnvValues(), scope, body?.lookId));
+  }
+  if (route === 'GET /api/outfit/daily') {
+    const scope = {
+      userId: url.searchParams.get('userId') || '',
+      companionId: url.searchParams.get('companionId') || 'default',
+    };
+    return json(res, 200, await getDailyOutfit(readEnvValues(), scope));
+  }
+  if (route === 'POST /api/outfit/daily') {
+    const body = await readBody(req);
+    const scope = body?.scope || { userId: body?.userId, companionId: body?.companionId || 'default' };
+    try {
+      return json(res, 200, await recomposeDailyOutfit(readEnvValues(), scope));
+    } catch (error) {
+      return json(res, 200, { ok: false, message: error.message || '重组失败' });
+    }
+  }
+  if (route === 'POST /api/outfit/daily/photo') {
+    const body = await readBody(req);
+    const scope = body?.scope || { userId: body?.userId, companionId: body?.companionId || 'default' };
+    try {
+      return json(res, 200, await generateDailyOutfitPhoto(readEnvValues(), scope, { force: Boolean(body?.force) }));
+    } catch (error) {
+      return json(res, 200, { ok: false, message: error.message || '生成失败' });
+    }
   }
   if (route === 'PUT /api/outfit/card') {
     const body = await readBody(req);

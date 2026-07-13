@@ -179,10 +179,12 @@ function OutfitFlipCard({
 export default function OutfitPage({ scope, api, qs, json, Header, Loading, ErrorBox, Empty }) {
   const companionId = scope.companionId || 'default';
   const [state, setState] = useState({ loading: true, data: null, error: '' });
+  const [daily, setDaily] = useState(null);
   const [tab, setTab] = useState('looks');
   const [query, setQuery] = useState('');
   const [busyId, setBusyId] = useState('');
   const [wearingId, setWearingId] = useState('');
+  const [dailyBusy, setDailyBusy] = useState('');
   const [toast, setToast] = useState('');
 
   const load = async () => {
@@ -190,6 +192,12 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
     try {
       const data = await api(`/api/outfit?${qs({ userId: scope.userId || '', companionId })}`);
       setState({ loading: false, data, error: '' });
+      if (scope.userId) {
+        const d = await api(`/api/outfit/daily?${qs({ userId: scope.userId, companionId })}`).catch(() => null);
+        if (d?.ok) setDaily(d);
+      } else {
+        setDaily(null);
+      }
     } catch (e) {
       setState({ loading: false, data: null, error: e.message });
     }
@@ -289,17 +297,67 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
     }
   };
 
+  const onRecomposeDaily = async () => {
+    if (!scope.userId) {
+      flash('请先选择用户');
+      return;
+    }
+    setDailyBusy('compose');
+    try {
+      const result = await api('/api/outfit/daily', json('POST', {
+        scope: { userId: scope.userId, companionId },
+      }));
+      if (!result.ok) throw new Error(result.message || '重组失败');
+      flash(result.message || '已重组今日穿搭');
+      await load();
+    } catch (e) {
+      flash(e.message);
+    } finally {
+      setDailyBusy('');
+    }
+  };
+
+  const onGenerateDailyPhoto = async (force = false) => {
+    if (!scope.userId) {
+      flash('请先选择用户');
+      return;
+    }
+    setDailyBusy('photo');
+    try {
+      const result = await api('/api/outfit/daily/photo', json('POST', {
+        scope: { userId: scope.userId, companionId },
+        force,
+      }));
+      if (!result.ok) throw new Error(result.message || '生成失败');
+      flash(result.message || (result.skipped ? '今日成片已存在' : '今日成片已生成'));
+      await load();
+    } catch (e) {
+      flash(e.message);
+    } finally {
+      setDailyBusy('');
+    }
+  };
+
   if (state.loading && !state.data) return <Loading />;
   if (state.error) return <ErrorBox error={state.error} />;
 
   const d = state.data || {};
   const meta = KIND_META[tab];
+  const dailyPieces = daily?.pieces || daily?.outfit?.current?.pieces || {};
+  const dailyChips = [
+    dailyPieces.dress || [dailyPieces.top, dailyPieces.bottom].filter(Boolean).join(' + '),
+    dailyPieces.outer,
+    dailyPieces.shoes,
+    dailyPieces.bag,
+    dailyPieces.watch,
+    dailyPieces.jewelry,
+  ].filter(Boolean);
 
   return (
     <div className="outfit-page">
       <Header
         title="穿搭系统"
-        text="衣橱 · 单品 · 包柜 · 妆台 · 内衣。正面是图，背面是 AI 出图提示词；生成后上传，造型可一键上身。想看她穿上的整套成片 → 侧栏「穿搭相册」。"
+        text="每日自动从衣橱+包柜/鞋柜组合今日穿搭，可用已接入的生图模型出「今日成片」；单品卡仍是产品图，整套/日更是人像。侧栏「穿搭相册」看上身效果。"
         action={(
           <button className="btn" onClick={load}>
             <RefreshCw size={15} />
@@ -310,22 +368,55 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
 
       <section className="outfit-now panel">
         <div className="outfit-now-copy">
-          <span className="page-header-kicker">NOW WEARING</span>
-          <h3>{current?.current?.summary || '尚未选定造型'}</h3>
+          <span className="page-header-kicker">TODAY · 今日穿搭</span>
+          <h3>{daily?.summary || current?.current?.summary || '尚未组合今日造型'}</h3>
           <p>
-            {current?.context
-              ? `情境 ${CONTEXT_LABEL[current.context] || current.context}`
-              : '对话后会按作息自动换装；也可在下方点「上身」。'}
-            {current?.current?.id ? ` · look ${current.current.id}` : ''}
+            {daily?.dailyKey ? `日键 ${daily.dailyKey}` : ''}
+            {(daily?.outfit?.context || current?.context)
+              ? ` · 情境 ${CONTEXT_LABEL[daily?.outfit?.context || current?.context] || daily?.outfit?.context || current?.context}`
+              : ''}
+            {daily?.composedFrom?.lookId ? ` · look ${daily.composedFrom.lookId}` : ''}
+            {daily?.hasPhoto ? ' · 成片已生成' : ' · 成片待生成'}
           </p>
+          {dailyChips.length > 0 && (
+            <div className="outfit-card-tags" style={{ marginTop: 8 }}>
+              {dailyChips.slice(0, 6).map((t) => <span key={t}>{t}</span>)}
+            </div>
+          )}
+          <div className="outfit-card-actions" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+            <button
+              type="button"
+              className="btn"
+              disabled={!scope.userId || Boolean(dailyBusy)}
+              onClick={onRecomposeDaily}
+            >
+              {dailyBusy === 'compose' ? <LoaderCircle size={14} className="animate-spin" /> : <RefreshCw size={14} />}
+              重新组合今日
+            </button>
+            <button
+              type="button"
+              className="btn btn-primary"
+              disabled={!scope.userId || Boolean(dailyBusy)}
+              onClick={() => onGenerateDailyPhoto(Boolean(daily?.hasPhoto))}
+            >
+              {dailyBusy === 'photo' ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
+              {daily?.hasPhoto ? '重新生成今日照片' : '生成今日照片'}
+            </button>
+          </div>
         </div>
-        <div className="outfit-now-stats">
-          <div><b>{counts.looks || 0}</b><span>造型</span></div>
-          <div><b>{counts.shoes || 0}</b><span>鞋</span></div>
-          <div><b>{counts.bags || 0}</b><span>包</span></div>
-          <div><b>{counts.jewelry || 0}</b><span>珠宝</span></div>
-          <div><b>{counts.beauty || 0}</b><span>美妆</span></div>
-          <div><b>{counts.lingerie || 0}</b><span>内衣</span></div>
+        <div className="outfit-now-media">
+          {daily?.photo?.url ? (
+            <img src={daily.photo.url} alt="今日穿搭成片" style={{ maxWidth: 160, borderRadius: 12 }} />
+          ) : (
+            <div className="outfit-now-stats">
+              <div><b>{counts.looks || 0}</b><span>造型</span></div>
+              <div><b>{counts.shoes || 0}</b><span>鞋</span></div>
+              <div><b>{counts.bags || 0}</b><span>包</span></div>
+              <div><b>{counts.jewelry || 0}</b><span>珠宝</span></div>
+              <div><b>{counts.beauty || 0}</b><span>美妆</span></div>
+              <div><b>{counts.lingerie || 0}</b><span>内衣</span></div>
+            </div>
+          )}
         </div>
       </section>
 
@@ -396,10 +487,10 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
         <div>
           <h3>使用方式</h3>
           <ol>
-            <li>点卡片翻转，复制背面提示词</li>
-            <li>到你习惯的 AI 绘图工具出图</li>
-            <li>回到这里「上传图」挂到正面</li>
-            <li>整套造型点「上身」，写入当前穿着（影响对话与自拍）</li>
+            <li>每天自动从衣橱造型 + 包/鞋等抽屉组合「今日穿搭」</li>
+            <li>点「生成今日照片」用已接入生图模型出人像成片（写入相册，聊天冷却内可分享）</li>
+            <li>单品卡：复制提示词出产品图后上传；整套造型可「上身」</li>
+            <li>对话里问「今天穿什么」会按今日组合回答</li>
           </ol>
         </div>
       </section>

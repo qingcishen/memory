@@ -332,6 +332,15 @@ export const DEFAULT_PARAMS = {
     enabled: true,
     minHoursBeforeSwitch: 0.5, // 情境变了至少过多久才自动换
     maxHoursSameOutfit: 16, // 同一套最多穿多久（跨情境时）
+    // 每日从衣橱+抽屉自动组合，并可生成「今日成片」
+    dailyLook: {
+      enabled: true,
+      autoCompose: true, // 跨日自动 compose
+      autoPhoto: true, // 后台生成 lookbook 进相册
+      shareInChat: true, // 冷却允许时当作照片分享
+      rotateAccessories: true, // 包/鞋等从抽屉轮换
+      timezoneOffsetMinutes: 480, // 默认东八区日界
+    },
   },
 
   // ---- A1 外貌/自拍 (appearance-life-design.md 第二部分; 出图为仓库外基建, 这里只搭骨架) ----

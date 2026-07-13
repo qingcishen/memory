@@ -10,7 +10,15 @@ import { DefaultLLM, normalizeReplyResult, joinReplyParts, pickReplyFormat } fro
 import { assemble, buildMonologueContext, buildTimePrompt } from './assemble.js';
 import { hoursSince } from '../decay.js';
 import { getCompanion } from '../companion.js';
-import { Selfie, decidePhoto } from '../appearance/index.js';
+import { Selfie, decidePhoto, canSendSelfie } from '../appearance/index.js';
+import { listReferenceImages, referenceFilePath } from '../appearance/references.js';
+import {
+  generateDailyLookPhoto,
+  shouldGenerateDailyPhoto,
+  shouldShareDailyPhoto,
+  markDailyPhotoShared,
+} from '../state/dailyLook.js';
+import { writeOutfit, clampOutfitState } from '../state/outfit.js';
 import { buildNarrationPrompt } from '../narration.js';
 import { PARAMS } from '../params.js';
 import { inferEmotionLabel, emotionLabelToPrompt } from '../state/emotionLabel.js';
@@ -843,6 +851,9 @@ export class Orchestrator {
       relationshipStage: relStage,
     });
 
+    // 每日穿搭成片（后台，不阻塞）
+    this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
+
     // 动作计划：对方要看 / structured 决策 wantPhoto
     if (PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto) {
       this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto });
@@ -998,6 +1009,7 @@ export class Orchestrator {
       sceneLocks,
       relationshipStage: relStage,
     });
+    this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
     if (PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto) {
       this._lastPhoto = this.maybePhoto(stateSnapshot, {
         requested: PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto,
@@ -1248,6 +1260,7 @@ export class Orchestrator {
 
     if (ctx.recordHistory !== false) this.recordHistory([{ role: 'assistant', content: proactive }]);
 
+    this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
     this._lastPhoto = this.maybePhoto(stateSnapshot, {});
 
     return {
@@ -1280,6 +1293,74 @@ export class Orchestrator {
     if (!result) return null;
     await Promise.resolve(this.onPhoto({ ...result, reason: decision.reason })).catch((e) => console.error('[onPhoto]', e));
     return result;
+  }
+
+  /**
+   * 今日穿搭成片：从 life outfit（已由 OutfitDimension 日更组合）生成 lookbook，
+   * 写入相册/图库；shareInChat 且冷却 OK 时 onPhoto 分享一次。
+   */
+  async maybeDailyLookPhoto(snapshot) {
+    const dl = PARAMS.outfit?.dailyLook;
+    if (!dl || dl.enabled === false) return null;
+    const outfit = clampOutfitState(snapshot?.outfit);
+    if (!outfit.current?.summary || !outfit.daily_key) return null;
+
+    const userId = this.userId || this.photo?.userId;
+    const companionId = this.companionId || this.photo?.companionId || 'default';
+    if (!userId) return null;
+
+    let result = null;
+    if (dl.autoPhoto !== false && shouldGenerateDailyPhoto(outfit).ok) {
+      result = await generateDailyLookPhoto({
+        outfit,
+        appearance: this._config?.appearance ?? '',
+        snapshot,
+        provider: this.photo?.provider,
+        getReferences: () => {
+          try {
+            const refs = listReferenceImages(userId, companionId);
+            return [...refs]
+              .sort((a, b) => Number(Boolean(b.isAvatar)) - Number(Boolean(a.isAvatar)))
+              .slice(0, 4)
+              .map((x) => ({ path: referenceFilePath(x), mime: x.mime, name: x.name }));
+          } catch {
+            return [];
+          }
+        },
+        writeAppearance: (asset) => this.photo?.write?.(userId, companionId, asset),
+        writeOutfit: (o) => writeOutfit(userId, companionId, o),
+        config: PARAMS.outfit,
+      }).catch((e) => {
+        console.error('[generateDailyLookPhoto]', e);
+        return null;
+      });
+    }
+
+    const latest = result?.outfit || outfit;
+    if (dl.shareInChat === false || !this.onPhoto) return result;
+
+    const share = shouldShareDailyPhoto(latest);
+    if (!share.ok) return result;
+
+    const rateState = await this.photo.rateState().catch(() => ({ sentAt: [] }));
+    const cool = canSendSelfie(rateState, Date.now(), PARAMS.appearance?.selfie);
+    if (!cool.ok) return result;
+
+    const url = share.url || result?.url;
+    if (!url) return result;
+    await Promise.resolve(
+      this.onPhoto({
+        url,
+        kind: 'lookbook',
+        reason: 'daily_look',
+        tags: ['daily', 'lookbook', latest.daily_key].filter(Boolean),
+        cached: Boolean(result?.skipped),
+      }),
+    ).catch((e) => console.error('[onPhoto.daily]', e));
+
+    const marked = markDailyPhotoShared(latest);
+    await writeOutfit(userId, companionId, marked).catch(() => {});
+    return { ...(result || {}), shared: true, url, outfit: marked };
   }
 
   /**

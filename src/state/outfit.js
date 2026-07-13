@@ -16,8 +16,23 @@ export function defaultOutfitState(overrides = null) {
     context: 'home',
     changed_at: null,
     updated_at: null,
+    daily_key: null,
+    composed_from: null,
+    daily_photo: null,
   };
   return clampOutfitState(overrides ? { ...base, ...overrides } : base);
+}
+
+function clampDailyPhoto(value) {
+  if (!value || typeof value !== 'object') return null;
+  const url = value.url ? String(value.url).slice(0, 2000) : null;
+  if (!url && !value.at) return null;
+  return {
+    at: value.at ? String(value.at) : null,
+    url,
+    albumCardId: value.albumCardId ? String(value.albumCardId).slice(0, 80) : null,
+    sharedAt: value.sharedAt ? String(value.sharedAt) : null,
+  };
 }
 
 export function clampOutfitState(value = {}) {
@@ -28,6 +43,9 @@ export function clampOutfitState(value = {}) {
     context: current?.context && OUTFIT_CONTEXTS.includes(current.context) ? current.context : ctx,
     changed_at: value?.changed_at ? String(value.changed_at) : null,
     updated_at: value?.updated_at ?? null,
+    daily_key: value?.daily_key ? String(value.daily_key).slice(0, 16) : null,
+    composed_from: value?.composed_from && typeof value.composed_from === 'object' ? value.composed_from : null,
+    daily_photo: clampDailyPhoto(value?.daily_photo),
   };
 }
 
@@ -86,7 +104,7 @@ function normalizePieces(pieces) {
   return out;
 }
 
-function piecesToSummary(pieces = {}) {
+export function piecesToSummary(pieces = {}) {
   const parts = [];
   if (pieces.dress) parts.push(pieces.dress);
   else {
@@ -575,7 +593,13 @@ export function evolveOutfitState(state, { hour, life, intimacy, wardrobe, now =
     (hoursSince >= maxHours && cur.context !== targetCtx);
 
   if (!needChange) {
-    return clampOutfitState({ ...cur, context: cur.current?.context || cur.context });
+    return clampOutfitState({
+      ...cur,
+      context: cur.current?.context || cur.context,
+      daily_key: cur.daily_key,
+      composed_from: cur.composed_from,
+      daily_photo: cur.daily_photo,
+    });
   }
 
   const look = pickOutfit(wardrobe, targetCtx, {
@@ -585,11 +609,15 @@ export function evolveOutfitState(state, { hour, life, intimacy, wardrobe, now =
     season: inferSeason(now),
   });
   const stamp = new Date(now).toISOString();
+  // 同日情境换装：保留 daily_key / 今日成片，不覆盖日更相册
   return clampOutfitState({
     current: look,
     context: targetCtx,
     changed_at: stamp,
     updated_at: stamp,
+    daily_key: cur.daily_key,
+    composed_from: cur.composed_from,
+    daily_photo: cur.daily_photo,
   });
 }
 
@@ -674,7 +702,14 @@ export function outfitToImageMods(outfit) {
   if (p.hair) mods.push(String(p.hair));
   if (p.makeup) mods.push(String(p.makeup));
   if (p.dress) mods.push(String(p.dress));
+  if (p.top && !p.dress) mods.push(String(p.top));
+  if (p.bottom && !p.dress) mods.push(String(p.bottom));
   if (p.outer) mods.push(String(p.outer));
+  if (p.bag) mods.push(`handbag: ${p.bag}`);
+  if (p.watch) mods.push(`watch: ${p.watch}`);
+  if (p.jewelry) {
+    mods.push(`jewelry: ${Array.isArray(p.jewelry) ? p.jewelry.join(', ') : p.jewelry}`);
+  }
   // 出图：赤脚/光脚 → 得体可见鞋
   const rawShoes = String(p.shoes || '');
   if (/赤脚|光脚|barefoot/i.test(rawShoes) || !rawShoes) {
@@ -757,19 +792,41 @@ export class OutfitDimension {
     if (!this.enabled()) return defaultOutfitState();
     const stored = this.userId ? await this.read(this.userId, this.companionId) : defaultOutfitState();
     const hour = new Date(this.now()).getHours();
-    const evolved = evolveOutfitState(stored, {
+    const now = this.now();
+    // 动态 import 避免 outfit ↔ dailyLook 环依赖
+    const { ensureDailyLookState } = await import('./dailyLook.js');
+    // 新的一天：从衣橱+抽屉组合今日主 look
+    const daily = ensureDailyLookState(stored, {
+      wardrobe: this.wardrobe,
+      life,
+      intimacy,
+      now,
+      config: this.config,
+    });
+    let base = daily.state;
+    const evolved = evolveOutfitState(base, {
       hour,
       life,
       intimacy,
       wardrobe: this.wardrobe,
-      now: this.now(),
+      now,
       config: this.config,
     });
-    // 惰性换装若发生了变化，写回
-    if (this.userId && evolved.changed_at && evolved.changed_at !== stored.changed_at) {
-      await this.write(this.userId, this.companionId, evolved, this.now()).catch(() => {});
+    // 情境换装后仍挂上 daily_key（若 ensure 刚写入）
+    const next = clampOutfitState({
+      ...evolved,
+      daily_key: evolved.daily_key || base.daily_key,
+      composed_from: evolved.composed_from || base.composed_from,
+      daily_photo: evolved.daily_photo || base.daily_photo,
+    });
+    const changed =
+      daily.composed
+      || (next.changed_at && next.changed_at !== stored.changed_at)
+      || next.daily_key !== stored.daily_key;
+    if (this.userId && changed) {
+      await this.write(this.userId, this.companionId, next, now).catch(() => {});
     }
-    return evolved;
+    return next;
   }
 
   async evolve(turns = [], ctx = {}) {
@@ -788,6 +845,12 @@ export class OutfitDimension {
         config: this.config,
       });
     }
+    next = clampOutfitState({
+      ...next,
+      daily_key: next.daily_key || base.daily_key,
+      composed_from: next.composed_from || base.composed_from,
+      daily_photo: next.daily_photo ?? base.daily_photo,
+    });
     if (this.userId) await this.write(this.userId, this.companionId, next, this.now());
     return { ...next, _meta: { changed: applied.changed || next.changed_at !== base.changed_at, asked: applied.asked } };
   }

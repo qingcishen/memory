@@ -85,6 +85,7 @@
     "test:outfit": "node examples/outfit.test.js",
     "test:outfit-cards": "node examples/outfit-cards.test.js",
     "test:outfit-cards-prompt": "node examples/outfit-cards-prompt.test.js",
+    "test:daily-look": "node examples/daily-look.test.js",
     "test:album": "node examples/album.test.js",
     "test:card-assets": "node examples/card-assets-db.test.js",
     "test:r2": "node examples/r2.test.js",
