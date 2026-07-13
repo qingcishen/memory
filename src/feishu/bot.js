@@ -3,6 +3,7 @@ import * as lark from '@larksuiteoapi/node-sdk';
 import { MemoryChannel, mergedOutgoingTexts } from '../channels/memory-channel.js';
 import { ChannelEventStore } from '../channels/idempotency.js';
 import { acquireProcessLock } from '../channels/process-lock.js';
+import { gateIncomingMessage } from '../product/gate.js';
 
 dotenv.config();
 
@@ -128,8 +129,24 @@ export class FeishuMemoryBot {
       }
     }
     if (!text) return;
+    const companionId = process.env.FEISHU_COMPANION_ID || process.env.TELEGRAM_COMPANION_ID || 'default';
+    const gate = gateIncomingMessage({
+      text,
+      userId: `feishu:${senderId}`,
+      companionId,
+      channel: 'feishu',
+    });
+    if (!gate.allow) {
+      await this.send(message.chat_id, gate.replyText || '这条消息我这边接不了。');
+      console.log(`[feishu] gated sender=${senderId} reasons=${(gate.reasons || []).join(',')}`);
+      return;
+    }
     try {
-      const result = await this.memory.reply(senderId, text, { eventId: message.message_id });
+      const result = await this.memory.reply(senderId, text, {
+        eventId: message.message_id,
+        stopIntimate: gate.stopIntimate,
+        intimacyAllowed: gate.intimacyAllowed,
+      });
       for (const part of mergedOutgoingTexts(result.parts, 3800)) await this.send(message.chat_id, part);
     } catch (error) {
       console.error('[feishu] reply failed:', error);

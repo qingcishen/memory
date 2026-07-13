@@ -18,21 +18,29 @@ export default function SafetyPage({ scope, api, qs, json, Header, Loading, Erro
   const [testText, setTestText] = useState('');
   const [testResult, setTestResult] = useState(null);
   const [deleteConfirm, setDeleteConfirm] = useState('');
+  const [audit, setAudit] = useState([]);
+  const [billing, setBilling] = useState(null);
+  const [identity, setIdentity] = useState(null);
 
   const load = async () => {
     setLoading(true);
     setError('');
     try {
-      const [s, q, live] = await Promise.all([
+      const [s, q, live, auditRes, idRes, billRes] = await Promise.all([
         api('/api/product/safety'),
         api('/api/product/quota' + (scope.userId ? `?${qs(scope)}` : '')),
         scope.userId ? api(`/api/product/quota?${qs(scope)}`) : Promise.resolve(null),
+        api('/api/product/audit?limit=30').catch(() => ({ entries: [] })),
+        scope.userId ? api(`/api/product/identity?userId=${encodeURIComponent(scope.userId)}`).catch(() => null) : Promise.resolve(null),
+        scope.userId ? api(`/api/product/billing?${qs(scope)}`).catch(() => null) : Promise.resolve(null),
       ]);
       setSafety(s.safety);
       setQuota(q.quota || s.quota);
-      // live check uses full response
       setQuotaLive(live || q);
       if (!q.quota && live?.quota) setQuota(live.quota);
+      setAudit(auditRes.entries || []);
+      setIdentity(idRes?.identity || null);
+      setBilling(billRes || null);
     } catch (e) {
       setError(e.message || String(e));
     } finally {
@@ -256,6 +264,80 @@ export default function SafetyPage({ scope, api, qs, json, Header, Loading, Erro
             </div>
           )}
           {!scope.userId && <Empty>选择用户后可看实时用量。</Empty>}
+
+          {scope.userId && (
+            <div className="mt-4 grid gap-3 sm:grid-cols-2">
+              <div className="rounded-xl border border-zinc-100 p-3 dark:border-zinc-800">
+                <div className="text-xs font-semibold mb-2">身份声明（产品层）</div>
+                <p className="text-xs text-zinc-500 mb-2">
+                  非公安核验。开启「要求成年声明」后，未声明用户发高热亲密会被拦。
+                </p>
+                <div className="text-sm mb-2">
+                  状态：{identity?.adultAffirmed ? `已声明 · ${identity.method || 'self'}` : '未声明'}
+                </div>
+                <div className="flex gap-2">
+                  <button
+                    type="button"
+                    className="btn btn-primary text-xs"
+                    onClick={async () => {
+                      await api('/api/product/identity/affirm', json('POST', { userId: scope.userId }));
+                      load();
+                      setMsg('已记录成年声明');
+                    }}
+                  >
+                    声明成年
+                  </button>
+                  <button
+                    type="button"
+                    className="btn text-xs"
+                    onClick={async () => {
+                      await api('/api/product/identity/revoke', json('POST', { userId: scope.userId }));
+                      load();
+                    }}
+                  >
+                    撤销
+                  </button>
+                </div>
+              </div>
+              <div className="rounded-xl border border-zinc-100 p-3 dark:border-zinc-800">
+                <div className="text-xs font-semibold mb-2">本月账单（预估点）</div>
+                {billing?.summary ? (
+                  <div className="text-xs space-y-1">
+                    <div>月份 {billing.summary.month}</div>
+                    <div>消息 {billing.summary.messagesMonth} · 出图 {billing.summary.photosMonth}</div>
+                    <div>拦截 {billing.summary.blockedMonth} · 点数 {billing.summary.points}</div>
+                    <div className="text-zinc-400">{billing.summary.note}</div>
+                  </div>
+                ) : (
+                  <Empty>暂无账单数据</Empty>
+                )}
+              </div>
+            </div>
+          )}
+        </section>
+
+        <section className="panel lg:col-span-2">
+          <div className="mb-3 flex items-center gap-2 text-zinc-600">
+            <ShieldCheck size={18} />
+            <h3 className="font-bold text-zinc-900 dark:text-zinc-100">审计日志（最近）</h3>
+          </div>
+          <p className="text-xs text-zinc-500 mb-3">写入 logs/product-audit.jsonl · UI/Telegram/飞书共用门控会记拦截与放行。</p>
+          <div className="max-h-64 overflow-y-auto scrollbar space-y-1 font-mono text-[11px]">
+            {audit.length ? audit.slice().reverse().map((row, i) => (
+              <div key={i} className="rounded bg-zinc-50 px-2 py-1 dark:bg-zinc-900/50">
+                <span className="text-zinc-400">{row.at?.slice(11, 19)}</span>
+                {' '}
+                <b>{row.action}</b>
+                {' '}
+                <span>{row.channel}</span>
+                {' '}
+                <span className="text-zinc-500">{row.userId}</span>
+                {(row.reasons || []).length > 0 && (
+                  <span className="text-amber-700"> · {(row.reasons || []).join(',')}</span>
+                )}
+              </div>
+            )) : <Empty>还没有审计记录</Empty>}
+          </div>
         </section>
       </div>
     </>

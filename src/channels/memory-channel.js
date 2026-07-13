@@ -116,7 +116,7 @@ export class MemoryChannel {
     });
   }
 
-  async reply(senderId, text, { eventId = null } = {}) {
+  async reply(senderId, text, { eventId = null, stopIntimate = false, intimacyAllowed = true } = {}) {
     return this.enqueue(senderId, async () => {
       const bot = this.session(senderId);
       const scope = { userId: this.userId(senderId), companionId: this.companionId };
@@ -126,6 +126,8 @@ export class MemoryChannel {
         executeStonewall: false,
         behaviorState: { ...behaviorState, stonewallUsedToday: behaviorState.stonewallAt?.length ?? 0 },
         eventId,
+        stopIntimate,
+        intimacyAllowed,
         signal,
       }), this.replyTimeoutMs, `${this.channel} reply timed out`);
       if (behaviorState.mustGiveRepairStep) {

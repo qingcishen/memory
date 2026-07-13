@@ -736,7 +736,7 @@ function DebugPanel({ debug }) {
   </div>;
 }
 
-function Chat({ scope, seed, onSeedConsumed }) {
+function Chat({ scope, seed, draft, onSeedConsumed, onDraftConsumed }) {
   const [messages, setMessages] = useState(() => seed ?? [{ role: 'system', text: '这是和真实编排器相同的对话管线。发一句话开始。' }]);
   const [input, setInput] = useState('');
   const [busy, setBusy] = useState(false);
@@ -759,6 +759,14 @@ function Chat({ scope, seed, onSeedConsumed }) {
     setMessages(seed);
     onSeedConsumed?.();
   }, [seed]);
+
+  // 相册「引用进对话」：预填输入框，用户确认后发送
+  useEffect(() => {
+    if (!draft) return;
+    setInput(draft);
+    onDraftConsumed?.();
+    requestAnimationFrame(() => composerRef.current?.focus());
+  }, [draft]);
 
   useEffect(() => { const log = logRef.current; if (log) log.scrollTop = log.scrollHeight; }, [messages, busy]);
   useEffect(() => {
@@ -853,19 +861,33 @@ function App() {
   };
   // "聊天记录"页点"恢复到试聊": 把最近对话铺进试聊页并跳过去, 而不需要试聊页自己再请求一次。
   const [chatSeed, setChatSeed] = useState(null);
+  // 相册「引用进对话」：预填试聊输入框
+  const [chatDraft, setChatDraft] = useState('');
   const restoreChat = messages => { setChatSeed(messages); go('chat'); };
+  const quoteAlbumToChat = async (card) => {
+    try {
+      const r = await api('/api/product/album-quote', json('POST', { card }));
+      setChatDraft(r.text || '');
+      go('chat');
+    } catch (e) {
+      console.error(e);
+      setChatDraft(`【相册引用】${card?.title || ''}\n这套好看吗？`);
+      go('chat');
+    }
+  };
   const view = useMemo(() => ({
     life: <LifePage scope={scope} api={api} qs={qs} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty} onGoChat={() => go('chat')} onGoAlbum={() => go('album')}/>,
     overview: <Overview scope={scope}/>, 'companion-v2': <CompanionV2 scope={scope}/>, state: <StateView scope={scope}/>,
     outfit: <OutfitPage scope={scope} api={api} qs={qs} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty}/>,
-    album: <AlbumPage scope={scope} api={api} qs={qs} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty}/>,
+    album: <AlbumPage scope={scope} api={api} qs={qs} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty} onQuoteToChat={quoteAlbumToChat}/>,
     personas: <Personas scope={scope} onCompanion={companionId => setScope(value => ({ ...value, companionId }))}/>, world: <World scope={scope}/>, gallery: <Gallery scope={scope}/>,
     memories: <Memories scope={scope}/>, history: <HistoryPage scope={scope} onRestoreChat={restoreChat}/>, prospective: <Prospective scope={scope}/>, graph: <Graph scope={scope}/>,
-    operations: <Operations scope={scope}/>, chat: <Chat scope={scope} seed={chatSeed} onSeedConsumed={() => setChatSeed(null)}/>,
+    operations: <Operations scope={scope}/>,
+    chat: <Chat scope={scope} seed={chatSeed} draft={chatDraft} onSeedConsumed={() => setChatSeed(null)} onDraftConsumed={() => setChatDraft('')}/>,
     safety: <SafetyPage scope={scope} api={api} qs={qs} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty}/>,
     mcp: <McpPage api={api} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty}/>,
     params: <Params/>, config: <Config/>,
-  })[active], [active, scope.userId, scope.companionId, chatSeed]);
+  })[active], [active, scope.userId, scope.companionId, chatSeed, chatDraft]);
 
   return <div className="lumen-console min-h-screen">
     <div className="pointer-events-none fixed inset-0 dot-grid"/>

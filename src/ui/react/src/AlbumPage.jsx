@@ -1,6 +1,6 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Check, Copy, ImagePlus, LoaderCircle, Plus, RefreshCw, Sparkles, Upload, WandSparkles, X,
+  Check, Copy, ImagePlus, LoaderCircle, MessageCircle, Plus, RefreshCw, Sparkles, Upload, WandSparkles, X,
 } from 'lucide-react';
 
 const CONTEXT_LABEL = {
@@ -23,7 +23,7 @@ function fileToBase64(file) {
   });
 }
 
-function AlbumFlipCard({ card, onSavePrompt, onUpload, onClearImage, busyId }) {
+function AlbumFlipCard({ card, onSavePrompt, onUpload, onClearImage, onQuoteToChat, busyId }) {
   const [flipped, setFlipped] = useState(false);
   const [prompt, setPrompt] = useState(card.prompt || '');
   const [copied, setCopied] = useState(false);
@@ -121,7 +121,18 @@ function AlbumFlipCard({ card, onSavePrompt, onUpload, onClearImage, busyId }) {
               {savedFlash ? <Check size={14} /> : <WandSparkles size={14} />}
               {savedFlash ? '已存' : '存提示词'}
             </button>
-            <button type="button" className="btn btn-primary" onClick={() => inputRef.current?.click()} disabled={isBusy}>
+            {onQuoteToChat && (
+              <button
+                type="button"
+                className="btn btn-primary"
+                onClick={(e) => { e.stopPropagation(); onQuoteToChat(card); }}
+                title="带进试聊：问她能不能穿这套 / 好不好看"
+              >
+                <MessageCircle size={14} />
+                引用进对话
+              </button>
+            )}
+            <button type="button" className="btn" onClick={() => inputRef.current?.click()} disabled={isBusy}>
               {isBusy ? <LoaderCircle size={14} className="animate-spin" /> : <Upload size={14} />}
               上传成片
             </button>
@@ -139,7 +150,7 @@ function AlbumFlipCard({ card, onSavePrompt, onUpload, onClearImage, busyId }) {
   );
 }
 
-export default function AlbumPage({ scope, api, qs, json, Header, Loading, ErrorBox, Empty }) {
+export default function AlbumPage({ scope, api, qs, json, Header, Loading, ErrorBox, Empty, onQuoteToChat }) {
   const companionId = scope.companionId || 'default';
   const [state, setState] = useState({ loading: true, data: null, error: '' });
   const [tab, setTab] = useState('all');
@@ -381,6 +392,7 @@ export default function AlbumPage({ scope, api, qs, json, Header, Loading, Error
               onSavePrompt={onSavePrompt}
               onUpload={onUpload}
               onClearImage={onClearImage}
+              onQuoteToChat={onQuoteToChat}
               busyId={busyId}
             />
           ))}

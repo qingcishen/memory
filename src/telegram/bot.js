@@ -16,6 +16,7 @@ import { SceneClassifier } from '../narration.js';
 import { pickSpeakableText, shouldReplyWithVoice, synthesizeSpeech } from '../modal/speech.js';
 import { TTS_CONFIGURED } from '../config.js';
 import { BehaviorStateStore, normalizeBehaviorState } from '../state/behavior.js';
+import { gateIncomingMessage } from '../product/gate.js';
 
 dotenv.config();
 
@@ -649,9 +650,22 @@ export class TelegramMemoryBot {
     }
 
     const bot = this.botForChat(chatId);
+    const userId = telegramUserId(chatId);
+    // P2：安全 + 配额 + 审计（与 UI 试聊同一套门）
+    const gate = gateIncomingMessage({
+      text,
+      userId,
+      companionId: this.companionId,
+      channel: 'telegram',
+    });
+    if (!gate.allow) {
+      await this.api.sendMessage(chatId, gate.replyText || '这条消息我这边接不了。');
+      console.log(`[telegram] gated chat=${chatId} reasons=${(gate.reasons || []).join(',')}`);
+      return;
+    }
     console.log(`[telegram] replying chat=${chatId} timeoutMs=${this.replyTimeoutMs}`);
     try {
-      const behaviorState = await this.behaviorStore.load({ userId: telegramUserId(chatId), companionId: this.companionId }).catch(() => ({}));
+      const behaviorState = await this.behaviorStore.load({ userId, companionId: this.companionId }).catch(() => ({}));
       const stopTyping = startTypingHeartbeat(this.api, chatId);
       let result;
       try {
@@ -659,6 +673,8 @@ export class TelegramMemoryBot {
           executeStonewall: false,
           behaviorState: { ...behaviorState, stonewallUsedToday: behaviorState.stonewallAt?.length ?? 0 },
           eventId: `telegram:${update.update_id}`,
+          stopIntimate: gate.stopIntimate,
+          intimacyAllowed: gate.intimacyAllowed,
           signal,
         }), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
       } finally {

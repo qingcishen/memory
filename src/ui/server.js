@@ -61,6 +61,16 @@ import {
   canWriteAction,
   buildTimeline,
   buildRelationshipView,
+  gateIncomingMessage,
+  loadProductPolicy,
+  readAuditTail,
+  appendAudit,
+  buildBillingSummary,
+  getTenantUsage,
+  affirmAdult,
+  revokeAdult,
+  getIdentity,
+  buildAlbumQuoteMessage,
 } from '../product/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -2120,11 +2130,13 @@ function deleteCompanion(companionId, { confirm } = {}) {
 // ---------------------------------------------------------------
 // 编排器试聊: 每条消息 spawn 一次 chat-runner (真实走完整管线, 会调 LLM + 写库)
 // ---------------------------------------------------------------
-function runChat({ message, userId, companionId, debug = false }) {
+function runChat({ message, userId, companionId, debug = false, stopIntimate = false, intimacyAllowed = true } = {}) {
   return new Promise((resolve) => {
     const proc = spawn(
       process.execPath,
-      [path.join(__dirname, 'chat-runner.js'), JSON.stringify({ message, userId, companionId, debug })],
+      [path.join(__dirname, 'chat-runner.js'), JSON.stringify({
+        message, userId, companionId, debug, stopIntimate, intimacyAllowed,
+      })],
       { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let out = '';
@@ -2707,24 +2719,22 @@ async function handle(req, res) {
     const env = readEnvValues();
     const userId = String(body?.userId || 'ui:playground');
     const companionId = String(body?.companionId || env.TELEGRAM_COMPANION_ID || 'default');
-    // P2 安全门 + 配额门
-    const policy = readProductPolicy();
-    const safety = checkMessageSafety(message, policy.safety);
-    if (safety.block) {
+    // 与 Telegram/飞书同一套 gate（安全+配额+身份+审计+账单计数）
+    const gate = gateIncomingMessage({
+      text: message,
+      userId,
+      companionId,
+      channel: 'ui',
+    });
+    if (!gate.allow) {
       return json(res, 200, {
         ok: false,
-        blocked: true,
-        message: '消息触碰安全策略，未发送。',
-        safety,
-      });
-    }
-    const quotaView = await getProductQuota(env, { userId, companionId });
-    if (!canWriteAction(quotaView, 'message')) {
-      return json(res, 200, {
-        ok: false,
-        quotaExceeded: true,
-        message: '今日消息配额已用尽，请明天再聊或调整配额。',
-        quota: quotaView,
+        blocked: !gate.safety?.ok,
+        quotaExceeded: gate.reasons?.some((r) => String(r).includes('limit') || String(r).includes('cap')),
+        message: gate.replyText || '消息未发送',
+        safety: gate.safety,
+        quota: gate.quota,
+        reasons: gate.reasons,
       });
     }
     const result = await runChat({
@@ -2732,10 +2742,49 @@ async function handle(req, res) {
       userId,
       companionId,
       debug: Boolean(body?.debug),
-      stopIntimate: safety.stopIntimate,
-      intimacyAllowed: safety.intimacyAllowed,
+      stopIntimate: gate.stopIntimate,
+      intimacyAllowed: gate.intimacyAllowed,
     });
-    return json(res, 200, { ...result, safety: { stopIntimate: safety.stopIntimate, intimacyAllowed: safety.intimacyAllowed } });
+    return json(res, 200, {
+      ...result,
+      safety: { stopIntimate: gate.stopIntimate, intimacyAllowed: gate.intimacyAllowed },
+    });
+  }
+  if (route === 'GET /api/product/audit') {
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+    return json(res, 200, { ok: true, entries: readAuditTail({ limit }) });
+  }
+  if (route === 'GET /api/product/billing') {
+    const scope = Object.fromEntries(url.searchParams);
+    if (!scope.userId) return json(res, 200, { ok: false, message: '需要 userId' });
+    const usage = getTenantUsage(scope.userId, scope.companionId || 'default');
+    const summary = buildBillingSummary(scope.userId, scope.companionId || 'default');
+    return json(res, 200, { ok: true, usage, summary, scope });
+  }
+  if (route === 'GET /api/product/identity') {
+    const userId = url.searchParams.get('userId');
+    return json(res, 200, { ok: true, identity: getIdentity(userId), userId });
+  }
+  if (route === 'POST /api/product/identity/affirm') {
+    const body = await readBody(req);
+    const userId = String(body?.userId || '');
+    if (!userId) return json(res, 200, { ok: false, message: '需要 userId' });
+    const identity = affirmAdult(userId, { method: body?.method || 'self_declare' });
+    appendAudit({ action: 'identity_affirm', channel: 'ui', userId, ok: true, detail: { method: identity.method } });
+    return json(res, 200, { ok: true, identity, message: '已记录成年声明' });
+  }
+  if (route === 'POST /api/product/identity/revoke') {
+    const body = await readBody(req);
+    const userId = String(body?.userId || '');
+    if (!userId) return json(res, 200, { ok: false, message: '需要 userId' });
+    const identity = revokeAdult(userId);
+    appendAudit({ action: 'identity_revoke', channel: 'ui', userId, ok: true });
+    return json(res, 200, { ok: true, identity });
+  }
+  if (route === 'POST /api/product/album-quote') {
+    const body = await readBody(req);
+    const text = buildAlbumQuoteMessage(body?.card || body || {});
+    return json(res, 200, { ok: true, text, message: '已生成相册引用文案' });
   }
   if (route === 'GET /api/bot') return json(res, 200, botStatus());
   if (route === 'POST /api/bot/start') return json(res, 200, startBot());

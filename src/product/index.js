@@ -17,3 +17,24 @@ export {
 
 export { buildTimeline, buildDaySummary } from './timeline.js';
 export { buildRelationshipView } from './relationshipView.js';
+
+export { appendAudit, readAuditTail } from './audit.js';
+export {
+  getTenantUsage,
+  recordMessageUsage,
+  recordPhotoUsage,
+  recordBlocked,
+  buildBillingSummary,
+  loadLedger,
+} from './billing.js';
+export {
+  getIdentity,
+  affirmAdult,
+  revokeAdult,
+  resolveAdultGate,
+} from './identity.js';
+export {
+  loadProductPolicy,
+  gateIncomingMessage,
+  buildAlbumQuoteMessage,
+} from './gate.js';

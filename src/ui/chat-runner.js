@@ -222,7 +222,11 @@ async function main() {
     deps,
   });
 
-  const { text, parts, emotionLabel, behaviorPolicy: behavior, intimacyPhase, debug: replyDebug } = await bot.reply(String(req.message ?? ''), { debug: debugMode });
+  const { text, parts, emotionLabel, behaviorPolicy: behavior, intimacyPhase, debug: replyDebug } = await bot.reply(String(req.message ?? ''), {
+    debug: debugMode,
+    stopIntimate: Boolean(req.stopIntimate),
+    intimacyAllowed: req.intimacyAllowed !== false,
+  });
   // Orchestrator 在消息渠道中会后台发图；runner 是短命进程，必须等这一张图
   // 生成并收进 payload 后再退出，否则子进程结束时图片会一起丢失。
   await bot._lastPhoto?.catch(() => {});

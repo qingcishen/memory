@@ -1,5 +1,7 @@
 // P2 产品层：安全 / 配额 / 时间线 / 关系视图
 import assert from 'node:assert';
+import fs from 'node:fs';
+import path from 'node:path';
 import {
   checkMessageSafety,
   normalizeSafetyPolicy,
@@ -8,13 +10,23 @@ import {
   DEFAULT_SAFETY_POLICY,
   checkQuota,
   canWriteAction,
-  normalizeQuota,
   scopeKey,
   assertScopeIsolation,
   buildTimeline,
-  buildDaySummary,
   buildRelationshipView,
+  gateIncomingMessage,
+  buildAlbumQuoteMessage,
+  affirmAdult,
+  getIdentity,
+  resolveAdultGate,
+  buildBillingSummary,
+  getTenantUsage,
+  appendAudit,
+  readAuditTail,
 } from '../src/product/index.js';
+
+const tmpDir = path.join(process.cwd(), 'logs', '.product-test');
+fs.mkdirSync(tmpDir, { recursive: true });
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -74,6 +86,54 @@ console.log('timeline + relationship');
   ok('关系阶段 bonded/close', ['bonded', 'close'].includes(rv.stage.id));
   ok('有可读 feel', Boolean(rv.feel.closeness));
   ok('里程碑非空', rv.milestones.length >= 1);
+}
+
+console.log('gate + album quote + identity + billing');
+{
+  const blocked = gateIncomingMessage({
+    text: '儿童色情',
+    userId: 'test:gate',
+    companionId: 'default',
+    channel: 'test',
+    recordUsage: true,
+  });
+  ok('gate 硬拦', !blocked.allow && blocked.replyText);
+
+  const quote = buildAlbumQuoteMessage({
+    title: '奶油针织裙',
+    context: 'date',
+    imageUrl: 'https://example.com/a.jpg',
+    prompt: 'photoreal lookbook',
+  });
+  ok('相册引用含标题与提问', quote.includes('奶油针织裙') && quote.includes('好看吗'));
+
+  const idFile = path.join(tmpDir, 'identity.json');
+  affirmAdult('user-a', { file: idFile, method: 'self_declare' });
+  ok('身份声明', getIdentity('user-a', idFile).adultAffirmed === true);
+  const gateAdult = resolveAdultGate({ requireAdultAffirmation: true, adultAffirmed: false }, 'user-a', idFile);
+  ok('身份覆盖成年门', gateAdult.affirmed && gateAdult.source === 'user_identity');
+
+  const billFile = path.join(tmpDir, 'bill.json');
+  // 通过 gate 放行会计费
+  gateIncomingMessage({
+    text: '你好呀',
+    userId: 'bill-u',
+    companionId: 'default',
+    channel: 'test',
+    recordUsage: true,
+    usage: { messagesToday: 0, photosToday: 0, memories: 0, companions: 1 },
+    policy: {
+      safety: DEFAULT_SAFETY_POLICY,
+      quota: { maxMessagesPerDay: 100, maxPhotosPerDay: 10, maxMemoriesStored: 99999, maxActiveCompanions: 5 },
+    },
+  });
+  const usage = getTenantUsage('bill-u', 'default');
+  ok('账单记消息', usage.messagesToday >= 1);
+  const summary = buildBillingSummary('bill-u', 'default');
+  ok('账单摘要有点数', summary.points >= 1 && summary.currency === 'points');
+
+  appendAudit({ action: 'test_event', channel: 'test', userId: 'u', ok: true, reasons: [] });
+  ok('审计可写可读', readAuditTail({ limit: 5 }).length >= 1);
 }
 
 console.log(`\nproduct P2 全部 ${passed} 条断言通过 ✅`);

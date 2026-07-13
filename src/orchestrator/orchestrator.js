@@ -312,6 +312,29 @@ export class Orchestrator {
       }
       goals.sort((a, b) => b.priority - a.priority);
     }
+    // 产品安全门：停止词 / 亲密关闭（来自 Telegram/飞书/UI 的 gateIncomingMessage）
+    if (opts.stopIntimate || opts.intimacyAllowed === false) {
+      for (const g of goals) {
+        if (g.kind === 'intimacy') {
+          g.canInitiate = false;
+          g.text = opts.stopIntimate
+            ? '对方已表示停止/冷静：立刻降热，先确认边界，不继续身体推进。'
+            : '当前亲密内容策略关闭：保持情感陪伴，不进入高热描写。';
+          g.priority = 0.95;
+        }
+      }
+      goals.unshift({
+        kind: 'safety',
+        priority: 1,
+        text: opts.stopIntimate
+          ? '安全停止：承认并停下亲密推进，语气稳、给台阶，别质问。'
+          : '亲密策略限制中：正常聊天即可。',
+      });
+      goals.sort((a, b) => b.priority - a.priority);
+      if (!sceneLocks.some((l) => l.id === 'conflict') && opts.stopIntimate) {
+        // 不强制 conflict 锁，但连贯性提示
+      }
+    }
     if (this.narration) this._lastSceneType = sceneType; // 供下一轮连续性提示; 未启用旁白则不维护
     this._lastSceneTypeForObserve = sceneType;
     if (typeof this.memory.setSceneType === 'function') this.memory.setSceneType(sceneType);
