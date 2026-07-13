@@ -29,6 +29,7 @@ npm run test:telegram
 npm run test:ui
 npm run ui:build
 
+install -m 0755 deploy/vps/deploy-if-changed.sh /usr/local/sbin/memory-system-deploy-if-changed
 install -m 0644 deploy/systemd/memory-system-ui.service /etc/systemd/system/memory-system-ui.service
 install -m 0644 deploy/systemd/memory-system-telegram.service /etc/systemd/system/memory-system-telegram.service
 install -m 0644 deploy/systemd/memory-system-feishu.service /etc/systemd/system/memory-system-feishu.service
