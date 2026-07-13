@@ -456,33 +456,42 @@ function Gallery({ scope }) {
     reloadReferences();
   };
   const onPickRefs = async (event) => {
-    const files = Array.from(event.target.files || []);
+    const all = Array.from(event.target.files || []);
+    const files = all.filter((f) => /^image\/(png|jpeg|webp)$/i.test(f.type));
     event.target.value = '';
     if (!files.length || !scope.userId) return;
     setUploadingRef(true);
+    setGenerateError('');
     try {
-      let n = 0;
-      for (const file of files) {
-        if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) continue;
-        const data = await new Promise((resolve, reject) => {
-          const reader = new FileReader();
-          reader.onload = () => {
-            const result = String(reader.result || '');
-            resolve(result.includes(',') ? result.split(',')[1] : result);
-          };
-          reader.onerror = () => reject(new Error('读取失败'));
-          reader.readAsDataURL(file);
-        });
-        const result = await api('/api/image-references', json('POST', {
-          scope, mime: file.type, name: file.name, data,
-          isAvatar: references.length === 0 && n === 0,
-        }));
-        if (!result.ok) throw new Error(result.message || '上传失败');
-        n += 1;
-      }
+      // 有限并发并行上传，避免多选时串行很慢 / 中途失败全断
+      const concurrency = Math.min(4, files.length);
+      let cursor = 0;
+      const runWorker = async () => {
+        while (cursor < files.length) {
+          const index = cursor;
+          cursor += 1;
+          const file = files[index];
+          const data = await new Promise((resolve, reject) => {
+            const reader = new FileReader();
+            reader.onload = () => {
+              const result = String(reader.result || '');
+              resolve(result.includes(',') ? result.split(',')[1] : result);
+            };
+            reader.onerror = () => reject(new Error('读取失败'));
+            reader.readAsDataURL(file);
+          });
+          const result = await api('/api/image-references', json('POST', {
+            scope, mime: file.type, name: file.name, data,
+            isAvatar: references.length === 0 && index === 0,
+          }));
+          if (!result.ok) throw new Error(result.message || `${file.name} 上传失败`);
+        }
+      };
+      await Promise.all(Array.from({ length: concurrency }, () => runWorker()));
       reloadReferences();
     } catch (error) {
       setGenerateError(error.message || '上传参考图失败');
+      reloadReferences();
     } finally {
       setUploadingRef(false);
     }

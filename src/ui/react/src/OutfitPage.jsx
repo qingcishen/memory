@@ -44,6 +44,27 @@ function fileToBase64(file) {
   });
 }
 
+/** 有限并发并行执行（多图上传用） */
+async function mapPool(items, concurrency, worker) {
+  const list = Array.from(items || []);
+  const results = new Array(list.length);
+  let next = 0;
+  const run = async () => {
+    while (next < list.length) {
+      const i = next;
+      next += 1;
+      results[i] = await worker(list[i], i);
+    }
+  };
+  const n = Math.max(1, Math.min(concurrency || 3, list.length || 1));
+  await Promise.all(Array.from({ length: n }, () => run()));
+  return results;
+}
+
+function isImageFile(file) {
+  return file && /^image\/(png|jpeg|webp)$/i.test(file.type);
+}
+
 /**
  * 生图模型配置 + 脸参考上传（放在今日穿搭旁边）
  */
@@ -148,33 +169,39 @@ function ImageGenAndFacePanel({
   };
 
   const onPickRefs = async (event) => {
-    const files = Array.from(event.target.files || []);
+    const files = Array.from(event.target.files || []).filter(isImageFile);
+    const skipped = (event.target.files?.length || 0) - files.length;
     event.target.value = '';
-    if (!files.length) return;
+    if (!files.length) {
+      flash?.(skipped ? '没有支持的格式（PNG/JPEG/WebP）' : '未选择文件');
+      return;
+    }
     if (!scope.userId) {
       flash?.('请先在顶部选择用户和角色');
       return;
     }
     setUploading(true);
-    let okCount = 0;
     try {
-      for (const file of files) {
-        if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) {
-          flash?.(`跳过不支持的格式：${file.name}`);
-          continue;
-        }
+      // 并行上传（最多 4 路），避免一张张串行卡住
+      const results = await mapPool(files, 4, async (file, index) => {
         const data = await fileToBase64(file);
         const result = await api('/api/image-references', json('POST', {
           scope: { userId: scope.userId, companionId },
           mime: file.type,
           name: file.name,
           data,
-          isAvatar: refs.length === 0 && okCount === 0,
+          // 仅当前无参考且本批第一张成功时设头像
+          isAvatar: refs.length === 0 && index === 0,
         }));
-        if (!result.ok) throw new Error(result.message || '上传失败');
-        okCount += 1;
-      }
-      flash?.(okCount ? `已上传 ${okCount} 张脸参考` : '没有成功上传的图片');
+        if (!result.ok) throw new Error(result.message || `${file.name} 上传失败`);
+        return result;
+      });
+      const okCount = results.filter(Boolean).length;
+      flash?.(
+        okCount
+          ? `已并行上传 ${okCount} 张脸参考${skipped ? `（跳过 ${skipped} 个非图片）` : ''}`
+          : '没有成功上传的图片',
+      );
       await loadAll();
     } catch (e) {
       flash?.(e.message || '上传失败');
@@ -394,10 +421,13 @@ function OutfitFlipCard({
   };
 
   const onFile = async (event) => {
-    const file = event.target.files?.[0];
+    const files = Array.from(event.target.files || []);
     event.target.value = '';
-    if (!file) return;
-    await onUpload(card, file);
+    if (!files.length) return;
+    // 支持多选：交给上层（可并行挂到本卡主图，或系列批量）
+    if (typeof onUpload === 'function') {
+      await onUpload(card, files.length === 1 ? files[0] : files);
+    }
   };
 
   const initials = (card.title || '?').slice(0, 1);
@@ -503,7 +533,14 @@ function OutfitFlipCard({
             )}
           </div>
           <button type="button" className="outfit-card-flip-hint" onClick={() => setFlipped(false)}>点击标题或此处翻回正面</button>
-          <input ref={inputRef} type="file" accept="image/png,image/jpeg,image/webp" hidden onChange={onFile} />
+          <input
+            ref={inputRef}
+            type="file"
+            accept="image/png,image/jpeg,image/webp"
+            multiple
+            hidden
+            onChange={onFile}
+          />
         </div>
       </div>
     </article>
@@ -516,14 +553,25 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   const [daily, setDaily] = useState(null);
   const [tab, setTab] = useState('looks');
   const [query, setQuery] = useState('');
-  const [busyId, setBusyId] = useState('');
+  const [busyIds, setBusyIds] = useState(() => new Set());
   const [wearingId, setWearingId] = useState('');
   const [dailyBusy, setDailyBusy] = useState('');
   const [toast, setToast] = useState('');
+  const [bulkUploading, setBulkUploading] = useState(false);
+  const bulkInputRef = useRef(null);
   const [imageReadyState, setImageReadyState] = useState({ imageReady: false, refsReady: false, refCount: 0, model: '' });
   const [showCreate, setShowCreate] = useState(false);
   const [creating, setCreating] = useState(false);
   const [showImport, setShowImport] = useState(false);
+
+  const markBusy = (id, on) => {
+    setBusyIds((prev) => {
+      const next = new Set(prev);
+      if (on) next.add(id);
+      else next.delete(id);
+      return next;
+    });
+  };
   const [importText, setImportText] = useState('');
   const [importing, setImporting] = useState(false);
   const [parsePreview, setParsePreview] = useState(null);
@@ -595,7 +643,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   const counts = state.data?.counts || {};
 
   const onSavePrompt = async (card, prompt) => {
-    setBusyId(card.id);
+    markBusy(card.id, true);
     try {
       const result = await api('/api/outfit/card', json('PUT', { companionId, cardId: card.id, prompt }));
       if (!result.ok) throw new Error(result.message || '保存失败');
@@ -604,34 +652,94 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
     } catch (e) {
       flash(e.message);
     } finally {
-      setBusyId('');
+      markBusy(card.id, false);
     }
   };
 
-  const onUpload = async (card, file) => {
-    setBusyId(card.id);
+  const uploadOneCardImage = async (card, file) => {
+    const data = await fileToBase64(file);
+    const result = await api('/api/outfit/card/image', json('POST', {
+      companionId,
+      cardId: card.id,
+      mime: file.type,
+      name: file.name,
+      data,
+    }));
+    if (!result.ok) throw new Error(result.message || `${file.name} 上传失败`);
+    return result;
+  };
+
+  /** 单卡一张或多张：多张时并行上传，仅最后一张保留为主图（同卡 id）→ 多张请用系列批量 */
+  const onUpload = async (card, fileOrFiles) => {
+    const files = (Array.isArray(fileOrFiles) ? fileOrFiles : [fileOrFiles]).filter(isImageFile);
+    if (!files.length) {
+      flash('请选择 PNG / JPEG / WebP');
+      return;
+    }
+    markBusy(card.id, true);
     try {
-      const data = await fileToBase64(file);
-      const result = await api('/api/outfit/card/image', json('POST', {
-        companionId,
-        cardId: card.id,
-        mime: file.type,
-        name: file.name,
-        data,
-      }));
-      if (!result.ok) throw new Error(result.message || '上传失败');
-      flash('图片已挂上正面');
+      if (files.length === 1) {
+        await uploadOneCardImage(card, files[0]);
+        flash('图片已挂上正面');
+      } else {
+        // 同卡多图：并行传完，用最后一张作正面（同 cardId 会覆盖）
+        await mapPool(files, 3, async (file) => uploadOneCardImage(card, file));
+        flash(`已并行上传 ${files.length} 张（同卡最终显示最后一张）。系列请用「批量挂到系列」按序分配`);
+      }
       await load();
     } catch (e) {
       flash(e.message);
+      await load();
     } finally {
-      setBusyId('');
+      markBusy(card.id, false);
+    }
+  };
+
+  /** 系列筛选下：多选图片按序号并行挂到系列各卡 */
+  const onBulkSeriesUpload = async (event) => {
+    const files = Array.from(event.target.files || []).filter(isImageFile);
+    event.target.value = '';
+    if (!files.length) return;
+    if (!seriesFilter) {
+      flash('请先筛选一个系列，再批量上传');
+      return;
+    }
+    const seriesCards = [...(state.data?.looks || [])]
+      .filter((c) => c.seriesId === seriesFilter)
+      .sort((a, b) => (a.seriesIndex || 0) - (b.seriesIndex || 0));
+    if (!seriesCards.length) {
+      flash('当前系列没有造型卡');
+      return;
+    }
+    setBulkUploading(true);
+    try {
+      const pairs = files.slice(0, seriesCards.length).map((file, i) => ({ file, card: seriesCards[i] }));
+      if (files.length > seriesCards.length) {
+        flash(`选了 ${files.length} 张，系列只有 ${seriesCards.length} 卡，多出的已忽略`);
+      }
+      const results = await mapPool(pairs, 4, async ({ file, card }) => {
+        markBusy(card.id, true);
+        try {
+          await uploadOneCardImage(card, file);
+          return { ok: true, title: card.title };
+        } finally {
+          markBusy(card.id, false);
+        }
+      });
+      const ok = results.filter((r) => r?.ok).length;
+      flash(`系列已并行挂图 ${ok}/${pairs.length} 张`);
+      await load();
+    } catch (e) {
+      flash(e.message || '批量上传失败');
+      await load();
+    } finally {
+      setBulkUploading(false);
     }
   };
 
   const onClearImage = async (card) => {
     if (!confirm('清除这张卡片的正面图？')) return;
-    setBusyId(card.id);
+    markBusy(card.id, true);
     try {
       const result = await api('/api/outfit/card/image', json('DELETE', { companionId, cardId: card.id }));
       if (!result.ok) throw new Error(result.message || '清除失败');
@@ -640,7 +748,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
     } catch (e) {
       flash(e.message);
     } finally {
-      setBusyId('');
+      markBusy(card.id, false);
     }
   };
 
@@ -712,7 +820,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   const onDeleteCustom = async (card) => {
     if (!card.lookId || card.source !== 'custom') return;
     if (!confirm(`删除自定义造型「${card.title}」？正面图和提示词会一并清理。`)) return;
-    setBusyId(card.id);
+    markBusy(card.id, true);
     try {
       const result = await api('/api/outfit/looks', json('DELETE', {
         companionId,
@@ -724,7 +832,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
     } catch (e) {
       flash(e.message);
     } finally {
-      setBusyId('');
+      markBusy(card.id, false);
     }
   };
 
@@ -1018,6 +1126,28 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
               {s.title} · {s.count} 张
             </button>
           ))}
+          {seriesFilter && (
+            <>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={bulkUploading}
+                onClick={() => bulkInputRef.current?.click()}
+              >
+                {bulkUploading ? <LoaderCircle size={14} className="animate-spin" /> : <Upload size={14} />}
+                {bulkUploading ? '并行上传中…' : '批量挂图到系列'}
+              </button>
+              <input
+                ref={bulkInputRef}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                multiple
+                hidden
+                onChange={onBulkSeriesUpload}
+              />
+              <span className="text-xs text-zinc-400">多选按 1…N 顺序并行挂到各卡</span>
+            </>
+          )}
         </div>
       )}
 
@@ -1159,7 +1289,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
               onClearImage={onClearImage}
               onDeleteCustom={onDeleteCustom}
               wearing={wearingId === card.id}
-              busyId={busyId}
+              busyId={busyIds.has(card.id) ? card.id : ''}
             />
           ))}
         </div>
