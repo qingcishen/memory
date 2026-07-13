@@ -1,6 +1,6 @@
 import dotenv from 'dotenv';
 import { Client, GatewayIntentBits, Partials } from 'discord.js';
-import { MemoryChannel, mergedOutgoingTexts } from '../channels/memory-channel.js';
+import { MemoryChannel } from '../channels/memory-channel.js';
 import { ChannelEventStore } from '../channels/idempotency.js';
 import { acquireProcessLock } from '../channels/process-lock.js';
 import { gateIncomingMessage } from '../product/gate.js';
