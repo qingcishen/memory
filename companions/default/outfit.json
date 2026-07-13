@@ -1,0 +1,1646 @@
+{
+  "outfit": {
+    "style": "有钱、克制、贵妇线，带一点大人韵味：真丝、丝绒、羊绒的垂坠与低饱和色，黑白驼灰为主，偶一抹深酒红/墨绿/香槟。不艳俗、不少女、不硬装。职场 The Row / Loro Piana / Hermès；私下可软可欲。包柜一线，鞋履 Manolo / Louboutin / Chanel / Hermès，珠宝 Cartier / VCA，化妆品只用 Chanel / Dior / CPB / La Mer 级别，不碰杂牌。",
+    "defaults": {
+      "work": "work_board",
+      "home": "home_loro",
+      "intimate": "home_his_shirt",
+      "date": "date_ysl_black",
+      "outing": "outing_celine",
+      "sport": "sport_lulu",
+      "sleep": "sleep_ovh",
+      "sick": "sick_cashmere"
+    },
+    "bags": [
+      "Hermès Birkin 25 黑金 Togo",
+      "Hermès Birkin 30 大象灰",
+      "Hermès Kelly 28 外缝",
+      "Hermès Constance",
+      "Chanel Classic Flap 中号黑金",
+      "Chanel 22 黑银",
+      "Chanel Boy 旧中号",
+      "Dior Lady Dior 中号",
+      "Dior Book Tote 老花",
+      "Bottega Veneta Jodie 黄油白",
+      "The Row Margaux 15",
+      "Celine Triomphe 中号",
+      "Saint Laurent Lou Camera",
+      "Loewe Puzzle 迷你",
+      "Loro Piana Extra Pocket L19",
+      "Goyard Saint Louis PM（通勤托特）"
+    ],
+    "lingerie": [
+      {
+        "id": "daily_nude",
+        "label": "La Perla 裸色无痕套装",
+        "kind": "set",
+        "brand": "La Perla",
+        "bra": "无痕软钢圈文胸",
+        "panties": "同色无痕三角裤",
+        "color": "裸粉/肤色",
+        "contexts": [
+          "work",
+          "outing",
+          "home"
+        ],
+        "notes": "日常隐形，西装裙装不露痕"
+      },
+      {
+        "id": "daily_black",
+        "label": "La Perla 黑色基础套装",
+        "kind": "set",
+        "brand": "La Perla",
+        "bra": "简约黑文胸",
+        "panties": "低腰三角裤",
+        "color": "黑",
+        "contexts": [
+          "work",
+          "outing",
+          "date"
+        ]
+      },
+      {
+        "id": "daily_white",
+        "label": "Eres 白色简约套装",
+        "kind": "set",
+        "brand": "Eres",
+        "bra": "法式简约文胸",
+        "panties": "高腰或三角",
+        "color": "白",
+        "contexts": [
+          "work",
+          "outing",
+          "home"
+        ]
+      },
+      {
+        "id": "sport",
+        "label": "Lululemon 运动内衣 + 内裤",
+        "kind": "set",
+        "brand": "Lululemon",
+        "bra": "中高强度运动内衣",
+        "panties": "运动款",
+        "contexts": [
+          "sport"
+        ]
+      },
+      {
+        "id": "sleep_silk",
+        "label": "真丝睡眠内衣短裤",
+        "kind": "set",
+        "brand": "Olivia von Halle",
+        "bra": "无钢圈睡眠款或真空",
+        "panties": "真丝短裤",
+        "contexts": [
+          "sleep",
+          "home"
+        ]
+      },
+      {
+        "id": "lace_black",
+        "label": "La Perla 黑色蕾丝套装",
+        "kind": "set",
+        "brand": "La Perla",
+        "bra": "蕾丝有钢圈",
+        "panties": "蕾丝三角或丁字",
+        "color": "黑",
+        "contexts": [
+          "date",
+          "intimate"
+        ],
+        "notes": "约会或私下"
+      },
+      {
+        "id": "lace_nude",
+        "label": "La Perla 裸色蕾丝",
+        "kind": "set",
+        "brand": "La Perla",
+        "bra": "裸色蕾丝",
+        "panties": "同色蕾丝",
+        "color": "裸",
+        "contexts": [
+          "date",
+          "intimate",
+          "home"
+        ]
+      },
+      {
+        "id": "ap_wine",
+        "label": "Agent Provocateur 酒红蕾丝套装",
+        "kind": "set",
+        "brand": "Agent Provocateur",
+        "bra": "精致蕾丝文胸",
+        "panties": "配套丁字/三角",
+        "color": "酒红",
+        "contexts": [
+          "intimate",
+          "date"
+        ]
+      },
+      {
+        "id": "ap_black",
+        "label": "Agent Provocateur 黑色绑带套装",
+        "kind": "set",
+        "brand": "Agent Provocateur",
+        "bra": "绑带/结构感",
+        "panties": "配套",
+        "color": "黑",
+        "contexts": [
+          "intimate"
+        ]
+      },
+      {
+        "id": "bodysuit",
+        "label": "Wolford 黑色连体衣",
+        "kind": "bodysuit",
+        "brand": "Wolford",
+        "contexts": [
+          "date",
+          "outing",
+          "work"
+        ],
+        "notes": "外搭西装或裙，当内搭"
+      },
+      {
+        "id": "hosiery_sheer",
+        "label": "Wolford 薄透丝袜",
+        "kind": "hosiery",
+        "brand": "Wolford",
+        "contexts": [
+          "work",
+          "date"
+        ],
+        "notes": "裙装时"
+      },
+      {
+        "id": "hosiery_garter",
+        "label": "吊带袜 + 夹",
+        "kind": "hosiery",
+        "brand": "Agent Provocateur",
+        "contexts": [
+          "intimate",
+          "date"
+        ],
+        "notes": "私密或晚宴裙下"
+      },
+      {
+        "id": "commando",
+        "label": "真空",
+        "kind": "set",
+        "brand": "",
+        "bra": "无",
+        "panties": "无",
+        "contexts": [
+          "intimate",
+          "home"
+        ],
+        "notes": "只穿他衬衫时常这样"
+      }
+    ],
+    "beauty": {
+      "notes": "妆台全是一线贵妇线：Chanel / Dior / Clé de Peau / La Mer / SK-II / Sisley / Hermès 美妆。不碰杂牌、不画浓妆，讲究皮肤和克制。",
+      "skincare": [
+        "La Mer 精华面霜",
+        "La Mer 精粹水",
+        "SK-II 神仙水",
+        "SK-II 小灯泡",
+        "Sisley 黑玫瑰面霜",
+        "Clé de Peau 光采日晚霜",
+        "Augustinus Bader 精华霜",
+        "Tatcha 洁面（备用）"
+      ],
+      "base": [
+        "Chanel Le Blanc 妆前",
+        "Clé de Peau 钻光粉底",
+        "Clé de Peau 遮瑕",
+        "Hourglass Ambient 散粉",
+        "Dior Backstage 修容",
+        "Chanel Les Beiges 腮红"
+      ],
+      "eyes": [
+        "Chanel 四色眼影（裸棕盘）",
+        "Dior Show 睫毛膏",
+        "Tom Ford 眼线笔",
+        "Sisley 眉笔"
+      ],
+      "lips": [
+        "Chanel Rouge Coco 裸粉",
+        "Hermès 唇膏 18/21",
+        "Dior Addict 釉",
+        "Tom Ford 唇膏"
+      ],
+      "nails": [
+        "Chanel 指甲油 米色/裸粉",
+        "Dior Vernis",
+        "定期做轻奢美甲（不贴钻）"
+      ],
+      "fragrance": [
+        "Chanel No.5 L'Eau",
+        "Maison Francis Kurkdjian Baccarat Rouge 540",
+        "Hermès Twilly",
+        "Byredo Blanche（偶尔）",
+        "Diptyque 房香（家用）"
+      ],
+      "tools": [
+        "Dyson 吹风机/直板夹",
+        "高端化妆刷组",
+        "Clarisonic/同级洁面仪",
+        "LED 化妆镜"
+      ],
+      "travel_mini": [
+        "La Mer 精华面霜 旅行装/小样",
+        "La Mer 精粹水 小支",
+        "SK-II 神仙水 小样",
+        "Clé de Peau 钻光粉底 分装",
+        "CPB 遮瑕 小支",
+        "Chanel 唇膏 1 支常备",
+        "高倍防晒小支（贵妇线）",
+        "温和卸妆水小支 + 棉巾",
+        "润唇膏",
+        "迷你化妆刷 2–3 支"
+      ]
+    },
+    "wardrobe": [
+      {
+        "id": "work_board",
+        "context": "work",
+        "style": "董事会/公司",
+        "summary": "The Row 黑色西装套装，Hermès 白丝衬衫，Chanel 低跟，Kelly 28，Cartier Tank，Chanel 克制裸妆，低马尾",
+        "pieces": {
+          "top": "Hermès 白色丝质衬衫",
+          "bottom": "The Row 黑色直筒西裤",
+          "outer": "The Row 黑色修身西装外套",
+          "shoes": "Chanel 黑色低跟皮鞋",
+          "bra": "La Perla 裸色无痕文胸",
+          "panties": "La Perla 同色无痕三角裤",
+          "lingerie": "La Perla 裸色无痕套装",
+          "bag": "Hermès Kelly 28 黑金",
+          "watch": "Cartier Tank Must",
+          "jewelry": [
+            "Cartier 窄版 LOVE 手镯",
+            "小巧钻石耳钉"
+          ],
+          "makeup": "Chanel 底妆 + 裸粉唇",
+          "lips": "Chanel Rouge Coco 裸粉",
+          "perfume": "Chanel No.5 L'Eau 极淡",
+          "hair": "长发低马尾",
+          "nails": "Chanel 米色短甲",
+          "skincare": "晨间 SK-II + CPB 日霜"
+        }
+      },
+      {
+        "id": "work_loro_knit",
+        "context": "work",
+        "style": "公司便装日",
+        "summary": "Loro Piana 驼色羊绒开衫，The Row 白T，西裤，Loro 乐福鞋，L19 包",
+        "pieces": {
+          "top": "The Row 白棉 T",
+          "bottom": "Brunello Cucinelli 深色西裤",
+          "outer": "Loro Piana 驼色羊绒开衫",
+          "shoes": "Loro Piana 乐福鞋",
+          "bag": "Loro Piana Extra Pocket L19",
+          "watch": "Cartier Tank",
+          "makeup": "极淡贵妇妆",
+          "hair": "披肩"
+        }
+      },
+      {
+        "id": "work_dress",
+        "context": "work",
+        "style": "见客裙装",
+        "summary": "The Row 黑色羊毛连衣裙，细跟，Chanel 中号，冷感妆",
+        "pieces": {
+          "dress": "The Row 黑色羊毛连衣裙",
+          "shoes": "Manolo Blahnik 低细跟",
+          "bag": "Chanel Classic Flap 中号黑金",
+          "jewelry": [
+            "Van Cleef 白金四叶草耳钉"
+          ],
+          "makeup": "CPB 底妆 + Dior 裸唇",
+          "hair": "中分披肩"
+        }
+      },
+      {
+        "id": "home_loro",
+        "context": "home",
+        "style": "居家",
+        "summary": "Loro Piana 米驼羊绒家居套装，赤脚或羊绒拖鞋，护肤后几乎素颜，头发随意披着",
+        "pieces": {
+          "top": "Loro Piana 羊绒家居上衣",
+          "bottom": "同系列柔软长裤",
+          "shoes": "Loro Piana 家居拖鞋",
+          "makeup": "素颜或润唇",
+          "skincare": "La Mer 面霜",
+          "hair": "披肩微乱",
+          "perfume": "不喷或极淡"
+        }
+      },
+      {
+        "id": "home_his_shirt",
+        "context": "intimate",
+        "style": "亲密居家",
+        "summary": "只穿了他的白衬衫，下摆到大腿，里面 La Perla 或真空，赤脚，头发微乱",
+        "pieces": {
+          "top": "他的白衬衫",
+          "bra": "无（真空）或 La Perla 薄蕾丝",
+          "panties": "无（真空）或同套蕾丝",
+          "lingerie": "真空或 La Perla 薄蕾丝",
+          "shoes": "赤脚",
+          "hair": "微乱披肩",
+          "makeup": "淡，唇色自然",
+          "perfume": "残留他的气息 + 极淡自香"
+        }
+      },
+      {
+        "id": "home_silk_robe",
+        "context": "home",
+        "style": "晨袍",
+        "summary": "Olivia von Halle 丝质晨袍，内搭真丝吊带，赤脚，刚做好护肤",
+        "pieces": {
+          "outer": "OVH 丝质晨袍",
+          "top": "真丝吊带",
+          "bottom": "真丝短裤",
+          "shoes": "赤脚",
+          "skincare": "SK-II + La Mer",
+          "makeup": "未上妆",
+          "hair": "微湿或披散"
+        }
+      },
+      {
+        "id": "date_ysl_black",
+        "context": "date",
+        "style": "夜约会",
+        "summary": "Saint Laurent 小黑裙，Jimmy Choo 细跟，Chanel 包，Dior 红唇，MFK 香",
+        "pieces": {
+          "dress": "Saint Laurent 黑色修身礼服裙",
+          "shoes": "Jimmy Choo 细跟凉鞋",
+          "bag": "Chanel Classic 中号",
+          "jewelry": [
+            "Cartier 窄 LOVE",
+            "钻石耳钉"
+          ],
+          "makeup": "精致晚宴妆",
+          "lips": "Dior 红唇",
+          "eyes": "Chanel 烟熏微棕",
+          "perfume": "MFK Baccarat Rouge 540",
+          "hair": "微卷披肩",
+          "nails": "深裸或正红"
+        }
+      },
+      {
+        "id": "date_dior_bar",
+        "context": "date",
+        "style": "正餐约会",
+        "summary": "Dior 结构感裙装或 Bar 灵感，Lady Dior，低跟，Hermès 唇",
+        "pieces": {
+          "dress": "Dior 结构感连衣裙",
+          "shoes": "Dior 低细跟",
+          "bag": "Lady Dior 中号",
+          "jewelry": [
+            "Dior 星月耳饰或简约钻"
+          ],
+          "makeup": "CPB + Hermès 唇",
+          "perfume": "Hermès Twilly",
+          "hair": "低松髻或披肩"
+        }
+      },
+      {
+        "id": "outing_celine",
+        "context": "outing",
+        "style": "逛街咖啡",
+        "summary": "Celine 大衣，Totême 上衣，The Row 牛仔裤，Common Projects，Loewe Puzzle",
+        "pieces": {
+          "top": "Totême 简约针织",
+          "bottom": "The Row 直筒牛仔裤",
+          "outer": "Celine 长款大衣",
+          "shoes": "Common Projects 小白鞋",
+          "bag": "Loewe Puzzle 迷你",
+          "watch": "Cartier Tank",
+          "makeup": "日常淡妆",
+          "lips": "Chanel 裸粉",
+          "hair": "半扎或披肩",
+          "sunglasses": "Celine 墨镜"
+        }
+      },
+      {
+        "id": "outing_bottega",
+        "context": "outing",
+        "style": "周末brunch",
+        "summary": "Bottega 编织感单品，The Row 羊绒，Jodie 包，乐福鞋",
+        "pieces": {
+          "top": "The Row 羊绒圆领",
+          "bottom": "高腰阔腿裤",
+          "outer": "Bottega 皮质或编织外套",
+          "shoes": "The Row 乐福",
+          "bag": "Bottega Veneta Jodie",
+          "makeup": "健康光泽妆",
+          "hair": "中分披肩"
+        }
+      },
+      {
+        "id": "outing_goyard",
+        "context": "outing",
+        "style": "轻通勤/办事",
+        "summary": "简约黑白，Goyard 托特，球鞋，干净利落",
+        "pieces": {
+          "top": "白衬衫或针织",
+          "bottom": "黑色烟管裤",
+          "outer": "Max Mara 经典大衣（季节时）",
+          "shoes": "Golden Goose 或干净球鞋",
+          "bag": "Goyard Saint Louis PM",
+          "makeup": "淡妆",
+          "hair": "马尾"
+        }
+      },
+      {
+        "id": "sport_lulu",
+        "context": "sport",
+        "style": "私教/瑜伽",
+        "summary": "Lululemon 运动套装，Alo 外套，Nike 限定，Loro 运动托特",
+        "pieces": {
+          "top": "Lululemon 运动内衣",
+          "bottom": "Lululemon Align 裤",
+          "outer": "Alo 或 Lululemon 拉链外套",
+          "shoes": "Nike 限定训练鞋",
+          "bag": "Loro Piana 运动托特",
+          "hair": "高马尾",
+          "makeup": "防晒+眉+润唇",
+          "skincare": "运动后先清洁再 La Mer"
+        }
+      },
+      {
+        "id": "sport_run",
+        "context": "sport",
+        "style": "跑步",
+        "summary": "高功能运动套装，跑表，无线耳机，干净配色",
+        "pieces": {
+          "top": "Nike/Lulu 速干衣",
+          "bottom": "跑步短裤或紧身裤",
+          "shoes": "Nike 跑鞋",
+          "watch": "Apple Watch Ultra 或运动表",
+          "accessories": [
+            "AirPods Max 或 Pro"
+          ],
+          "hair": "高马尾",
+          "makeup": "仅防晒"
+        }
+      },
+      {
+        "id": "sleep_ovh",
+        "context": "sleep",
+        "style": "睡衣",
+        "summary": "Olivia von Halle 深色丝质睡衣套装，卸妆护肤完成，头发散着",
+        "pieces": {
+          "top": "OVH 丝质睡衣上衣",
+          "bottom": "配套睡裤",
+          "makeup": "卸妆后",
+          "skincare": "SK-II 精华 + La Mer 晚霜",
+          "lips": "润唇膏",
+          "hair": "披散",
+          "perfume": "不喷"
+        }
+      },
+      {
+        "id": "sleep_lace",
+        "context": "sleep",
+        "style": "睡裙",
+        "summary": "深色真丝睡裙，La Perla 系，肩带细，卸妆后",
+        "pieces": {
+          "dress": "真丝吊带睡裙",
+          "lingerie": "配套",
+          "skincare": "晚间全套贵妇线",
+          "makeup": "卸妆",
+          "hair": "披散"
+        }
+      },
+      {
+        "id": "sick_cashmere",
+        "context": "sick",
+        "style": "病中",
+        "summary": "宽大 Loro 羊绒家居服，素颜憔悴，羊绒披肩，头发略乱",
+        "pieces": {
+          "top": "Loro Piana 宽松羊绒家居",
+          "bottom": "同料长裤",
+          "outer": "羊绒披肩",
+          "makeup": "素颜",
+          "skincare": "保湿修护为主",
+          "hair": "略乱",
+          "bag": "不出门"
+        }
+      },
+      {
+        "id": "travel_airport",
+        "context": "outing",
+        "style": "机场",
+        "summary": "全黑 The Row 休闲，棒球帽，墨镜，大托特，球鞋，零差旅感杂乱",
+        "pieces": {
+          "top": "The Row 黑卫衣或羊绒",
+          "bottom": "黑色休闲裤",
+          "outer": "长款黑大衣",
+          "shoes": "Common Projects 或 Nike",
+          "bag": "The Row Margaux 或 Goyard 托特",
+          "accessories": [
+            "棒球帽",
+            "Celine 墨镜"
+          ],
+          "makeup": "口罩妆：底妆+眉+润唇",
+          "hair": "低马尾"
+        }
+      },
+      {
+        "id": "formal_gala",
+        "context": "date",
+        "style": "晚宴/酒会",
+        "summary": "高级定制感晚装，珠宝点睛，手拿包，全妆",
+        "pieces": {
+          "dress": "深色高级定制晚礼服（结构利落）",
+          "shoes": "Jimmy Choo / Manolo 细跟",
+          "bag": "Chanel / Dior 手拿包",
+          "jewelry": [
+            "Cartier 项链",
+            "钻石耳钉",
+            "戒指"
+          ],
+          "makeup": "晚宴全妆",
+          "lips": "正红或豆沙",
+          "perfume": "Chanel No.5 或 MFK",
+          "hair": "精致低髻或大波浪"
+        }
+      },
+      {
+        "id": "lingerie_evening",
+        "context": "intimate",
+        "style": "私密",
+        "summary": "La Perla / Agent Provocateur 深色蕾丝套装，外搭他的衬衫或丝袍",
+        "pieces": {
+          "bra": "La Perla / Agent Provocateur 深色蕾丝文胸",
+          "panties": "配套蕾丝丁字或三角",
+          "lingerie": "La Perla / Agent Provocateur 深色蕾丝套装",
+          "hosiery": "可选吊带袜",
+          "outer": "丝质短袍或他的衬衫",
+          "shoes": "赤脚或拖鞋",
+          "perfume": "MFK 极淡",
+          "hair": "披肩",
+          "makeup": "淡妆唇色"
+        }
+      },
+      {
+        "id": "season_spring",
+        "context": "outing",
+        "season": "spring",
+        "style": "春季主 look",
+        "summary": "浅驼 Loro 薄羊绒开衫，白棉衬衫，The Row 浅色直筒裤，Chanel 芭蕾平底，Loewe Puzzle 迷你，淡妆裸唇，春日柔光",
+        "pieces": {
+          "top": "The Row / 白棉衬衫",
+          "bottom": "The Row 浅色直筒裤",
+          "outer": "Loro Piana 薄驼羊绒开衫",
+          "shoes": "Chanel 双C 芭蕾平底",
+          "bag": "Loewe Puzzle 迷你",
+          "jewelry": [
+            "Cartier 窄 LOVE",
+            "小钻耳钉"
+          ],
+          "watch": "Cartier Tank Must",
+          "makeup": "春日淡妆",
+          "lips": "Chanel 裸粉",
+          "perfume": "Hermès Twilly 淡",
+          "hair": "半扎或披肩",
+          "accessories": [
+            "轻薄丝巾可选"
+          ]
+        }
+      },
+      {
+        "id": "season_summer",
+        "context": "outing",
+        "season": "summer",
+        "style": "夏季主 look",
+        "summary": "The Row 亚麻或真丝简约裙/套装，Hermès Oran，草编或迷你包，极淡妆+防晒，墨镜，干净清爽",
+        "pieces": {
+          "dress": "The Row 亚麻/真丝夏裙或简约两件套",
+          "shoes": "Hermès Oran 凉鞋",
+          "bag": "Bottega Jodie 或 Loewe 迷你",
+          "jewelry": [
+            "细钻耳钉",
+            "Cartier 窄 LOVE"
+          ],
+          "makeup": "防晒底+眉+润唇",
+          "skincare": "高倍防晒 + La Mer 轻薄",
+          "perfume": "Chanel No.5 L'Eau 极淡",
+          "hair": "中分披肩或低马尾",
+          "accessories": [
+            "Celine 墨镜"
+          ]
+        }
+      },
+      {
+        "id": "season_autumn",
+        "context": "outing",
+        "season": "autumn",
+        "style": "秋季主 look",
+        "summary": "Celine 长款大衣，Totême 针织，直筒牛仔裤或西裤，The Row 乐福或短靴，Margaux/经典包，秋日层次",
+        "pieces": {
+          "top": "Totême / The Row 针织",
+          "bottom": "The Row 直筒牛仔裤或西裤",
+          "outer": "Celine 长款大衣",
+          "shoes": "The Row 乐福或短靴",
+          "bag": "The Row Margaux 或 Chanel 中号",
+          "watch": "Cartier Tank",
+          "jewelry": [
+            "Cartier LOVE"
+          ],
+          "makeup": "暖调淡妆",
+          "lips": "豆沙/裸棕",
+          "perfume": "MFK 极淡",
+          "hair": "披肩微卷"
+        }
+      },
+      {
+        "id": "season_winter",
+        "context": "outing",
+        "season": "winter",
+        "style": "冬季主 look",
+        "summary": "Max Mara 驼大衣或 The Row 黑长大衣，内搭羊绒，西裤，短靴，羊绒围巾，Kelly/Birkin，冷白皮贵妇感",
+        "pieces": {
+          "top": "Loro Piana 羊绒高领或衬衫",
+          "bottom": "深色直筒西裤",
+          "outer": "Max Mara 经典驼大衣或 The Row 黑长大衣",
+          "shoes": "Hermès / The Row 短靴",
+          "bag": "Hermès Kelly 28 或 Birkin",
+          "jewelry": [
+            "Cartier LOVE",
+            "VCA 耳钉"
+          ],
+          "watch": "Cartier Tank Louis",
+          "makeup": "克制全妆轻薄",
+          "perfume": "Chanel No.5 L'Eau",
+          "hair": "低马尾或披肩",
+          "accessories": [
+            "Hermès/Loro 羊绒披肩",
+            "羊绒手套"
+          ]
+        }
+      },
+      {
+        "id": "date_velvet_wine",
+        "context": "date",
+        "style": "酒红丝绒韵味",
+        "summary": "深酒红丝绒修身长裙或及踝裙，肩线干净，皮肤对照着发光；Manolo 酒红细跟，细钻耳钉，MFK 极淡，头发微卷披肩——安静的贵，不吵",
+        "pieces": {
+          "dress": "深酒红丝绒修身长裙（细肩带或单肩，垂坠感）",
+          "shoes": "Manolo Blahnik 酒红缎面细跟",
+          "bag": "Chanel 或 Dior 手拿包/迷你",
+          "lingerie": "La Perla 裸色或同色薄蕾丝",
+          "hosiery": "可选薄透丝袜",
+          "jewelry": [
+            "小钻耳钉",
+            "Cartier 窄 LOVE"
+          ],
+          "makeup": "柔焦肤+微醺唇",
+          "lips": "豆沙酒红",
+          "eyes": "烟熏微棕",
+          "perfume": "MFK Baccarat Rouge 540 极淡",
+          "hair": "微卷披肩，耳后别一缕",
+          "nails": "深裸或 quant 酒红"
+        }
+      },
+      {
+        "id": "date_slip_champagne",
+        "context": "date",
+        "style": "香槟真丝吊带",
+        "summary": "香槟/象牙色真丝吊带长裙，布料贴着呼吸走；低细跟，锁骨空着只一枚细链，像刚从酒店套房下来吃晚饭",
+        "pieces": {
+          "dress": "香槟真丝 bias-cut 吊带长裙（The Row / 高定感）",
+          "shoes": "裸色 Manolo 或 Louboutin 细跟",
+          "bag": "迷你手拿或金属链小包",
+          "lingerie": "无痕或同色薄款",
+          "jewelry": [
+            "细项链",
+            "小钻耳钉"
+          ],
+          "makeup": "光泽皮肤，几乎素唇",
+          "lips": "裸色润泽",
+          "perfume": "Byredo Blanche 或 No.5 L'Eau 极淡",
+          "hair": "中分顺直或微湿感",
+          "skincare": "高光感护肤后薄妆"
+        }
+      },
+      {
+        "id": "date_black_bias",
+        "context": "date",
+        "style": "黑真丝斜裁",
+        "summary": "黑色 bias-cut 真丝裙，走路才知道有多软；Jimmy Choo 细跟，红唇压住，不笑也有戏",
+        "pieces": {
+          "dress": "黑色真丝斜裁长裙/及踝裙",
+          "shoes": "Jimmy Choo 黑色细跟",
+          "bag": "Chanel Classic 中号黑金",
+          "jewelry": [
+            "钻石耳钉",
+            "细手镯"
+          ],
+          "makeup": "冷白皮+正红或豆沙唇",
+          "lips": "Dior 红唇或豆沙",
+          "perfume": "Chanel No.5 极淡",
+          "hair": "大波浪或低松髻",
+          "outer": "可选黑色短外套搭肩"
+        }
+      },
+      {
+        "id": "outing_gallery_quiet",
+        "context": "outing",
+        "style": "看展静奢",
+        "summary": "全黑或米驼静奢：The Row 大衣，内搭薄高领，直筒裤，乐福，Margaux 包，金丝近视框——像懂行的人，不多话",
+        "pieces": {
+          "top": "薄高领羊绒或真丝衬衫",
+          "bottom": "The Row 直筒西裤",
+          "outer": "The Row 长款大衣",
+          "shoes": "The Row 乐福",
+          "bag": "The Row Margaux 15",
+          "watch": "Cartier Tank",
+          "jewelry": [
+            "Cartier 窄 LOVE"
+          ],
+          "accessories": [
+            "Cartier 金丝近视框或 Lindberg"
+          ],
+          "makeup": "极淡贵妇妆",
+          "hair": "低马尾或中分披肩",
+          "perfume": "不喷或极淡"
+        }
+      },
+      {
+        "id": "outing_literary_cafe",
+        "context": "outing",
+        "style": "午后书香",
+        "summary": "驼毛衣叠白衬衫，深色半裙或西裤，Celine 大衣，平底或低跟，手里像夹着本书——慢、暖、有故事",
+        "pieces": {
+          "top": "白衬衫 + 驼羊绒圆领叠穿",
+          "bottom": "深色A字半裙或烟管裤",
+          "outer": "Celine / Max Mara 大衣",
+          "shoes": "Chanel 芭蕾或 Loro 乐福",
+          "bag": "Celine Triomphe 或 Loewe 迷你",
+          "accessories": [
+            "Hermès 丝巾松系",
+            "近视框可选"
+          ],
+          "makeup": "气色妆",
+          "lips": "裸粉润唇",
+          "hair": "半扎松散",
+          "perfume": "Hermès Twilly 淡"
+        }
+      },
+      {
+        "id": "home_evening_knit",
+        "context": "home",
+        "style": "在家晚饭韵味",
+        "summary": "深色羊绒连衣裙或真丝家居裙，赤脚，卸了浓妆只留唇色，灯光暗一点，比出门更耐看",
+        "pieces": {
+          "dress": "深灰/墨绿羊绒针织连衣裙或真丝家居长裙",
+          "shoes": "赤脚或 Loro 拖鞋",
+          "lingerie": "无痕或真空",
+          "makeup": "卸妆后润唇",
+          "skincare": "La Mer 后皮肤好",
+          "hair": "披肩随意",
+          "perfume": "残留香或极淡",
+          "jewelry": [
+            "只留 LOVE 手镯"
+          ]
+        }
+      },
+      {
+        "id": "home_offshoulder_cashmere",
+        "context": "home",
+        "style": "松软露肩羊绒",
+        "summary": "过大一号的米驼羊绒一字肩或斜肩，锁骨和肩线露一点，配真丝短裤，像刚洗完澡还不想起床",
+        "pieces": {
+          "top": "Loro Piana / The Row 宽松羊绒露肩或一字肩",
+          "bottom": "真丝短裤或同色软裤",
+          "shoes": "赤脚",
+          "skincare": "刚护肤",
+          "makeup": "素颜",
+          "hair": "微湿披散",
+          "perfume": "不喷"
+        }
+      },
+      {
+        "id": "intimate_satin_noir",
+        "context": "intimate",
+        "style": "黑缎私语",
+        "summary": "黑色真丝/缎面吊带睡裙，肩带细，长度到大腿中；外搭他的衬衫不扣完，灯光只留一盏",
+        "pieces": {
+          "dress": "黑色真丝吊带睡裙",
+          "outer": "他的白衬衫半敞或丝质短袍",
+          "lingerie": "真空或薄蕾丝",
+          "shoes": "赤脚",
+          "perfume": "MFK 极淡或他的气息",
+          "hair": "微乱披肩",
+          "makeup": "淡唇",
+          "jewelry": [
+            "可只留耳钉"
+          ]
+        }
+      },
+      {
+        "id": "date_piano_bar",
+        "context": "date",
+        "style": "酒吧琴声",
+        "summary": "黑色修身针织裙或丝绒短裙套装，锁骨链一条，烟嗓灯光感；细跟，包很小，像知道自己好看但懒得解释",
+        "pieces": {
+          "dress": "黑色高领修身针织长裙 或 丝绒短裙+丝质上衣",
+          "shoes": "Louboutin 黑红底或 Jimmy Choo 细跟",
+          "bag": "Saint Laurent Lou 或迷你 Chanel",
+          "jewelry": [
+            "细锁骨链",
+            "小钻耳钉"
+          ],
+          "makeup": "眼线利落+豆沙唇",
+          "lips": "豆沙",
+          "eyes": "微烟熏",
+          "perfume": "MFK 或 No.5",
+          "hair": "中分大波浪或湿发感",
+          "outer": "可搭肩小西装"
+        }
+      },
+      {
+        "id": "work_silk_soft",
+        "context": "work",
+        "style": "职场柔锋",
+        "summary": "Hermès 丝质衬衫不扣最上颗，The Row 剪裁西裤，低跟，Kelly；权力感在布料和姿态里，不靠尖锐",
+        "pieces": {
+          "top": "Hermès 丝质衬衫（领口松一颗）",
+          "bottom": "The Row 黑色/深驼西裤",
+          "outer": "可选薄西装不扣",
+          "shoes": "Chanel 中细跟或 Manolo 低细跟",
+          "bag": "Hermès Kelly 28",
+          "watch": "Cartier Tank",
+          "jewelry": [
+            "Cartier LOVE",
+            "小钻耳钉"
+          ],
+          "makeup": "克制贵妇妆",
+          "lips": "裸粉",
+          "hair": "低马尾松一点",
+          "perfume": "No.5 L'Eau 极淡"
+        }
+      },
+      {
+        "id": "outing_rain_trench",
+        "context": "outing",
+        "style": "雨天风衣",
+        "summary": "经典长风衣（驼或黑），内搭薄毛衣，直筒裤，短靴，伞面干净——湿空气里更有故事感",
+        "pieces": {
+          "top": "薄高领或衬衫",
+          "bottom": "直筒西裤",
+          "outer": "The Row / Burberry 剪裁感长风衣（静奢版）",
+          "shoes": "短靴或乐福",
+          "bag": "Celine 或 Loewe",
+          "accessories": [
+            "可选丝巾",
+            "墨镜头顶"
+          ],
+          "makeup": "防水淡妆",
+          "hair": "低马尾防湿",
+          "perfume": "极淡"
+        }
+      },
+      {
+        "id": "date_emerald_column",
+        "context": "date",
+        "style": "墨绿柱裙",
+        "summary": "深墨绿真丝或绉纱直筒长裙，肩线利落，珠宝极少，像一幅油画里走出来的人",
+        "pieces": {
+          "dress": "深墨绿真丝/绉纱直筒长裙",
+          "shoes": "黑色或墨绿细跟",
+          "bag": "黑色手拿包",
+          "jewelry": [
+            "祖母绿感耳钉或素钻"
+          ],
+          "makeup": "冷调肤+豆沙唇",
+          "perfume": "Hermès 或木质调极淡",
+          "hair": "低髻或中分顺直",
+          "nails": "深裸"
+        }
+      }
+    ],
+    "shoes": [
+      {
+        "id": "heel_manolo_hangisi",
+        "label": "Manolo Blahnik Hangisi 黑缎细跟",
+        "kind": "heel",
+        "brand": "Manolo Blahnik",
+        "heel": "细高跟",
+        "color": "黑",
+        "contexts": [
+          "date",
+          "work"
+        ],
+        "notes": "晚宴/正装经典"
+      },
+      {
+        "id": "heel_louboutin_so_kate",
+        "label": "Christian Louboutin So Kate 黑红底",
+        "kind": "heel",
+        "brand": "Christian Louboutin",
+        "heel": "细高跟 120mm",
+        "color": "黑",
+        "contexts": [
+          "date"
+        ],
+        "notes": "高挑红底"
+      },
+      {
+        "id": "heel_louboutin_pigalle",
+        "label": "Louboutin Pigalle 经典细跟",
+        "kind": "heel",
+        "brand": "Christian Louboutin",
+        "heel": "细高跟",
+        "contexts": [
+          "date",
+          "outing"
+        ]
+      },
+      {
+        "id": "heel_jc_rome",
+        "label": "Jimmy Choo Romy 尖头细跟",
+        "kind": "heel",
+        "brand": "Jimmy Choo",
+        "heel": "细高跟",
+        "color": "黑/裸",
+        "contexts": [
+          "date",
+          "work"
+        ]
+      },
+      {
+        "id": "heel_jc_sandal",
+        "label": "Jimmy Choo 细跟凉鞋",
+        "kind": "sandal",
+        "brand": "Jimmy Choo",
+        "heel": "细高跟",
+        "contexts": [
+          "date"
+        ]
+      },
+      {
+        "id": "heel_chanel_slingback",
+        "label": "Chanel 双C 拼色 Slingback",
+        "kind": "heel",
+        "brand": "Chanel",
+        "heel": "中细跟",
+        "contexts": [
+          "work",
+          "outing"
+        ],
+        "notes": "通勤门面"
+      },
+      {
+        "id": "heel_chanel_pump",
+        "label": "Chanel 经典圆头中跟",
+        "kind": "heel",
+        "brand": "Chanel",
+        "heel": "中跟",
+        "contexts": [
+          "work"
+        ]
+      },
+      {
+        "id": "heel_dior_kit",
+        "label": "Dior 低细跟/Kitten",
+        "kind": "heel",
+        "brand": "Dior",
+        "heel": "低细跟",
+        "contexts": [
+          "work",
+          "date"
+        ]
+      },
+      {
+        "id": "heel_manolo_low",
+        "label": "Manolo Blahnik 低细跟",
+        "kind": "heel",
+        "brand": "Manolo Blahnik",
+        "heel": "低细跟",
+        "contexts": [
+          "work",
+          "outing"
+        ]
+      },
+      {
+        "id": "sandal_hermes_oran",
+        "label": "Hermès Oran 凉鞋 H扣",
+        "kind": "sandal",
+        "brand": "Hermès",
+        "contexts": [
+          "outing",
+          "home"
+        ],
+        "notes": "度假与居家"
+      },
+      {
+        "id": "flat_dior_jadior",
+        "label": "Dior J'Adior 丝带平底",
+        "kind": "flat",
+        "brand": "Dior",
+        "contexts": [
+          "outing",
+          "date"
+        ]
+      },
+      {
+        "id": "flat_chanel_ballet",
+        "label": "Chanel 双C 芭蕾平底",
+        "kind": "flat",
+        "brand": "Chanel",
+        "contexts": [
+          "outing",
+          "home"
+        ]
+      },
+      {
+        "id": "loafer_loro",
+        "label": "Loro Piana Summer Walk 乐福",
+        "kind": "loafer",
+        "brand": "Loro Piana",
+        "contexts": [
+          "work",
+          "outing"
+        ]
+      },
+      {
+        "id": "loafer_therow",
+        "label": "The Row 简约乐福",
+        "kind": "loafer",
+        "brand": "The Row",
+        "contexts": [
+          "outing",
+          "work"
+        ]
+      },
+      {
+        "id": "boot_therow",
+        "label": "The Row 短靴",
+        "kind": "boot",
+        "brand": "The Row",
+        "contexts": [
+          "outing",
+          "work"
+        ],
+        "notes": "秋冬"
+      },
+      {
+        "id": "boot_hermes",
+        "label": "Hermès Kelly 扣短靴",
+        "kind": "boot",
+        "brand": "Hermès",
+        "contexts": [
+          "outing",
+          "date"
+        ]
+      },
+      {
+        "id": "boot_chanel",
+        "label": "Chanel 短靴",
+        "kind": "boot",
+        "brand": "Chanel",
+        "contexts": [
+          "outing"
+        ]
+      },
+      {
+        "id": "sneaker_cp",
+        "label": "Common Projects Achilles 小白鞋",
+        "kind": "sneaker",
+        "brand": "Common Projects",
+        "contexts": [
+          "outing"
+        ]
+      },
+      {
+        "id": "sneaker_gg",
+        "label": "Golden Goose 做旧球鞋",
+        "kind": "sneaker",
+        "brand": "Golden Goose",
+        "contexts": [
+          "outing"
+        ]
+      },
+      {
+        "id": "sport_nike",
+        "label": "Nike 限定训练/跑鞋",
+        "kind": "sport",
+        "brand": "Nike",
+        "contexts": [
+          "sport"
+        ]
+      },
+      {
+        "id": "slipper_loro",
+        "label": "Loro Piana 羊绒家居拖鞋",
+        "kind": "slipper",
+        "brand": "Loro Piana",
+        "contexts": [
+          "home",
+          "sleep"
+        ]
+      },
+      {
+        "id": "mule_bottega",
+        "label": "Bottega Veneta 编织穆勒",
+        "kind": "mule",
+        "brand": "Bottega Veneta",
+        "contexts": [
+          "outing",
+          "home"
+        ]
+      },
+      {
+        "id": "heel_manolo_nude",
+        "label": "Manolo Blahnik Hangisi 裸色缎面细跟",
+        "kind": "heel",
+        "brand": "Manolo Blahnik",
+        "heel": "细高跟",
+        "color": "裸/香槟",
+        "contexts": [
+          "date"
+        ],
+        "notes": "晚装显腿长"
+      },
+      {
+        "id": "heel_louboutin_nude",
+        "label": "Louboutin So Kate 裸色红底",
+        "kind": "heel",
+        "brand": "Christian Louboutin",
+        "heel": "细高跟 120mm",
+        "color": "裸",
+        "contexts": [
+          "date"
+        ]
+      },
+      {
+        "id": "heel_jc_nude",
+        "label": "Jimmy Choo Romy 裸色尖头细跟",
+        "kind": "heel",
+        "brand": "Jimmy Choo",
+        "heel": "细高跟",
+        "color": "裸",
+        "contexts": [
+          "date",
+          "outing"
+        ]
+      },
+      {
+        "id": "heel_manolo_wine",
+        "label": "Manolo Blahnik 酒红缎面细跟",
+        "kind": "heel",
+        "brand": "Manolo Blahnik",
+        "heel": "细高跟",
+        "color": "酒红",
+        "contexts": [
+          "date"
+        ],
+        "notes": "晚宴压场"
+      },
+      {
+        "id": "heel_louboutin_wine",
+        "label": "Louboutin 酒红/石榴红细跟",
+        "kind": "heel",
+        "brand": "Christian Louboutin",
+        "heel": "细高跟",
+        "color": "酒红",
+        "contexts": [
+          "date"
+        ]
+      },
+      {
+        "id": "heel_jc_wine",
+        "label": "Jimmy Choo 酒红细跟凉鞋",
+        "kind": "sandal",
+        "brand": "Jimmy Choo",
+        "heel": "细高跟",
+        "color": "酒红",
+        "contexts": [
+          "date"
+        ]
+      },
+      {
+        "id": "heel_chanel_nude",
+        "label": "Chanel 裸色中细跟",
+        "kind": "heel",
+        "brand": "Chanel",
+        "heel": "中细跟",
+        "color": "裸",
+        "contexts": [
+          "work",
+          "date"
+        ]
+      }
+    ],
+    "jewelry": [
+      {
+        "id": "cartier_love_narrow",
+        "label": "Cartier 窄版 LOVE 手镯 黄金",
+        "kind": "bracelet",
+        "brand": "Cartier",
+        "notes": "几乎不摘"
+      },
+      {
+        "id": "cartier_love_white",
+        "label": "Cartier LOVE 白金镶钻",
+        "kind": "bracelet",
+        "brand": "Cartier"
+      },
+      {
+        "id": "cartier_juste",
+        "label": "Cartier Juste un Clou 手镯",
+        "kind": "bracelet",
+        "brand": "Cartier"
+      },
+      {
+        "id": "cartier_trinity",
+        "label": "Cartier Trinity 三环戒",
+        "kind": "ring",
+        "brand": "Cartier"
+      },
+      {
+        "id": "cartier_clash",
+        "label": "Cartier Clash 耳钉",
+        "kind": "earring",
+        "brand": "Cartier"
+      },
+      {
+        "id": "vca_ear",
+        "label": "Van Cleef 白金四叶草耳钉",
+        "kind": "earring",
+        "brand": "Van Cleef & Arpels"
+      },
+      {
+        "id": "vca_neck",
+        "label": "Van Cleef 五花 Alhambra 项链",
+        "kind": "necklace",
+        "brand": "Van Cleef & Arpels"
+      },
+      {
+        "id": "vca_bracelet",
+        "label": "Van Cleef 四叶草手链",
+        "kind": "bracelet",
+        "brand": "Van Cleef & Arpels"
+      },
+      {
+        "id": "diamond_studs",
+        "label": "经典小钻耳钉",
+        "kind": "earring",
+        "brand": "",
+        "notes": "日常底妆级珠宝"
+      },
+      {
+        "id": "pearl_studs",
+        "label": "Akoya 小珍珠耳钉",
+        "kind": "earring",
+        "notes": "素净日"
+      },
+      {
+        "id": "tennis",
+        "label": "细钻 tennis 手链",
+        "kind": "bracelet",
+        "notes": "晚宴"
+      },
+      {
+        "id": "hermes_clic",
+        "label": "Hermès Clic H 手镯",
+        "kind": "bracelet",
+        "brand": "Hermès"
+      },
+      {
+        "id": "dior_rose",
+        "label": "Dior Rose des Vents 耳饰",
+        "kind": "earring",
+        "brand": "Dior"
+      },
+      {
+        "id": "cartier_necklace",
+        "label": "Cartier 简约项链",
+        "kind": "necklace",
+        "brand": "Cartier"
+      }
+    ],
+    "watches": [
+      {
+        "id": "cartier_tank_must",
+        "label": "Cartier Tank Must",
+        "kind": "watch",
+        "brand": "Cartier",
+        "notes": "日常主表"
+      },
+      {
+        "id": "cartier_tank_lc",
+        "label": "Cartier Tank Louis 小尺寸",
+        "kind": "watch",
+        "brand": "Cartier"
+      },
+      {
+        "id": "cartier_ballon",
+        "label": "Cartier Ballon Bleu 小号",
+        "kind": "watch",
+        "brand": "Cartier"
+      },
+      {
+        "id": "rolex_lady",
+        "label": "Rolex Lady-Datejust 金钢",
+        "kind": "watch",
+        "brand": "Rolex",
+        "notes": "正式场合"
+      },
+      {
+        "id": "jlc_reverso",
+        "label": "Jaeger-LeCoultre Reverso 女款",
+        "kind": "watch",
+        "brand": "Jaeger-LeCoultre"
+      },
+      {
+        "id": "apple_watch",
+        "label": "Apple Watch（运动/机场）",
+        "kind": "sport",
+        "brand": "Apple",
+        "contexts": [
+          "sport",
+          "outing"
+        ]
+      }
+    ],
+    "accessories": [
+      {
+        "id": "hermes_carre",
+        "label": "Hermès 真丝方巾（多色轮换）",
+        "kind": "scarf",
+        "brand": "Hermès",
+        "notes": "包柄/颈间/头发"
+      },
+      {
+        "id": "hermes_shawl",
+        "label": "Hermès / Loro 羊绒大披肩",
+        "kind": "shawl",
+        "brand": "Hermès",
+        "contexts": [
+          "outing"
+        ]
+      },
+      {
+        "id": "hermes_belt",
+        "label": "Hermès 皮带 H 扣",
+        "kind": "belt",
+        "brand": "Hermès"
+      },
+      {
+        "id": "celine_sun",
+        "label": "Celine 墨镜",
+        "kind": "sunglasses",
+        "brand": "Celine"
+      },
+      {
+        "id": "chanel_sun",
+        "label": "Chanel 墨镜",
+        "kind": "sunglasses",
+        "brand": "Chanel"
+      },
+      {
+        "id": "dior_sun",
+        "label": "Dior 墨镜",
+        "kind": "sunglasses",
+        "brand": "Dior"
+      },
+      {
+        "id": "ysl_sun",
+        "label": "Saint Laurent 猫眼墨镜",
+        "kind": "sunglasses",
+        "brand": "Saint Laurent"
+      },
+      {
+        "id": "cap_airport",
+        "label": "The Row 极简棒球帽",
+        "kind": "hat",
+        "brand": "The Row",
+        "contexts": [
+          "outing"
+        ],
+        "notes": "机场"
+      },
+      {
+        "id": "silk_hair",
+        "label": "真丝发圈/发夹组",
+        "kind": "hair",
+        "notes": "居家与低马尾"
+      },
+      {
+        "id": "airpods",
+        "label": "AirPods Pro / Max",
+        "kind": "tech",
+        "brand": "Apple"
+      },
+      {
+        "id": "glove",
+        "label": "Loro Piana 羊绒手套",
+        "kind": "glove",
+        "brand": "Loro Piana",
+        "notes": "冬季"
+      },
+      {
+        "id": "eres_swim",
+        "label": "Eres 泳装（度假）",
+        "kind": "swim",
+        "brand": "Eres",
+        "contexts": [
+          "outing"
+        ],
+        "notes": "旅行度假"
+      },
+      {
+        "id": "glasses_lindberg",
+        "label": "Lindberg 极简近视框（钛）",
+        "kind": "glasses",
+        "brand": "Lindberg",
+        "notes": "日常办公轻框"
+      },
+      {
+        "id": "glasses_therow",
+        "label": "The Row / 联名光学近视框",
+        "kind": "glasses",
+        "brand": "The Row",
+        "notes": "低调金丝/黑框"
+      },
+      {
+        "id": "glasses_cartier",
+        "label": "Cartier 金丝近视框",
+        "kind": "glasses",
+        "brand": "Cartier",
+        "notes": "正式日"
+      },
+      {
+        "id": "glasses_gentle",
+        "label": "Gentle Monster 黑框近视（低调度数）",
+        "kind": "glasses",
+        "brand": "Gentle Monster",
+        "notes": "偶尔造型"
+      },
+      {
+        "id": "glasses_case",
+        "label": "皮质眼镜盒 + 擦镜布套装",
+        "kind": "glasses",
+        "brand": "",
+        "notes": "包里常备"
+      }
+    ],
+    "outerwear": [
+      {
+        "id": "maxmara_101801",
+        "label": "Max Mara 经典驼大衣 101801",
+        "kind": "coat",
+        "brand": "Max Mara",
+        "notes": "冬日门面"
+      },
+      {
+        "id": "therow_long_black",
+        "label": "The Row 长款黑大衣",
+        "kind": "coat",
+        "brand": "The Row"
+      },
+      {
+        "id": "celine_coat",
+        "label": "Celine 长款大衣",
+        "kind": "coat",
+        "brand": "Celine"
+      },
+      {
+        "id": "loro_coat",
+        "label": "Loro Piana 羊绒大衣",
+        "kind": "coat",
+        "brand": "Loro Piana"
+      },
+      {
+        "id": "bottega_leather",
+        "label": "Bottega Veneta 皮外套",
+        "kind": "jacket",
+        "brand": "Bottega Veneta"
+      },
+      {
+        "id": "therow_blazer",
+        "label": "The Row 黑色西装外套",
+        "kind": "blazer",
+        "brand": "The Row",
+        "contexts": [
+          "work"
+        ]
+      },
+      {
+        "id": "loro_cardigan",
+        "label": "Loro Piana 驼羊绒开衫",
+        "kind": "knit",
+        "brand": "Loro Piana",
+        "contexts": [
+          "work",
+          "home"
+        ]
+      },
+      {
+        "id": "ovh_robe",
+        "label": "Olivia von Halle 丝质晨袍",
+        "kind": "robe",
+        "brand": "Olivia von Halle",
+        "contexts": [
+          "home",
+          "intimate"
+        ]
+      },
+      {
+        "id": "brunello_cashmere",
+        "label": "Brunello Cucinelli 羊绒外套",
+        "kind": "coat",
+        "brand": "Brunello Cucinelli"
+      }
+    ],
+    "seasonal": {
+      "spring": "season_spring",
+      "summer": "season_summer",
+      "autumn": "season_autumn",
+      "winter": "season_winter"
+    },
+    "travel": [
+      {
+        "id": "rimowa_cabin",
+        "label": "Rimowa Essential Cabin 登机箱",
+        "kind": "carryon",
+        "brand": "Rimowa",
+        "notes": "短差/周末"
+      },
+      {
+        "id": "rimowa_checkin",
+        "label": "Rimowa Check-In L 托运箱",
+        "kind": "luggage",
+        "brand": "Rimowa",
+        "notes": "长途"
+      },
+      {
+        "id": "rimowa_original",
+        "label": "Rimowa Original Cabin 铝镁",
+        "kind": "carryon",
+        "brand": "Rimowa",
+        "notes": "门面登机箱"
+      },
+      {
+        "id": "tumi_compact",
+        "label": "Tumi 商务登机箱",
+        "kind": "carryon",
+        "brand": "Tumi"
+      },
+      {
+        "id": "goyard_boheme",
+        "label": "Goyard Bohème / 软托特舱内",
+        "kind": "tote",
+        "brand": "Goyard"
+      },
+      {
+        "id": "therow_travel_tote",
+        "label": "The Row Margaux 大号（机场）",
+        "kind": "tote",
+        "brand": "The Row"
+      },
+      {
+        "id": "pack_cubes",
+        "label": "高端收纳袋/分装瓶组",
+        "kind": "organizer",
+        "brand": "Rimowa"
+      },
+      {
+        "id": "passport_kit",
+        "label": "护照夹 + 证件套（Hermès/极简）",
+        "kind": "document",
+        "brand": "Hermès"
+      },
+      {
+        "id": "beauty_mini_set",
+        "label": "旅行护肤 mini 全套（La Mer+SK-II+CPB）",
+        "kind": "beauty_mini",
+        "brand": "La Mer",
+        "notes": "面霜/水/精华/防晒小样"
+      },
+      {
+        "id": "beauty_mini_makeup",
+        "label": "旅行底妆 mini：粉底+遮瑕+唇+眉笔",
+        "kind": "beauty_mini",
+        "brand": "Clé de Peau"
+      },
+      {
+        "id": "beauty_mini_cleanse",
+        "label": "旅行卸妆洁面 mini 组",
+        "kind": "beauty_mini",
+        "brand": ""
+      },
+      {
+        "id": "neck_pillow_cashmere",
+        "label": "羊绒旅行颈枕/眼罩（可选）",
+        "kind": "comfort",
+        "brand": "Loro Piana",
+        "notes": "长途"
+      }
+    ]
+  }
+}

@@ -87,6 +87,62 @@ export const DEFAULT_PARAMS = {
     dismissiveSecurityGain: 0.06,
   },
 
+  // ---- I 线 亲密/性爱 (docs/intimacy-design.md) ----
+  intimacy: {
+    enabled: true,
+    halfLifeHours: {
+      arousal: 3,
+      engagement: 2,
+      aftercare_need: 6,
+      sexual_tension: 72,
+      sexual_openness: null,
+      satisfaction: null,
+    },
+    growthPerHour: { sexual_tension: 0.006 },
+    // 默认中等欲望；高欲望角色用 companions/*/intimacy.json 的 drive.libido 覆盖
+    libido: 0.5,
+    satisfactionDecayPerHour: 0,
+    satisfactionFloor: 0.25,
+    // 开放度达到该值后，沉默期间也会累积性张力（同居/恋人角色默认能攒）
+    tensionAccumulateMinOpenness: 0.45,
+    maxStepPerTurn: 0.35,
+    promptThreshold: {
+      arousal: 0.45,
+      aftercare_need: 0.4,
+      sexual_tension: 0.55,
+      satisfactionLow: 0.35,
+    },
+    gates: {
+      minCloseness: 0.55,
+      minTrust: 0.45,
+      minOpennessForPeak: 0.4,
+      maxTensionForIntimate: 0.7,
+      maxRepairDebtForIntimate: 0.55,
+      minEnergy: 0.25,
+      requireConsentForPeak: true,
+    },
+    feedback: {
+      goodPeak: { closeness: 0.02, trust: 0.01, valence: 0.08 },
+      goodAftercare: { closeness: 0.03, valence: 0.05 },
+      stopOrBad: { valence: -0.06, tension: 0.05 },
+    },
+    proactive: {
+      enabled: true,
+      highTensionThreshold: 0.65,
+      // 达到该张力：允许主动发起亲密（仍受关系/身体门控）
+      initiateThreshold: 0.78,
+      lowSatisfactionThreshold: 0.35,
+      minCooldownFactor: 0.45,
+    },
+    // romantic/intimate 场景 recall 时对 preference 记忆的额外权重（I4）
+    preferenceRecallBoost: 0.15,
+    // 姐系亲密风格：懂暗示、偏主动带节奏（人设可关）
+    style: {
+      sisterLead: true,
+    },
+    bodyFocus: { enabled: false },
+  },
+
   // ---- B2 情绪行为策略 ----
   behavior: {
     maxReplyDelayMs: 10 * 60 * 1000,
@@ -217,6 +273,13 @@ export const DEFAULT_PARAMS = {
     lateNightStreakMultiplier: 2,
   },
 
+  // ---- O 线 穿搭 (当前穿着 + 衣橱 + 随场景切换) ----
+  outfit: {
+    enabled: true,
+    minHoursBeforeSwitch: 0.5, // 情境变了至少过多久才自动换
+    maxHoursSameOutfit: 16, // 同一套最多穿多久（跨情境时）
+  },
+
   // ---- A1 外貌/自拍 (appearance-life-design.md 第二部分; 出图为仓库外基建, 这里只搭骨架) ----
   appearance: {
     minClosenessForSelfie: 0.6, // 关系到这个亲密度才会"主动"发自拍 (被明确要求则放行)
@@ -232,6 +295,9 @@ export const DEFAULT_PARAMS = {
     // persona 段缓存多久后在下一次 init() 时重新加载。长期运行的实例 (如 ProactiveScheduler
     // 反复调用同一个 Orchestrator) 需要这个值让"自我认知"反思等 self 记忆更新能体现到 prompt 里。
     personaRefreshMs: 30 * 60 * 1000, // 30 分钟
+    // 内心独白 (think()) 本来只要"一两句话", 之前没封顶, 模型话痨起来会白白拉长回复延迟
+    // (独白是串行 await 的, 生成得越久, 用户等得越久)。
+    monologueMaxTokens: 120,
   },
 
   // ---- P1 双向关系触发规则 ----

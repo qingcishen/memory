@@ -20,6 +20,36 @@ import { DEFAULT_PARAMS } from '../params.js';
 import { normalizeCompanionProfile } from '../companion.js';
 import { OpenAIImageProvider } from '../appearance/provider.js';
 import { listReferenceImages, saveReferenceImage, deleteReferenceImage, referenceFilePath, readReferenceById, setReferenceAvatar } from '../appearance/references.js';
+import {
+  buildOutfitCatalog,
+  lookToOutfitState,
+} from '../state/outfitCards.js';
+import {
+  buildAlbumCatalog,
+} from '../state/album.js';
+import {
+  listAssetsPath,
+  oneAssetPath,
+  rowsToAssetMapLite,
+  rowsToAssetMap,
+  attachAssetsToCards,
+  validateImagePayload,
+  decodeImageBase64,
+  upsertAssetBody,
+  listCustomAlbumPath,
+  upsertCustomAlbumBody,
+  normalizeCardKey,
+} from '../state/cardAssetsDb.js';
+import { uploadBase64ToR2, deleteFromR2, resolveR2Config } from '../media/r2.js';
+import { normalizeWardrobe } from '../state/outfit.js';
+import {
+  listMcpCatalog,
+  installMcpToClient,
+  uninstallMcpFromClient,
+  buildClientSnippet,
+  MCP_CATALOG,
+  clientConfigPaths,
+} from './mcpCatalog.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -42,6 +72,7 @@ const PARAM_SCHEMA = [
   { path: 'engine.wSpread', label: '联想扩散权重', min: 0, max: 1, step: 0.05, group: '检索' },
   { path: 'engine.graphHops', label: '联想扩散跳数', min: 0, max: 4, step: 1, group: '检索' },
   { path: 'state.maxStepPerTurn', label: '单轮状态最大变化', min: 0.05, max: 0.8, step: 0.05, group: '情绪关系' },
+  { path: 'orchestrator.monologueMaxTokens', label: '内心独白最大 token 数 (影响回复延迟)', min: 20, max: 400, step: 10, group: '情绪关系' },
   { path: 'reconsolidation.affectClamp', label: '单次重构漂移上限', min: 0.01, max: 0.5, step: 0.01, group: '重构' },
   { path: 'reconsolidation.maxDriftFromOrigin', label: '相对原始情感最大漂移', min: 0.05, max: 1, step: 0.05, group: '重构' },
   { path: 'relationship_memory.alwaysIncludeDyad', label: '固定带入共同记忆数', min: 0, max: 10, step: 1, group: '关系' },
@@ -56,6 +87,19 @@ const PARAM_SCHEMA = [
   { path: 'desire.growthPerHour.sharing', label: '分享需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
   { path: 'desire.growthPerHour.comfort', label: '安慰需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
   { path: 'desire.growthPerHour.security', label: '安全需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
+  { path: 'intimacy.enabled', label: '亲密系统总开关', type: 'bool', group: '亲密' },
+  { path: 'intimacy.promptThreshold.arousal', label: '亲密唤起进入 Prompt 门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.promptThreshold.sexual_tension', label: '性张力进入 Prompt 门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.promptThreshold.aftercare_need', label: '事后需求进入 Prompt 门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.minCloseness', label: '亲密推进最低亲密度', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.minTrust', label: '亲密推进最低信任', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.maxTensionForIntimate', label: '亲密推进最高关系紧张', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.maxRepairDebtForIntimate', label: '亲密推进最高和好债', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.minEnergy', label: '亲密推进最低精力', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.growthPerHour.sexual_tension', label: '性张力每小时增速', min: 0, max: 0.05, step: 0.001, group: '亲密' },
+  { path: 'intimacy.proactive.highTensionThreshold', label: '亲密主动·张力门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.proactive.lowSatisfactionThreshold', label: '亲密主动·低满足门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.preferenceRecallBoost', label: '亲密场景偏好召回加成', min: 0, max: 0.5, step: 0.05, group: '亲密' },
   { path: 'proactive.desire.triggerThreshold', label: '需求主动消息门槛', min: 0, max: 1, step: 0.05, group: '主动性' },
   { path: 'proactive.desire.highThreshold', label: '需求语气升级门槛', min: 0, max: 1, step: 0.05, group: '主动性' },
   { path: 'proactive.desire.minCooldownFactor', label: '高需求最短冷却比例', min: 0.1, max: 1, step: 0.05, group: '主动性' },
@@ -81,6 +125,7 @@ const BACKUP_TABLES = [
   'memories', 'affective_state', 'life_state', 'affective_state_history', 'prospective',
   'proactive_rate_limits', 'behavior_state', 'companions', 'appearance_assets', 'jobs', 'chat_history',
   'world_state', 'story_lines', 'knowledge_entities', 'knowledge_relations',
+  'companion_card_assets', 'album_custom_entries',
 ];
 
 // ---------------------------------------------------------------
@@ -105,6 +150,7 @@ export const CONFIG_SCHEMA = [
       { key: 'SUPABASE_URL', label: 'Project URL', placeholder: 'https://xxxx.supabase.co', link: { label: '去控制台获取', url: 'https://supabase.com/dashboard/project/_/settings/api' } },
       { key: 'SUPABASE_KEY', label: 'Service Role Key', secret: true, placeholder: 'service_role key (不是 anon key)', link: { label: '去控制台获取', url: 'https://supabase.com/dashboard/project/_/settings/api-keys' } },
       { key: 'SUPABASE_ACCESS_TOKEN', label: 'Personal Access Token (可选, 仅供下方 SQL 工具箱建表用)', secret: true, placeholder: 'sbp_... (控制台 Account → Access Tokens 生成)', link: { label: '去生成令牌', url: 'https://supabase.com/dashboard/account/tokens' } },
+      { key: 'DATABASE_URL', label: 'Postgres 连接串 (可选, MCP 只读查询用)', secret: true, placeholder: 'postgresql://postgres.xxx:密码@aws-...pooler.supabase.com:5432/postgres', link: { label: 'Database 设置', url: 'https://supabase.com/dashboard/project/_/settings/database' } },
     ],
   },
   {
@@ -210,6 +256,22 @@ export const CONFIG_SCHEMA = [
       { key: 'IMAGE_LORA_ID', label: '角色 LoRA ID', placeholder: 'lora_xxx / adapter name' },
       { key: 'IMAGE_LORA_TRIGGER', label: 'LoRA 触发词', placeholder: 'shiya_character_v2' },
       { key: 'IMAGE_LORA_STATUS', label: 'LoRA 状态', options: ['not_started', 'training', 'ready', 'paused'], placeholder: 'not_started' },
+    ],
+  },
+  {
+    id: 'r2',
+    title: 'Cloudflare R2 图床',
+    hint: '穿搭系统 / 穿搭相册的卡片成片存在 R2；提示词与图片 URL 写在 Supabase companion_card_assets。本机开发可不填 Token（自动用 wrangler login）；生产建议填长期 API Token。',
+    testable: true,
+    links: [
+      { label: 'R2 控制台', url: 'https://dash.cloudflare.com/?to=/:account/r2' },
+      { label: '创建 API Token', url: 'https://dash.cloudflare.com/profile/api-tokens' },
+    ],
+    fields: [
+      { key: 'CLOUDFLARE_ACCOUNT_ID', label: 'Account ID', placeholder: '2581ca9560b48b398983980c1668d0d2', link: { label: '在 R2 概览页复制', url: 'https://dash.cloudflare.com/?to=/:account/r2' } },
+      { key: 'R2_BUCKET', label: 'Bucket 名', placeholder: 'qingci-companion-media' },
+      { key: 'R2_PUBLIC_BASE', label: '公网访问前缀 (r2.dev 或自定义域)', placeholder: 'https://pub-xxxxx.r2.dev' },
+      { key: 'CLOUDFLARE_API_TOKEN', label: 'API Token (可选)', secret: true, placeholder: '留空则本机用 wrangler login；需 Account · R2 写权限' },
     ],
   },
   {
@@ -464,6 +526,44 @@ async function testTts(env) {
   return { ok: false, ms, message: body?.error?.message ? String(body.error.message).slice(0, 160) : `HTTP ${res.status}` };
 }
 
+async function testR2(env) {
+  const started = Date.now();
+  const { resolveR2Config, uploadToR2, deleteFromR2 } = await import('../media/r2.js');
+  const cfg = resolveR2Config(env);
+  if (!cfg.configured) {
+    return { ok: false, message: '先填 CLOUDFLARE_ACCOUNT_ID、R2_BUCKET、R2_PUBLIC_BASE' };
+  }
+  if (!cfg.canUpload) {
+    return {
+      ok: false,
+      message: '没有可用 Token：请填 CLOUDFLARE_API_TOKEN，或在本机执行 wrangler login',
+      detail: { accountId: cfg.accountId, bucket: cfg.bucket, publicBase: cfg.publicBase },
+    };
+  }
+  const key = `test/ui-ping-${Date.now()}.txt`;
+  const payload = Buffer.from(`qingci-r2-ping ${new Date().toISOString()}`);
+  const up = await uploadToR2(payload, { mime: 'text/plain', key, env });
+  if (!up.ok) return { ok: false, ms: Date.now() - started, message: up.message };
+  const get = await fetch(up.url, { signal: AbortSignal.timeout(15000) }).catch((e) => ({ ok: false, status: 0, error: e }));
+  const bodyText = get.ok ? await get.text().catch(() => '') : '';
+  // 测试文件顺手清掉，避免桶里堆垃圾
+  await deleteFromR2(key, env).catch(() => null);
+  if (!get.ok || !String(bodyText).includes('qingci-r2-ping')) {
+    return {
+      ok: false,
+      ms: Date.now() - started,
+      message: `上传成功但公网读取失败 (HTTP ${get.status || 0})，检查 R2_PUBLIC_BASE 与桶是否开启 r2.dev 公开访问`,
+      detail: { url: up.url, bucket: cfg.bucket },
+    };
+  }
+  return {
+    ok: true,
+    ms: Date.now() - started,
+    message: `R2 可用 · ${cfg.bucket} · 公网 ${cfg.publicBase}`,
+    detail: { accountId: cfg.accountId, bucket: cfg.bucket, publicBase: cfg.publicBase, sampleUrl: up.url },
+  };
+}
+
 const TESTS = {
   supabase: testSupabase,
   llm: testLlm,
@@ -474,6 +574,8 @@ const TESTS = {
   asr: (env) => testCatalogTarget('asr', env),
   tts: testTts,
   image: (env) => testCatalogTarget('image', env),
+  r2: testR2,
+  cloudflare: testR2,
   telegram: testTelegram,
   feishu: testFeishu,
   discord: testDiscord,
@@ -642,9 +744,14 @@ async function supabaseCount(env, table, filters = {}) {
   return r.ok ? r.count ?? (Array.isArray(r.data) ? r.data.length : 0) : 0;
 }
 
+/**
+ * 之前 userId 为空时直接不设 user_id 过滤条件, 查询会退化成"查这张表里所有用户的数据"——
+ * 谁调用时漏传/传空 userId (哪怕只是一次调试用的裸 curl), 读到的就是别的真实用户的私密数据。
+ * 现在没有 userId 一律给一个必然查不到东西的过滤条件, 宁可返回空也不能返回错的人的数据 (fail closed)。
+ */
 function scopeFilters({ userId = '', companionId = '' } = {}) {
   const p = new URLSearchParams();
-  if (userId) p.set('user_id', `eq.${userId}`);
+  p.set('user_id', userId ? `eq.${userId}` : 'eq.__no_scope_selected__');
   if (companionId) p.set('companion_id', `eq.${companionId}`);
   return p;
 }
@@ -731,19 +838,102 @@ async function getScopes(env) {
   return { ok: true, scopes };
 }
 
+const DEFAULT_INTIMACY = {
+  arousal: 0,
+  engagement: 0,
+  aftercare_need: 0,
+  sexual_tension: 0,
+  sexual_openness: 0.35,
+  satisfaction: 0.5,
+  scene_phase: 'none',
+  last_intimate_at: null,
+  consent: { active: false, pace: 'normal', stop_signal: false },
+  body_focus: null,
+  repertoire: { last_positions: [], focus_position: null, focus_foreplay: null },
+  updated_at: null,
+};
+
+function normalizeIntimacyRow(raw) {
+  const base = { ...DEFAULT_INTIMACY, ...(raw && typeof raw === 'object' ? raw : {}) };
+  const consent = { ...DEFAULT_INTIMACY.consent, ...(base.consent && typeof base.consent === 'object' ? base.consent : {}) };
+  const phase = ['none', 'flirting', 'foreplay', 'peak', 'aftercare', 'cooldown'].includes(base.scene_phase)
+    ? base.scene_phase
+    : 'none';
+  const clamp01 = (v, d = 0) => Math.min(1, Math.max(0, Number.isFinite(Number(v)) ? Number(v) : d));
+  return {
+    arousal: clamp01(base.arousal, 0),
+    engagement: clamp01(base.engagement, 0),
+    aftercare_need: clamp01(base.aftercare_need, 0),
+    sexual_tension: clamp01(base.sexual_tension, 0),
+    sexual_openness: clamp01(base.sexual_openness, 0.35),
+    satisfaction: clamp01(base.satisfaction, 0.5),
+    scene_phase: phase,
+    last_intimate_at: base.last_intimate_at || null,
+    consent: {
+      active: Boolean(consent.active),
+      pace: ['slow', 'normal', 'eager'].includes(consent.pace) ? consent.pace : 'normal',
+      stop_signal: Boolean(consent.stop_signal),
+    },
+    body_focus: base.body_focus ?? null,
+    repertoire: {
+      last_positions: Array.isArray(base.repertoire?.last_positions)
+        ? base.repertoire.last_positions.map(String).slice(0, 6)
+        : [],
+      focus_position: base.repertoire?.focus_position ? String(base.repertoire.focus_position).slice(0, 40) : null,
+      focus_foreplay: base.repertoire?.focus_foreplay ? String(base.repertoire.focus_foreplay).slice(0, 40) : null,
+    },
+    updated_at: base.updated_at ?? null,
+  };
+}
+
 async function getStateBundle(env, scope) {
   if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
-  const [affect, life, history] = await Promise.all([
-    supabaseRest(env, scopedPath('affective_state', { select: 'mood,relationship,desires,updated_at', limit: '1' }, scope)),
-    supabaseRest(env, scopedPath('life_state', { select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day,updated_at', limit: '1' }, scope)),
-    supabaseRest(env, scopedPath('affective_state_history', { select: 'mood,relationship,event,created_at', order: 'created_at.desc', limit: '80' }, scope)),
-  ]);
-  const defaultAffect = { mood: { valence: 0, arousal: 0.3 }, relationship: { closeness: 0.5, tension: 0, repair_debt: 0, trust: 0.5 }, desires: { attention: 0, sharing: 0, comfort: 0, security: 0 }, updated_at: null };
-  const defaultLife = { energy: 0.6, satiety: 0.6, health: 1, current_activity: null, last_slept_at: null, sick_until: null, late_night_streak: 0, last_late_night_day: null, updated_at: null };
+  // 先带 intimacy 列；老库未迁移时回退无 intimacy 的查询，避免整页失败
+  let affect = await supabaseRest(env, scopedPath('affective_state', { select: 'mood,relationship,desires,intimacy,updated_at', limit: '1' }, scope));
+  if (!affect.ok) {
+    affect = await supabaseRest(env, scopedPath('affective_state', { select: 'mood,relationship,desires,updated_at', limit: '1' }, scope));
+  }
+  let life = await supabaseRest(env, scopedPath('life_state', { select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day,outfit,updated_at', limit: '1' }, scope));
+  if (!life.ok) {
+    life = await supabaseRest(env, scopedPath('life_state', { select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day,updated_at', limit: '1' }, scope));
+  }
+  const history = await supabaseRest(env, scopedPath('affective_state_history', { select: 'mood,relationship,event,created_at', order: 'created_at.desc', limit: '80' }, scope));
+  const defaultAffect = {
+    mood: { valence: 0, arousal: 0.3 },
+    relationship: { closeness: 0.5, tension: 0, repair_debt: 0, trust: 0.5 },
+    desires: { attention: 0, sharing: 0, comfort: 0, security: 0 },
+    intimacy: { ...DEFAULT_INTIMACY },
+    updated_at: null,
+  };
+  const defaultLife = {
+    energy: 0.6, satiety: 0.6, health: 1, current_activity: null, last_slept_at: null, sick_until: null,
+    late_night_streak: 0, last_late_night_day: null,
+    outfit: { current: null, context: 'home', changed_at: null, updated_at: null },
+    updated_at: null,
+  };
+  const affectRow = affect.ok && affect.data?.[0] ? affect.data[0] : null;
+  const affectOut = affectRow
+    ? {
+        ...defaultAffect,
+        ...affectRow,
+        desires: { ...defaultAffect.desires, ...(affectRow.desires || {}) },
+        intimacy: normalizeIntimacyRow(affectRow.intimacy),
+      }
+    : defaultAffect;
+  const lifeRow = life.ok && life.data?.[0] ? life.data[0] : null;
+  const lifeOut = lifeRow
+    ? {
+        ...defaultLife,
+        ...lifeRow,
+        outfit: lifeRow.outfit && typeof lifeRow.outfit === 'object'
+          ? lifeRow.outfit
+          : defaultLife.outfit,
+      }
+    : defaultLife;
   return {
     ok: affect.ok || life.ok,
-    affect: affect.ok && affect.data?.[0] ? affect.data[0] : defaultAffect,
-    life: life.ok && life.data?.[0] ? life.data[0] : defaultLife,
+    affect: affectOut,
+    life: lifeOut,
     history: history.ok ? history.data : [],
     errors: [affect, life, history].filter((r) => !r.ok && !r.missingTable).map((r) => r.message),
   };
@@ -867,6 +1057,12 @@ async function saveStateBundle(env, scope, input = {}) {
         comfort: clamp(input.affect.desires.comfort), security: clamp(input.affect.desires.security),
         updated_at: new Date().toISOString(),
       } } : {}),
+      ...(input.affect.intimacy ? {
+        intimacy: {
+          ...normalizeIntimacyRow(input.affect.intimacy),
+          updated_at: new Date().toISOString(),
+        },
+      } : {}),
       updated_at: new Date().toISOString(),
     };
     results.push(await supabaseRequest(env, 'affective_state?on_conflict=user_id,companion_id', { method: 'POST', body: row, headers: { prefer: 'resolution=merge-duplicates,return=representation' } }));
@@ -883,6 +1079,12 @@ async function saveStateBundle(env, scope, input = {}) {
       last_late_night_day: input.life.last_late_night_day || null,
       updated_at: new Date().toISOString(),
     };
+    if (input.life.outfit && typeof input.life.outfit === 'object') {
+      row.outfit = {
+        ...input.life.outfit,
+        updated_at: new Date().toISOString(),
+      };
+    }
     results.push(await supabaseRequest(env, 'life_state?on_conflict=user_id,companion_id', { method: 'POST', body: row, headers: { prefer: 'resolution=merge-duplicates,return=representation' } }));
   }
   const failed = results.find((r) => !r.ok);
@@ -1033,19 +1235,34 @@ function paramPayload() {
   };
 }
 
+/** 合并写入覆盖文件 (不是整份替换) —— 前端每次只传本次改动的字段, 之前保存过的其它覆盖不能被这次请求悄悄抹掉。 */
 function saveParams(values = {}) {
-  const out = {};
+  const overrides = readParamOverrides();
+  let applied = 0;
   for (const field of PARAM_SCHEMA) {
     if (!(field.path in values)) continue;
+    if (field.type === 'bool') {
+      setPathValue(overrides, field.path, Boolean(values[field.path]));
+      applied += 1;
+      continue;
+    }
     let value = Number(values[field.path]);
     if (!Number.isFinite(value)) continue;
     value = Math.min(field.max, Math.max(field.min, value));
     if (field.step >= 1) value = Math.round(value);
-    setPathValue(out, field.path, value);
+    setPathValue(overrides, field.path, value);
+    applied += 1;
   }
   fs.mkdirSync(path.dirname(PARAMS_FILE), { recursive: true });
-  fs.writeFileSync(PARAMS_FILE, `${JSON.stringify(out, null, 2)}\n`);
-  return { ok: true, message: `已保存 ${Object.keys(values).length} 项参数；重启 Bot 后生效`, values: out };
+  fs.writeFileSync(PARAMS_FILE, `${JSON.stringify(overrides, null, 2)}\n`);
+  return { ok: true, message: `已保存 ${applied} 项参数；重启 Bot 后生效`, values: overrides };
+}
+
+/** 清空全部参数覆盖, 整个系统回到 DEFAULT_PARAMS。是显式动作, 不是"传空 values"的副作用。 */
+function resetParams() {
+  fs.mkdirSync(path.dirname(PARAMS_FILE), { recursive: true });
+  fs.writeFileSync(PARAMS_FILE, '{}\n');
+  return { ok: true, message: '已重置为默认参数；重启 Bot 后生效' };
 }
 
 async function exportScope(env, scope) {
@@ -1084,7 +1301,7 @@ async function importScope(env, payload = {}) {
 
 async function getSystemHealth(env) {
   const required = ['memories', 'affective_state', 'life_state', 'prospective', 'chat_history', 'world_state', 'story_lines', 'jobs', 'behavior_state'];
-  const optional = ['knowledge_entities', 'knowledge_relations', 'appearance_assets', 'companions'];
+  const optional = ['knowledge_entities', 'knowledge_relations', 'appearance_assets', 'companions', 'companion_card_assets', 'album_custom_entries'];
   const results = await Promise.all([...required, ...optional].map(async (table) => {
     const r = await supabaseRequest(env, `${table}?select=*&limit=1`, { timeoutMs: 30000 })
       .catch((error) => ({ ok: false, message: error?.message }));
@@ -1100,6 +1317,15 @@ async function getSystemHealth(env) {
       embedding: Boolean(env.EMBED_API_KEY || env.LLM_API_KEY),
       asr: Boolean((env.ASR_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && (env.ASR_MODEL || 'whisper-1')),
       image: Boolean((env.IMAGE_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && env.IMAGE_MODEL),
+      r2: (() => {
+        try {
+          // 同步粗检：桶配置是否齐全（Token 可能来自 wrangler，不在 .env）
+          const hasBucket = Boolean(env.R2_BUCKET && env.R2_PUBLIC_BASE && (env.CLOUDFLARE_ACCOUNT_ID || env.R2_ACCOUNT_ID));
+          return hasBucket;
+        } catch {
+          return false;
+        }
+      })(),
       telegram: Boolean(env.TELEGRAM_BOT_TOKEN),
       feishu: Boolean(env.FEISHU_APP_ID && env.FEISHU_APP_SECRET),
       discord: Boolean(env.DISCORD_BOT_TOKEN),
@@ -1218,6 +1444,406 @@ function listCompanions() {
       shardCount: isDir ? fs.readdirSync(dir).filter((f) => safePersonaName(`${id}/${f}`)).length : 1,
     };
   });
+}
+
+// 目录式人设里 profile 之外的其余分片; 每个文件都是 { <section>: {...} } 或 (persona/relationship)
+// 带 meta/emotion_baseline 等额外顶层键的形态 —— 通用接口直接读写整份文件内容, 不narrow到单个 key,
+// 这样不用对 persona/relationship 的多顶层键做特殊处理。profile 有专门的结构化表单 (见下方
+// readCompanionProfile/saveCompanionProfile), 不走这条通用路径。
+const COMPANION_SECTIONS = ['persona', 'appearance', 'life', 'relationship', 'runtime', 'knowledge', 'story', 'narration', 'intimacy'];
+
+function companionSectionFilePath(id, section) {
+  return path.join(companionDirPath(id), `${section}.json`);
+}
+
+/** 读一个角色某个分片的原始 JSON (给控制台的通用编辑器用); 文件不存在返回空对象, 不算错误。 */
+function readCompanionSection(companionId, section) {
+  const id = safeCompanionId(companionId);
+  if (!id) return { ok: false, message: '角色 ID 不合法' };
+  if (!COMPANION_SECTIONS.includes(section)) return { ok: false, message: `未知分片: ${section}` };
+  const file = companionSectionFilePath(id, section);
+  try {
+    const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+    return { ok: true, data };
+  } catch (error) {
+    return { ok: false, message: `分片读取失败: ${error.message}` };
+  }
+}
+
+/** 整份覆盖写一个角色某个分片的 JSON (给控制台的通用编辑器用); 角色目录不存在会自动建。 */
+function saveCompanionSection(companionId, section, data) {
+  const id = safeCompanionId(companionId);
+  if (!id) return { ok: false, message: '角色 ID 不合法' };
+  if (!COMPANION_SECTIONS.includes(section)) return { ok: false, message: `未知分片: ${section}` };
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, message: '内容必须是 JSON 对象' };
+  try {
+    fs.mkdirSync(companionDirPath(id), { recursive: true });
+    fs.writeFileSync(companionSectionFilePath(id, section), `${JSON.stringify(data, null, 2)}\n`);
+    return { ok: true, message: '已保存；下次对话会读取新的设定' };
+  } catch (error) {
+    return { ok: false, message: `保存失败: ${error.message}` };
+  }
+}
+
+// ---- 穿搭系统（衣橱目录 + 卡片图/提示词资产） ----
+
+function readCompanionOutfitRaw(companionId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const file = path.join(companionDirPath(id), 'outfit.json');
+  try {
+    if (!fs.existsSync(file)) return null;
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return raw?.outfit && typeof raw.outfit === 'object' ? raw.outfit : raw;
+  } catch {
+    return null;
+  }
+}
+
+function companionRootForAssets(companionId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const dir = companionDirPath(id);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+async function loadCardAssetMap(env, companionId, collection) {
+  const r = await supabaseRest(env, listAssetsPath(companionId, collection));
+  if (!r.ok) {
+    if (r.missingTable) {
+      return { ok: false, missingTable: true, map: {}, message: '缺少 companion_card_assets 表，请在 Supabase 执行 sql/card-assets.sql' };
+    }
+    return { ok: false, map: {}, message: r.message };
+  }
+  return { ok: true, map: rowsToAssetMapLite(r.data || []) };
+}
+
+function attachOutfitCatalogAssets(catalog, assetMap, companionId) {
+  const keys = ['looks', 'pieces', 'bags', 'beauty', 'lingerie', 'shoes', 'jewelry', 'watches', 'accessories', 'outerwear', 'travel'];
+  const out = { ...catalog, counts: { ...catalog.counts } };
+  for (const key of keys) {
+    if (!Array.isArray(catalog[key])) continue;
+    out[key] = attachAssetsToCards(catalog[key], assetMap, { companionId, collection: 'outfit' });
+  }
+  return out;
+}
+
+async function getOutfitCatalog(env, scope = {}) {
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const raw = readCompanionOutfitRaw(companionId);
+  const catalog = buildOutfitCatalog(raw);
+  const assets = await loadCardAssetMap(env, companionId, 'outfit');
+  const enriched = attachOutfitCatalogAssets(catalog, assets.map || {}, companionId);
+  let current = null;
+  if (scope.userId) {
+    const life = await supabaseRest(env, scopedPath('life_state', { select: 'outfit,updated_at', limit: '1' }, {
+      userId: scope.userId,
+      companionId,
+    }));
+    if (life.ok && life.data?.[0]?.outfit) current = life.data[0].outfit;
+  }
+  return {
+    ok: true,
+    companionId,
+    current,
+    storage: 'supabase',
+    assetsOk: assets.ok,
+    assetsMessage: assets.ok ? null : assets.message,
+    ...enriched,
+  };
+}
+
+async function wearOutfitLook(env, scope, lookId) {
+  if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const raw = readCompanionOutfitRaw(companionId);
+  const wardrobe = normalizeWardrobe(raw);
+  const look = (wardrobe.wardrobe || []).find((x) => x.id === String(lookId || ''));
+  if (!look) return { ok: false, message: `找不到造型：${lookId}` };
+  const outfit = lookToOutfitState({
+    lookId: look.id,
+    context: look.context,
+    summary: look.summary,
+    style: look.style,
+    pieces: look.pieces,
+  });
+  // 读出现有 life 行，避免只写 outfit 时把 energy 等冲成 0
+  let life = await supabaseRest(env, scopedPath('life_state', {
+    select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day,outfit',
+    limit: '1',
+  }, { userId: scope.userId, companionId }));
+  if (!life.ok) {
+    life = await supabaseRest(env, scopedPath('life_state', {
+      select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day',
+      limit: '1',
+    }, { userId: scope.userId, companionId }));
+  }
+  const prev = life.ok && life.data?.[0] ? life.data[0] : {};
+  const row = {
+    user_id: scope.userId,
+    companion_id: companionId,
+    energy: Number.isFinite(Number(prev.energy)) ? Number(prev.energy) : 0.6,
+    satiety: Number.isFinite(Number(prev.satiety)) ? Number(prev.satiety) : 0.6,
+    health: Number.isFinite(Number(prev.health)) ? Number(prev.health) : 1,
+    current_activity: prev.current_activity ?? null,
+    last_slept_at: prev.last_slept_at ?? null,
+    sick_until: prev.sick_until ?? null,
+    late_night_streak: prev.late_night_streak ?? 0,
+    last_late_night_day: prev.last_late_night_day ?? null,
+    outfit,
+    updated_at: new Date().toISOString(),
+  };
+  const result = await supabaseRequest(env, 'life_state?on_conflict=user_id,companion_id', {
+    method: 'POST',
+    body: row,
+    headers: { prefer: 'resolution=merge-duplicates,return=representation' },
+  });
+  if (!result.ok) return result;
+  return { ok: true, outfit, message: `已上身：${look.summary || look.id}` };
+}
+
+async function upsertCardAsset(env, companionId, collection, cardId, patch) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = normalizeCardKey(cardId);
+  if (!key) return { ok: false, message: '缺少卡片 ID' };
+  const existing = await supabaseRest(env, oneAssetPath(id, collection, key, { withImage: false }));
+  const prev = existing.ok && existing.data?.[0] ? existing.data[0] : null;
+  const body = upsertAssetBody(id, collection, key, {
+    prompt: patch.prompt !== undefined ? patch.prompt : prev?.prompt,
+    mime: patch.clearImage ? null : (patch.mime !== undefined ? patch.mime : prev?.mime),
+    url: patch.clearImage ? null : (patch.url !== undefined ? patch.url : prev?.url),
+    r2_key: patch.clearImage ? null : (patch.r2_key !== undefined ? patch.r2_key : prev?.r2_key),
+    meta: patch.meta || prev?.meta || {},
+    clearImage: Boolean(patch.clearImage),
+  });
+  if (patch.url === undefined && !patch.clearImage) {
+    delete body.url;
+    delete body.r2_key;
+  }
+  if (patch.mime === undefined && !patch.clearImage && prev?.mime) body.mime = prev.mime;
+  if (patch.clearImage) {
+    body.mime = null;
+    body.url = null;
+    body.r2_key = null;
+    body.image_base64 = null;
+    body.meta = { ...(prev?.meta || {}), has_image: false };
+  }
+  if (patch.url) {
+    body.meta = { ...(body.meta || {}), has_image: true, r2_key: patch.r2_key || body.r2_key };
+    body.image_base64 = null;
+  }
+
+  const result = await supabaseRequest(env, 'companion_card_assets?on_conflict=companion_id,collection,card_id', {
+    method: 'POST',
+    body,
+    headers: { prefer: 'resolution=merge-duplicates,return=representation' },
+    timeoutMs: 60000,
+  });
+  if (!result.ok) {
+    if (result.missingTable) {
+      return { ok: false, message: '缺少 companion_card_assets 表，请在 Supabase 执行 sql/card-assets.sql' };
+    }
+    // 列 url/r2_key 可能尚未 migrate
+    if (/url|r2_key|column/i.test(String(result.message || ''))) {
+      return { ok: false, message: `${result.message}（若缺 url/r2_key 列，请再执行 sql/card-assets.sql）` };
+    }
+    return result;
+  }
+  const row = Array.isArray(result.data) ? result.data[0] : result.data;
+  return { ok: true, entry: row, cardId: key, prev };
+}
+
+async function updateOutfitCard(env, companionId, cardId, { prompt } = {}) {
+  if (prompt == null) return { ok: false, message: '没有可更新的字段' };
+  const r = await upsertCardAsset(env, companionId, 'outfit', cardId, { prompt });
+  if (!r.ok) return r;
+  return { ok: true, cardId: r.cardId, entry: r.entry, message: '提示词已保存到 Supabase' };
+}
+
+async function uploadCardImageToR2AndDb(env, companionId, collection, cardId, body = {}) {
+  try {
+    const id = safeCompanionId(companionId) || 'default';
+    const key = normalizeCardKey(cardId);
+    if (!key) return { ok: false, message: '缺少卡片 ID' };
+    const { mime, base64 } = validateImagePayload(body);
+    const r2cfg = resolveR2Config(env);
+    if (!r2cfg.canUpload) {
+      return {
+        ok: false,
+        message: 'Cloudflare R2 未就绪：请 wrangler login，或在 .env 配置 CLOUDFLARE_API_TOKEN / R2_BUCKET / R2_PUBLIC_BASE',
+      };
+    }
+    // 上传新图前读出旧 key，成功后删旧对象
+    const existing = await supabaseRest(env, oneAssetPath(id, collection, key, { withImage: false }));
+    const prev = existing.ok && existing.data?.[0] ? existing.data[0] : null;
+    const oldKey = prev?.r2_key || prev?.meta?.r2_key || null;
+
+    const up = await uploadBase64ToR2(base64, {
+      mime,
+      companionId: id,
+      collection,
+      cardId: key,
+      env,
+    });
+    if (!up.ok) return up;
+
+    const r = await upsertCardAsset(env, id, collection, key, {
+      mime,
+      url: up.url,
+      r2_key: up.key,
+      meta: {
+        name: String(body.name || cardId).slice(0, 160),
+        has_image: true,
+        r2_key: up.key,
+        storage: 'r2',
+      },
+    });
+    if (!r.ok) return r;
+
+    if (oldKey && oldKey !== up.key) {
+      await deleteFromR2(oldKey, env).catch(() => null);
+    }
+
+    return {
+      ok: true,
+      cardId: key,
+      entry: r.entry,
+      imageUrl: up.url,
+      storage: 'r2',
+      message: collection === 'album' ? '上身成片已上传到 Cloudflare R2' : '图片已上传到 Cloudflare R2',
+    };
+  } catch (error) {
+    return { ok: false, message: error.message || '上传失败' };
+  }
+}
+
+async function uploadOutfitCardImage(env, companionId, cardId, body = {}) {
+  return uploadCardImageToR2AndDb(env, companionId, 'outfit', cardId, body);
+}
+
+async function deleteOutfitCardImage(env, companionId, cardId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = normalizeCardKey(cardId);
+  const existing = await supabaseRest(env, oneAssetPath(id, 'outfit', key, { withImage: false }));
+  const prev = existing.ok && existing.data?.[0] ? existing.data[0] : null;
+  const r2key = prev?.r2_key || prev?.meta?.r2_key;
+  if (r2key) await deleteFromR2(r2key, env).catch(() => null);
+  const r = await upsertCardAsset(env, companionId, 'outfit', cardId, { clearImage: true });
+  if (!r.ok) return r;
+  return { ok: true, message: '卡片图片已从 R2 / Supabase 清除' };
+}
+
+/** 兼容旧 base64 行；新图直接用 R2 公网 url，一般不走这里 */
+async function serveCardMedia(env, companionId, collection, cardId, res) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = decodeURIComponent(String(cardId || ''));
+  const r = await supabaseRest(env, oneAssetPath(id, collection, key, { withImage: true }));
+  if (!r.ok) {
+    json(res, r.missingTable ? 400 : 404, {
+      ok: false,
+      message: r.missingTable
+        ? '缺少 companion_card_assets 表，请执行 sql/card-assets.sql'
+        : (r.message || '没有这张图'),
+    });
+    return true;
+  }
+  const row = r.data?.[0];
+  if (row?.url) {
+    res.writeHead(302, { location: row.url, 'cache-control': 'private, max-age=60' });
+    res.end();
+    return true;
+  }
+  const decoded = decodeImageBase64({
+    image_base64: row?.image_base64,
+    mime: row?.mime,
+  });
+  if (!decoded) {
+    json(res, 404, { ok: false, message: '没有这张图' });
+    return true;
+  }
+  res.writeHead(200, {
+    'content-type': decoded.mime,
+    'content-length': decoded.buffer.length,
+    'cache-control': 'private, max-age=3600',
+  });
+  res.end(decoded.buffer);
+  return true;
+}
+
+// ---- 穿搭相册（上身效果 lookbook）· 资产在 Supabase ----
+
+async function getAlbumCatalog(env, scope = {}) {
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const raw = readCompanionOutfitRaw(companionId);
+  const customRes = await supabaseRest(env, listCustomAlbumPath(companionId));
+  const custom = customRes.ok ? (customRes.data || []) : [];
+  if (!customRes.ok && customRes.missingTable) {
+    // 表未建时仍返回造型卡，提示迁移
+  }
+  const catalog = buildAlbumCatalog(raw, custom);
+  const assets = await loadCardAssetMap(env, companionId, 'album');
+  const cards = attachAssetsToCards(catalog.cards, assets.map || {}, { companionId, collection: 'album' });
+  const withImage = cards.filter((c) => c.hasImage).length;
+  return {
+    ok: true,
+    companionId,
+    storage: 'supabase',
+    assetsOk: assets.ok,
+    assetsMessage: assets.ok ? null : assets.message,
+    counts: {
+      ...catalog.counts,
+      withImage,
+      pending: cards.length - withImage,
+    },
+    cards,
+  };
+}
+
+async function updateAlbumCard(env, companionId, cardId, { prompt } = {}) {
+  if (prompt == null) return { ok: false, message: '没有可更新的字段' };
+  const r = await upsertCardAsset(env, companionId, 'album', cardId, { prompt });
+  if (!r.ok) return r;
+  return { ok: true, cardId: r.cardId, entry: r.entry, message: '提示词已保存到 Supabase' };
+}
+
+async function uploadAlbumCardImage(env, companionId, cardId, body = {}) {
+  return uploadCardImageToR2AndDb(env, companionId, 'album', cardId, body);
+}
+
+async function deleteAlbumCardImage(env, companionId, cardId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = normalizeCardKey(cardId);
+  const existing = await supabaseRest(env, oneAssetPath(id, 'album', key, { withImage: false }));
+  const prev = existing.ok && existing.data?.[0] ? existing.data[0] : null;
+  const r2key = prev?.r2_key || prev?.meta?.r2_key;
+  if (r2key) await deleteFromR2(r2key, env).catch(() => null);
+  const r = await upsertCardAsset(env, companionId, 'album', cardId, { clearImage: true });
+  if (!r.ok) return r;
+  return { ok: true, message: '相册图片已从 R2 / Supabase 清除' };
+}
+
+async function createAlbumCustom(env, companionId, entry) {
+  const id = safeCompanionId(companionId) || 'default';
+  try {
+    const body = upsertCustomAlbumBody(id, entry || {});
+    const result = await supabaseRequest(env, 'album_custom_entries?on_conflict=companion_id,id', {
+      method: 'POST',
+      body,
+      headers: { prefer: 'resolution=merge-duplicates,return=representation' },
+    });
+    if (!result.ok) {
+      if (result.missingTable) {
+        return { ok: false, message: '缺少 album_custom_entries 表，请执行 sql/card-assets.sql' };
+      }
+      return result;
+    }
+    if (body.prompt) {
+      await upsertCardAsset(env, id, 'album', `album:custom:${body.id}`, { prompt: body.prompt });
+    }
+    const row = Array.isArray(result.data) ? result.data[0] : result.data;
+    return { ok: true, entry: row, message: '已加入相册（Supabase）' };
+  } catch (error) {
+    return { ok: false, message: error.message || '创建失败' };
+  }
 }
 
 const EMPTY_COMPANION_PROFILE = normalizeCompanionProfile({});
@@ -1558,7 +2184,7 @@ async function readBody(req) {
 }
 
 export function bodyLimitForPath(pathname = '') {
-  return /\/api\/(image-references|images|import)/.test(String(pathname)) ? 20_000_000 : 1_000_000;
+  return /\/api\/(image-references|images|import|outfit|album)/.test(String(pathname)) ? 20_000_000 : 1_000_000;
 }
 
 export function isAllowedHost(value = '') {
@@ -1601,6 +2227,42 @@ async function handle(req, res) {
     const body = await readBody(req);
     const savedKeys = saveConfig(body?.values ?? {});
     return json(res, 200, { ok: true, savedKeys, message: savedKeys.length ? `已保存 ${savedKeys.length} 项到 .env` : '没有需要保存的改动' });
+  }
+  if (route === 'GET /api/mcp') {
+    const env = readEnvValues();
+    return json(res, 200, {
+      ok: true,
+      items: listMcpCatalog({ env }),
+      paths: clientConfigPaths(),
+      message: 'MCP 快捷连接目录',
+    });
+  }
+  if (route === 'POST /api/mcp/install') {
+    const body = await readBody(req);
+    const env = readEnvValues();
+    const result = installMcpToClient(body?.id, body?.client || 'grok', {
+      confirm: Boolean(body?.confirm),
+      env,
+    });
+    return json(res, result.ok ? 200 : 400, result);
+  }
+  if (route === 'POST /api/mcp/uninstall') {
+    const body = await readBody(req);
+    const result = uninstallMcpFromClient(body?.id, body?.client || 'grok', {
+      confirm: Boolean(body?.confirm),
+    });
+    return json(res, result.ok ? 200 : 400, result);
+  }
+  if (route === 'POST /api/mcp/snippet') {
+    const body = await readBody(req);
+    const entry = MCP_CATALOG.find((x) => x.id === body?.id);
+    if (!entry) return json(res, 400, { ok: false, message: '未知 MCP' });
+    return json(res, 200, {
+      ok: true,
+      id: entry.id,
+      client: body?.client || 'claude',
+      snippet: buildClientSnippet(entry, body?.client || 'claude', { env: readEnvValues() }),
+    });
   }
   if (req.method === 'POST' && url.pathname.startsWith('/api/test/')) {
     const target = url.pathname.slice('/api/test/'.length);
@@ -1726,6 +2388,7 @@ async function handle(req, res) {
   }
   if (route === 'GET /api/params') return json(res, 200, paramPayload());
   if (route === 'PUT /api/params') return json(res, 200, saveParams((await readBody(req)).values ?? {}));
+  if (route === 'DELETE /api/params') return json(res, 200, resetParams());
   if (route === 'POST /api/actions') {
     const body = await readBody(req);
     return json(res, 200, await runAction({ ...(body.scope ?? {}), ...body }));
@@ -1772,6 +2435,75 @@ async function handle(req, res) {
   if (route === 'PUT /api/companion-profile') {
     const body = await readBody(req);
     return json(res, 200, saveCompanionProfile(body?.companionId || 'default', body?.profile ?? {}));
+  }
+  if (route === 'GET /api/companion-section') {
+    const result = readCompanionSection(url.searchParams.get('companionId') || 'default', url.searchParams.get('section') || '');
+    return json(res, result.ok ? 200 : 400, result);
+  }
+  if (route === 'PUT /api/companion-section') {
+    const body = await readBody(req);
+    const result = saveCompanionSection(body?.companionId || 'default', body?.section || '', body?.data ?? {});
+    return json(res, result.ok ? 200 : 400, result);
+  }
+  if (route === 'GET /api/outfit') {
+    return json(res, 200, await getOutfitCatalog(readEnvValues(), Object.fromEntries(url.searchParams)));
+  }
+  if (route === 'POST /api/outfit/wear') {
+    const body = await readBody(req);
+    const scope = body?.scope || { userId: body?.userId, companionId: body?.companionId || 'default' };
+    return json(res, 200, await wearOutfitLook(readEnvValues(), scope, body?.lookId));
+  }
+  if (route === 'PUT /api/outfit/card') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await updateOutfitCard(readEnvValues(), companionId, body?.cardId, { prompt: body?.prompt }));
+  }
+  if (route === 'POST /api/outfit/card/image') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await uploadOutfitCardImage(readEnvValues(), companionId, body?.cardId, body));
+  }
+  if (route === 'DELETE /api/outfit/card/image') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || url.searchParams.get('companionId') || 'default';
+    const cardId = body?.cardId || url.searchParams.get('cardId');
+    return json(res, 200, await deleteOutfitCardImage(readEnvValues(), companionId, cardId));
+  }
+  if (req.method === 'GET' && /^\/api\/outfit\/media\/.+\/file$/.test(url.pathname)) {
+    const parts = url.pathname.split('/');
+    const cardId = parts[4];
+    const companionId = url.searchParams.get('companionId') || 'default';
+    return serveCardMedia(readEnvValues(), companionId, 'outfit', cardId, res);
+  }
+  if (route === 'GET /api/album') {
+    return json(res, 200, await getAlbumCatalog(readEnvValues(), Object.fromEntries(url.searchParams)));
+  }
+  if (route === 'PUT /api/album/card') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await updateAlbumCard(readEnvValues(), companionId, body?.cardId, { prompt: body?.prompt }));
+  }
+  if (route === 'POST /api/album/card/image') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await uploadAlbumCardImage(readEnvValues(), companionId, body?.cardId, body));
+  }
+  if (route === 'DELETE /api/album/card/image') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || url.searchParams.get('companionId') || 'default';
+    const cardId = body?.cardId || url.searchParams.get('cardId');
+    return json(res, 200, await deleteAlbumCardImage(readEnvValues(), companionId, cardId));
+  }
+  if (route === 'POST /api/album/custom') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await createAlbumCustom(readEnvValues(), companionId, body));
+  }
+  if (req.method === 'GET' && /^\/api\/album\/media\/.+\/file$/.test(url.pathname)) {
+    const parts = url.pathname.split('/');
+    const cardId = parts[4];
+    const companionId = url.searchParams.get('companionId') || 'default';
+    return serveCardMedia(readEnvValues(), companionId, 'album', cardId, res);
   }
   if (route === 'POST /api/chat') {
     const body = await readBody(req);

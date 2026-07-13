@@ -32,6 +32,8 @@ import { WorldDimension } from '../world/index.js';
 import { SceneClassifier, buildNarrationPrompt } from '../narration.js';
 import { createHistoryStore } from '../telegram/bot.js';
 import { metricsSnapshot } from '../metrics.js';
+import { mergeIntimacyConfig } from '../state/intimacy.js';
+import { PARAMS as INTIMACY_PARAMS } from '../params.js';
 
 /** 探针: 原样代理 target, 仅指定方法被替换 (替换实现里自己调用原方法)。 */
 function tap(target, overrides) {
@@ -92,11 +94,21 @@ async function main() {
     const stateLayer = new StateLayerAdapter(userId, companionId, null, {
       activityFn: persona?.life ? makeScheduleActivityFn(persona.life) : null,
       lifeConfig: persona?.life ?? null,
+      intimacyBaseline: persona?.config?.intimacyBaseline ?? null,
+      intimacyHardBoundaries: persona?.config?.intimacyHardBoundaries ?? null,
+      intimacyConfig: {
+        ...mergeIntimacyConfig(INTIMACY_PARAMS.intimacy, persona?.config?.intimacyDrive),
+        ...(persona?.config?.intimacyKnowledge ? { knowledge: persona.config.intimacyKnowledge } : {}),
+      },
+      intimacyKnowledge: persona?.config?.intimacyKnowledge ?? null,
+      outfitWardrobe: persona?.config?.outfitWardrobe ?? null,
     });
     const memory = new MemoryAdapter({
       userId, companionId, subjectName, companionName,
       life: stateLayer.stateLayer?.life ?? null,
       desire: stateLayer.stateLayer?.desire ?? null,
+      intimacy: stateLayer.stateLayer?.intimacy ?? null,
+      outfit: stateLayer.stateLayer?.outfit ?? null,
     });
     const relationship = new RelationshipAdapter(userId, companionId);
     const personaAdapter = new PersonaAdapter({ userId, companionId, subjectName: companionName });
@@ -210,7 +222,7 @@ async function main() {
     deps,
   });
 
-  const { text, parts, emotionLabel, behaviorPolicy: behavior } = await bot.reply(String(req.message ?? ''));
+  const { text, parts, emotionLabel, behaviorPolicy: behavior, intimacyPhase, debug: replyDebug } = await bot.reply(String(req.message ?? ''), { debug: debugMode });
   // Orchestrator 在消息渠道中会后台发图；runner 是短命进程，必须等这一张图
   // 生成并收进 payload 后再退出，否则子进程结束时图片会一起丢失。
   await bot._lastPhoto?.catch(() => {});
@@ -219,7 +231,15 @@ async function main() {
     // reply() 权威返回的 emotionLabel/behaviorPolicy 覆盖 relationship tap 里预算的那份 (避免并发顺序不定导致的偏差)
     if (emotionLabel) trace.emotionLabel = emotionLabel;
     if (behavior) trace.behaviorPolicy = behavior;
-    trace.promptParts.narration = buildNarrationPrompt(trace.sceneType, persona?.config?.narrationDirectives, trace.emotionLabel);
+    if (intimacyPhase != null) trace.intimacyPhase = intimacyPhase;
+    if (replyDebug?.stateSnapshot) trace.stateSnapshot = slim(replyDebug.stateSnapshot);
+    if (replyDebug?.intimacyPhase) trace.intimacyPhase = replyDebug.intimacyPhase;
+    trace.promptParts.narration = buildNarrationPrompt(
+      trace.sceneType,
+      persona?.config?.narrationDirectives,
+      trace.emotionLabel,
+      intimacyPhase ?? replyDebug?.intimacyPhase ?? null,
+    );
   }
   // 先把回复吐给 ui server (它只等第一行), 再留在后台把记忆提取/状态演变跑完
   const deliverableParts = Array.isArray(parts) && parts.length

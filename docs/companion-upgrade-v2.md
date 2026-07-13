@@ -2,7 +2,7 @@
 
 > 上一轮(M0~M9 / L1~L4 / A1 / K1 / M6±)把**机制骨架**建齐了:记忆会衰减重构、情绪会回落、有作息会生病、能看图听音说话发照片、有知识图谱。
 > 本文档回答下一个问题:**为什么机制都有了,她还是"不够像人"?** 诊断结论是三大缺失——**需求、行为、叙事**——并把它们落成可执行的开发计划。
-> 配套文档:[开发文档与路线图](DEVELOPMENT.md)、[情绪系统设计](emotion-design.md)、[编排器设计](orchestrator-design.md)、[外貌与生命状态设计](appearance-life-design.md)。
+> 配套文档:[开发文档与路线图](DEVELOPMENT.md)、[情绪系统设计](emotion-design.md)、[编排器设计](orchestrator-design.md)、[外貌与生命状态设计](appearance-life-design.md)、[性爱系统 I 线](intimacy-design.md)。
 
 ---
 
@@ -141,6 +141,7 @@ story.toPrompt(snapshot) -> string                       // "她最近的生活"
 | C1 | 纪念日日历 | prospective 加 `annual` 触发类型;第一次聊天/生日自动落 |
 | V1 | 她的声音和脸 | TTS 换音色克隆(CosyVoice/火山声音复刻);自拍走 A2 角色 LoRA 锁脸 |
 | E1 | 质量评测 | `examples/eval/` LLM-judge 场景集:冷落/吵架/和好/撒娇各 N 个剧本,打分维度=人设一致/情绪合理/记忆正确;CI 手动触发,守住"改一处坏三处" |
+| I1–I5 | 性爱/亲密系统 | 独立维度挂 StateLayer:唤起/张力/阶段/门控/偏好记忆/事后;详见 [intimacy-design.md](intimacy-design.md)。不与 desire 键位合并;身体焦点 L1 后期可选 |
 
 **当前实现进度**
 - D1/D2/D3、B1/B2/B3、S1/S2/S3、U1 已落地并进入本地测试链。

@@ -127,11 +127,13 @@ export class DefaultLLM {
     return { parts: await rewriteNarrationParts(parts, messages, { signal: opts.signal }) };
   }
 
-  /** 生成不展示的内心独白 (便宜模型)。 */
+  /** 生成不展示的内心独白 (便宜模型)。串行 await 在正式回复之前, 加 max_tokens 上限防止
+   *  模型话痨拖长这一步的生成时间——独白本来就只要一两句话 (见 PARAMS.orchestrator.monologueMaxTokens)。 */
   async think(context, opts = {}) {
     const res = await llm.chat.completions.create({
       model: opts.model ?? LLM_MODEL,
       temperature: opts.temperature ?? 0.7,
+      ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
       messages: [
         { role: 'system', content: '你在帮一个 AI 角色生成不会被用户看到的内心想法, 简短直接, 不要客套或解释。' },
         { role: 'user', content: context },

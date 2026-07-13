@@ -49,6 +49,8 @@
     "test:orchestrator": "node examples/orchestrator.test.js",
     "test:scheduler": "node examples/scheduler.test.js",
     "test:companion": "node examples/companion.test.js",
+    "companion:new": "node scripts/new-companion.js",
+    "companion:validate": "node scripts/validate-companion.js",
     "test:training": "node examples/training.test.js",
     "test:activity": "node examples/activity.test.js",
     "test:health": "node examples/health.test.js",
@@ -62,6 +64,13 @@
     "test:schema": "node examples/schema.test.js",
     "test:knowledge": "node examples/knowledge.test.js",
     "test:speech": "node examples/speech.test.js",
+    "test:intimacy": "node examples/intimacy.test.js",
+    "test:intimacy-knowledge": "node examples/intimacy-knowledge.test.js",
+    "test:outfit": "node examples/outfit.test.js",
+    "test:outfit-cards": "node examples/outfit-cards.test.js",
+    "test:album": "node examples/album.test.js",
+    "test:card-assets": "node examples/card-assets-db.test.js",
+    "test:r2": "node examples/r2.test.js",
     "telegram": "node src/telegram/bot.js",
     "feishu": "node src/feishu/bot.js",
     "discord": "node src/discord/bot.js",
@@ -70,7 +79,7 @@
     "ui:build": "vite build --config src/ui/vite.config.js",
     "test:ui": "node examples/ui.test.js",
     "inspect": "node examples/inspect.js",
-    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/emotion-label.test.js && node examples/behavior.test.js && node examples/desire.test.js && node examples/story.test.js && node examples/profile.test.js && node examples/goals.test.js && node examples/state-layer.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/safety.test.js && node examples/confidence.test.js && node examples/store.test.js && node examples/scenario.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js && node examples/companion.test.js && node examples/training.test.js && node examples/activity.test.js && node examples/health.test.js && node examples/appearance.test.js && node examples/queue.test.js && node examples/telegram.test.js && node examples/channels.test.js && node examples/narration.test.js && node examples/runtime.test.js && node examples/weather.test.js && node examples/schema.test.js && node examples/ui.test.js && node examples/knowledge.test.js && node examples/speech.test.js"
+    "test": "node examples/logic.test.js && node examples/emotion.test.js && node examples/emotion-label.test.js && node examples/behavior.test.js && node examples/desire.test.js && node examples/intimacy.test.js && node examples/intimacy-knowledge.test.js && node examples/outfit.test.js && node examples/outfit-cards.test.js && node examples/album.test.js && node examples/card-assets-db.test.js && node examples/r2.test.js && node examples/story.test.js && node examples/profile.test.js && node examples/goals.test.js && node examples/state-layer.test.js && node examples/ontology.test.js && node examples/state.test.js && node examples/engine.test.js && node examples/reconsolidate.test.js && node examples/relationship.test.js && node examples/prospective.test.js && node examples/modal.test.js && node examples/dedup.test.js && node examples/safety.test.js && node examples/confidence.test.js && node examples/store.test.js && node examples/scenario.test.js && node examples/orchestrator.test.js && node examples/scheduler.test.js && node examples/companion.test.js && node examples/training.test.js && node examples/activity.test.js && node examples/health.test.js && node examples/appearance.test.js && node examples/queue.test.js && node examples/telegram.test.js && node examples/channels.test.js && node examples/narration.test.js && node examples/runtime.test.js && node examples/weather.test.js && node examples/schema.test.js && node examples/ui.test.js && node examples/knowledge.test.js && node examples/speech.test.js"
   },
   "overrides": {
     "axios": "^1.16.0",
@@ -79,6 +88,8 @@
     }
   },
   "dependencies": {
+    "@fontsource/archivo": "^5.2.8",
+    "@fontsource/noto-sans-sc": "^5.2.9",
     "@larksuiteoapi/node-sdk": "^1.70.0",
     "@supabase/supabase-js": "^2.45.0",
     "discord.js": "^14.26.5",

@@ -9,5 +9,5 @@ export default defineConfig({
   root: path.join(here, 'react'),
   plugins: [react()],
   build: { outDir: path.join(here, 'dist'), emptyOutDir: true },
-  server: { host: '127.0.0.1', port: 5173, proxy: { '/api': 'http://127.0.0.1:8788' } },
+  server: { host: '127.0.0.1', port: 5173, proxy: { '/api': `http://127.0.0.1:${process.env.UI_PORT || 8787}` } },
 });

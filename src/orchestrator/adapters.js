@@ -41,10 +41,19 @@ export function formatRelationshipPrompt(state) {
 export class MemoryAdapter {
   // life: 与 StateLayerAdapter 共享的同一个 LifeDimension。observe 时由 Memory 统一演变 life
   // 并把"生病/被照顾"对情绪/关系的耦合增量并进 affect 写入 (L4, 避免双写 life_state)。
-  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', life = null, desire = null }) {
+  // intimacy: 与 StateLayer 共享 IntimacyDimension (I 线)。
+  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', life = null, desire = null, intimacy = null, outfit = null }) {
     this._mem = new Memory({ userId, companionId, subjectName, companionName });
     this._life = life;
     this._desire = desire;
+    this._intimacy = intimacy;
+    this._outfit = outfit;
+    this._lastSceneType = null;
+  }
+
+  /** 编排器在 reply 后把本轮场景传给 observe，供亲密演变与提取加权。 */
+  setSceneType(sceneType) {
+    this._lastSceneType = sceneType ?? null;
   }
 
   /** 输入当前用户消息, 返回可直接注入 system prompt 的记忆块 (含 K1 知识图谱事实)。 */
@@ -61,7 +70,15 @@ export class MemoryAdapter {
    * useLLM: true —— 让 M1 的状态机用 LLM 增量; life 注入后, 身心耦合增量在这次 affect 写入里一起落库。
    */
   async observe(turns, opts = {}) {
-    await this._mem.observe(turns, { useLLM: true, life: this._life, desire: this._desire, ...opts });
+    await this._mem.observe(turns, {
+      useLLM: true,
+      life: this._life,
+      desire: this._desire,
+      intimacy: this._intimacy,
+      outfit: this._outfit,
+      sceneType: opts.sceneType ?? this._lastSceneType,
+      ...opts,
+    });
   }
 
   // ---- 维护期委托 (给后台调度循环用; 没对话时也让她的内在演变/沉淀) ----
@@ -100,16 +117,33 @@ export class MemoryAdapter {
 
 /** 状态层门面适配: 包统一 StateLayer, 编排器不再直接接 emotion。 */
 export class StateLayerAdapter {
-  constructor(userId, companionId = 'default', stateLayer = null, { activityFn, lifeConfig } = {}) {
+  constructor(
+    userId,
+    companionId = 'default',
+    stateLayer = null,
+    { activityFn, lifeConfig, intimacyBaseline, intimacyHardBoundaries, intimacyConfig, intimacyKnowledge, outfitWardrobe } = {}
+  ) {
     // 角色专属作息 activityFn / 身体参数 lifeConfig 经此注入到内部 StateLayer→LifeDimension (没传则用通用默认)。
-    this.stateLayer = stateLayer ?? new StateLayer({ userId, companionId, activityFn, lifeConfig });
+    this.stateLayer =
+      stateLayer ??
+      new StateLayer({
+        userId,
+        companionId,
+        activityFn,
+        lifeConfig,
+        intimacyBaseline,
+        intimacyHardBoundaries,
+        intimacyConfig,
+        intimacyKnowledge: intimacyKnowledge ?? intimacyConfig?.knowledge ?? null,
+        outfitWardrobe,
+      });
   }
 
   async snapshot() {
     return this.stateLayer.snapshot();
   }
 
-  /** 情绪/关系/life/需求均由 memory.observe 的同一条链路演变，避免重复写。 */
+  /** 情绪/关系/life/需求/亲密均由 memory.observe 的同一条链路演变，避免重复写。 */
   async evolve() {}
 
   /** L3/L4: 无对话时也推进她的一天 (作息活动派生 + 自动生病判定), 固化进库。 */
@@ -117,8 +151,8 @@ export class StateLayerAdapter {
     if (typeof this.stateLayer.life?.tickActivity === 'function') return this.stateLayer.life.tickActivity();
   }
 
-  toPrompt(snapshot) {
-    return this.stateLayer.toPrompt(snapshot);
+  toPrompt(snapshot, ctx = {}) {
+    return this.stateLayer.toPrompt(snapshot, ctx);
   }
 
   samplingHints(snapshot) {

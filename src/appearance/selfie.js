@@ -91,7 +91,18 @@ export function buildSelfiePrompt(snapshot, appearance = '', now = Date.now()) {
   const hour = new Date(now).getHours();
   if (hour >= 21 || hour < 7) {
     tags.push('home');
-    mods.push('在家、居家穿着、灯光柔和');
+    mods.push('在家、灯光柔和');
+  }
+  // O 线穿搭: 优先用当前穿着描述
+  const outfitSummary = snapshot?.outfit?.current?.summary;
+  if (outfitSummary) {
+    tags.push('outfit', snapshot.outfit.context || 'dressed');
+    mods.push(outfitSummary);
+    const pieces = snapshot.outfit.current?.pieces ?? {};
+    if (pieces.hair) mods.push(pieces.hair);
+    if (pieces.makeup) mods.push(pieces.makeup);
+  } else if (hour >= 21 || hour < 7) {
+    mods.push('居家穿着');
   }
   if (tags.length === 0) tags.push('default');
   tags.unshift('selfie'); // 区分自拍 vs 随手拍, 给图库命中分桶

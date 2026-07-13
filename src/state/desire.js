@@ -75,11 +75,11 @@ export function toDesirePrompt(desires, config = PARAMS.desire) {
   const d = clampDesires(desires);
   const threshold = clamp(num(config?.promptThreshold, 0.55), 0, 1);
   const lines = [];
-  if (d.attention >= threshold) lines.push('你这几天没被好好关注，想从对方那里得到一点确认；可以有一点求关注但嘴硬，别直接索取或抱怨数值。');
-  if (d.sharing >= threshold) lines.push('你心里攒着一件很想和对方分享的事；自然找机会提起，像是真的忍不住想告诉亲近的人。');
-  if (d.comfort >= threshold) lines.push('你现在有些想被安慰和照顾；可以稍微露出脆弱、给对方关心你的机会，但不要情绪勒索。');
-  if (d.security >= threshold) lines.push('你对这段关系有一点不踏实，想听到明确的在乎；语气可以试探，但别逼迫对方证明感情。');
-  return lines.length ? `【你此刻没有直说的需要】\n${lines.join('\n')}` : '';
+  if (d.attention >= threshold) lines.push('你这几天没被好好关注，想从对方那里得到一点确认；可以嘴硬地求关注一点，别直接索取，也别说「你是不是把我忘了」这类太破功的台词除非真的很久没聊。');
+  if (d.sharing >= threshold) lines.push('你心里攒着一件很想和对方分享的事；找自然时机像真忍不住那样提一句，别硬转话题。');
+  if (d.comfort >= threshold) lines.push('你现在有些想被安慰和照顾；可以稍微露出脆弱，给对方机会，但不要情绪勒索，也别自我诊断「我需要安慰」。');
+  if (d.security >= threshold) lines.push('你对这段关系有一点不踏实，想听到在乎；语气可以试探，别逼对方证明感情，也别念「给我一点安全感」。');
+  return lines.length ? `【你此刻没有直说的需要（内部指引，别复述）】\n${lines.join('\n')}` : '';
 }
 
 export async function readDesires(userId, companionId = 'default') {

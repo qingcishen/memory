@@ -232,6 +232,21 @@ export class ProactiveScheduler {
       ? await this.orchestrator.relationship.current().catch(() => null)
       : null;
     const urgency = desireUrgency(stateSnapshot?.desires);
+    // I5: 亲密紧迫度（仅冷却系数与语气；仍受 quietHours / 每日上限硬约束）
+    let intimacyUrg = { urgent: false, cooldownFactor: 1, tone: '', kind: null };
+    if (PARAMS.intimacy?.enabled !== false && PARAMS.intimacy?.proactive?.enabled !== false) {
+      try {
+        const { intimacyUrgency } = await import('../state/intimacy.js');
+        intimacyUrg = intimacyUrgency(stateSnapshot?.intimacy);
+        // 关系门控：未和好/高 tension 时不因亲密张力主动暧昧
+        const rel = relState?.relationship ?? relState ?? {};
+        if (intimacyUrg.urgent && (Number(rel.tension) >= 0.7 || Number(rel.repair_debt) >= 0.55)) {
+          intimacyUrg = { urgent: false, cooldownFactor: 1, tone: '', kind: null };
+        }
+      } catch {
+        intimacyUrg = { urgent: false, cooldownFactor: 1, tone: '', kind: null };
+      }
+    }
     const storyBeat = urgency.urgent && urgency.need === 'sharing' && typeof this.orchestrator.story?.pendingShare === 'function'
       ? await this.orchestrator.story.pendingShare(now).catch(() => null)
       : null;
@@ -239,9 +254,11 @@ export class ProactiveScheduler {
     const behavior = behaviorPolicy(emotionLabel, { relationship: relState?.relationship ?? relState ?? {} });
     const basePolicy = { ...this.policy, ...(ctx.policy ?? {}) };
     const behaviorCooldownFactor = clamp(1 - behavior.proactiveBias, 0.5, 1.5);
+    const desireFactor = urgency.urgent ? urgency.cooldownFactor : 1;
+    const intimacyFactor = intimacyUrg.urgent ? intimacyUrg.cooldownFactor : 1;
     const effectivePolicy = {
       ...basePolicy,
-      minIntervalMinutes: basePolicy.minIntervalMinutes * (urgency.urgent ? urgency.cooldownFactor : 1) * behaviorCooldownFactor,
+      minIntervalMinutes: basePolicy.minIntervalMinutes * desireFactor * intimacyFactor * behaviorCooldownFactor,
     };
 
     const allowed = canSendProactive(state, now, effectivePolicy);
@@ -258,18 +275,41 @@ export class ProactiveScheduler {
     const desireReason = storyBeat
       ? `她今天刚经历了这件事，很想第一时间告诉对方：${storyBeat.title}——${storyBeat.content}`
       : urgency.urgent ? formatDesireReason(urgency) : null;
-    const reason = ctx.reason ?? formatDueReason(dueItems) ?? desireReason ?? bedtimeTier?.reason ?? silenceTier?.reason ?? this.defaultReason;
+    const intimacyReason = intimacyUrg.urgent
+      ? intimacyUrg.kind === 'tension'
+        ? intimacyUrg.canInitiate
+          ? '你想要他了，主动找他亲近；可以黏、可以半命令式把人拽近、暗示想亲密，第一句仍像真人说话'
+          : '心里有一点亲近的渴望，想自然地靠近对方，可以撩一点'
+        : '最近少了一些贴近，想被陪着，语气轻、不抱怨'
+      : null;
+    const reason =
+      ctx.reason ??
+      formatDueReason(dueItems) ??
+      desireReason ??
+      intimacyReason ??
+      bedtimeTier?.reason ??
+      silenceTier?.reason ??
+      this.defaultReason;
     const usedDesireReason = Boolean(desireReason && reason === desireReason);
+    const usedIntimacyReason = Boolean(intimacyReason && reason === intimacyReason);
     const usedStoryBeat = Boolean(storyBeat && usedDesireReason);
     // 新版接入有需求快照时，不再让纯 cron 在无任何动机时凭空发消息。
-    if (supportsDesires && !ctx.reason && dueItems.length === 0 && !desireReason && !bedtimeTier && !silenceTier) {
+    if (
+      supportsDesires &&
+      !ctx.reason &&
+      dueItems.length === 0 &&
+      !desireReason &&
+      !intimacyReason &&
+      !bedtimeTier &&
+      !silenceTier
+    ) {
       return { sent: false, reason: 'no_trigger' };
     }
     const message = await this.orchestrator.proactiveTick({
       ...ctx,
       reason,
       query: ctx.query ?? (usedStoryBeat ? storyBeat.content : undefined),
-      style: ctx.style ?? (usedDesireReason ? urgency.tone : undefined),
+      style: ctx.style ?? (usedDesireReason ? urgency.tone : usedIntimacyReason ? intimacyUrg.tone : undefined),
       shouldSend: true,
     });
     if (!message) return { sent: false, reason: 'orchestrator_skipped' };

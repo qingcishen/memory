@@ -114,13 +114,13 @@ export function toLifePrompt(state, now = Date.now()) {
   const parts = [`你现在${energy}`];
   if (satiety) parts.push(satiety);
   if (health) parts.push(health);
-  let line = `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的身体状态。`;
+  let line = `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的身体状态（禁止「我现在没精神/很有兴致」自我播报）。`;
   // L4: 生病态(sick_until 未到)措辞升级, 盖过普通的"状态一般"。
   if (isSick(s, now)) {
-    line = '你现在生病了, 有点难受、没力气, 说话也提不起劲、容易撒娇想被照顾。让它自然影响语气和话量, 别报数值。';
+    line = '你现在生病了, 有点难受、没力气, 话会少一点、想被照顾；用语气和反应表现即可, 别报数值, 也别反复强调「我病了」。';
   }
   // L3: 自然带上"此刻在做什么"(她有自己的一天, 可顺口提一句), 别报数值。
-  if (s.current_activity) line += `\n你这会儿${s.current_activity}, 聊起来可以自然带一句你在忙的事, 但别硬凑。`;
+  if (s.current_activity) line += `\n你这会儿大概在${s.current_activity}；聊到相关时可以顺口提一句, 别每轮硬报行程。`;
   return line;
 }
 

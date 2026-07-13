@@ -40,10 +40,10 @@ export function behaviorPolicy(label = '平静', state = {}, params = PARAMS.beh
 
 export function behaviorToPrompt(policy) {
   if (!policy) return '';
-  if (policy.repairStep) return '【本轮行为】上一轮你看到了但没有回复；这一轮必须给对方一个温和台阶并正常回应，不能再次沉默。';
-  if (policy.lengthHint === 'terse') return '【本轮话量】话少一点，优先只说一两句短的；别解释自己为什么话少。';
-  if (policy.lengthHint === 'chatty') return '【本轮话量】兴致比较高，可以自然多说几句或分成几条，仍要像即时聊天。';
-  return '【本轮话量】保持自然的日常聊天长度。';
+  if (policy.repairStep) return '【本轮行为】上一轮你看到了但没有回复；这一轮给对方一个温和台阶并正常回应，别再冷处理，也别解释「刚才为什么不回」。';
+  if (policy.lengthHint === 'terse') return '【本轮话量】话少一点、收着点，像心情一般时随口回；可以短，但要像一句完整的人话，不要电报体三连，也别解释自己为什么话少。';
+  if (policy.lengthHint === 'chatty') return '【本轮话量】兴致比较高，可以自然多说几句或偶尔拆成两条，仍要像即时聊天，别写成小作文。';
+  return '【本轮话量】日常聊天长度就好，别刻意挤牙膏，也别突然长篇。';
 }
 
 export function normalizeBehaviorState(state = {}, now = Date.now()) {

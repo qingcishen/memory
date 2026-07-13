@@ -155,6 +155,14 @@ alter table jobs add column if not exists locked_by text;
 -- add primary key 非幂等, 用守卫保证整段脚本可重复执行。
 alter table affective_state add column if not exists companion_id text not null default 'default';
 alter table affective_state add column if not exists desires jsonb not null default '{"attention":0,"sharing":0,"comfort":0,"security":0,"updated_at":null}'::jsonb;
+-- I 线亲密状态: 唤起/张力/阶段/同意等, 见 docs/intimacy-design.md; 独立 updated_at 锚在 jsonb 内
+alter table affective_state add column if not exists intimacy jsonb not null default '{
+  "arousal":0,"engagement":0,"aftercare_need":0,"sexual_tension":0,
+  "sexual_openness":0.35,"satisfaction":0.5,"scene_phase":"none",
+  "last_intimate_at":null,
+  "consent":{"active":false,"pace":"normal","stop_signal":false},
+  "body_focus":null,"updated_at":null
+}'::jsonb;
 alter table affective_state drop constraint if exists affective_state_pkey;
 do $$
 begin
@@ -189,6 +197,10 @@ end $$;
 -- P2 身体专属参数: 连续熬夜天数 + 最近一次熬夜的日期 (见 src/state/health.js updateLateNightStreak)。
 alter table life_state add column if not exists late_night_streak int not null default 0;
 alter table life_state add column if not exists last_late_night_day text;
+-- O 线穿搭: 当前穿着 + 情境，见 src/state/outfit.js / companions/*/outfit.json
+alter table life_state add column if not exists outfit jsonb not null default '{
+  "current":null,"context":"home","changed_at":null,"updated_at":null
+}'::jsonb;
 
 -- 状态历史 (feature/state-history): affective_state 只存"当下", 这张表存"轨迹"。
 -- 关系叙事(M4)与情感锚审计要看演变 —— 状态有显著变化时追加一条快照 (见 src/state/affect.js)。
@@ -315,6 +327,45 @@ create table if not exists appearance_assets (
 );
 create index if not exists appearance_assets_idx on appearance_assets (user_id, companion_id, created_at desc);
 create index if not exists appearance_assets_tags_idx on appearance_assets using gin (tags);
+
+-- ------------------------------------------------------------
+--  O 线 / 相册：卡片提示词 + 成片（存库，不落本机）
+--  详见 sql/card-assets.sql；collection = outfit | album
+-- ------------------------------------------------------------
+create table if not exists companion_card_assets (
+  id            uuid primary key default gen_random_uuid(),
+  companion_id  text not null default 'default',
+  collection    text not null check (collection in ('outfit', 'album')),
+  card_id       text not null,
+  prompt        text,
+  mime          text,
+  url           text,
+  r2_key        text,
+  image_base64  text,
+  meta          jsonb not null default '{}'::jsonb,
+  updated_at    timestamptz not null default now(),
+  created_at    timestamptz not null default now(),
+  unique (companion_id, collection, card_id)
+);
+alter table companion_card_assets add column if not exists url text;
+alter table companion_card_assets add column if not exists r2_key text;
+create index if not exists companion_card_assets_idx
+  on companion_card_assets (companion_id, collection);
+
+create table if not exists album_custom_entries (
+  id            text not null,
+  companion_id  text not null default 'default',
+  title         text not null,
+  subtitle      text,
+  summary       text,
+  context       text,
+  style         text,
+  prompt        text,
+  tags          text[] not null default '{}',
+  created_at    timestamptz not null default now(),
+  updated_at    timestamptz not null default now(),
+  primary key (companion_id, id)
+);
 
 -- ------------------------------------------------------------
 --  M5 扛量 · 持久化任务队列 (见 src/queue/jobs.js)
@@ -526,7 +577,8 @@ begin
   foreach table_name in array array[
     'memories','knowledge_entities','knowledge_relations','affective_state','life_state',
     'affective_state_history','prospective','proactive_rate_limits','behavior_state','story_lines',
-    'companions','appearance_assets','jobs','chat_history','channel_events','world_state'
+    'companions','appearance_assets','companion_card_assets','album_custom_entries',
+    'jobs','chat_history','channel_events','world_state'
   ] loop
     if to_regclass('public.' || table_name) is not null then
       execute format('alter table public.%I enable row level security', table_name);

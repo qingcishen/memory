@@ -6,11 +6,12 @@ import {
   normalizeCompanionProfile,
   normalizeCompanionConfig,
   safeCompanionConfig,
-  rowToConfig,
-  configToRow,
   personaJsonToConfig,
   mergePersonaSections,
   loadPersonaConfig,
+  loadPersonaConfigOrThrow,
+  configToRow,
+  rowToConfig,
 } from '../src/companion.js';
 import fsp from 'node:fs/promises';
 import os from 'node:os';
@@ -101,6 +102,34 @@ console.log('CompanionConfig zod 校验');
     menstrual: { enabled: true, cycleLengthDays: 28, periodLengthDays: 5 },
   });
   ok('角色档案支持出生/昵称/家庭/生理期字段', profile.nicknames[0] === '清清' && profile.family[0].relation === '父亲' && profile.menstrual.enabled === true);
+}
+
+console.log('personaJsonToConfig: 人设分两层 —— background/values/likes/dislikes 走 seedFacts 检索层, 不再无条件塞进 personality 散文, 也不再重复注入');
+{
+  const { config } = personaJsonToConfig({
+    meta: { display_name: '阿冷' },
+    persona: {
+      name: '阿冷',
+      personality: '冷淡但嘴硬',
+      background: '两人网恋奔现',
+      values: '经济独立, 不喜欢被哄',
+      likes: ['被叫宝宝'],
+      dislikes: ['被当小孩哄'],
+    },
+  });
+  ok('personality 只保留核心层 (personality 原文 + 称呼), 不含背景/处世/喜欢/不喜欢标签',
+    config.personality === '冷淡但嘴硬' &&
+    !config.personality.includes('【背景】') &&
+    !config.personality.includes('【处世】') &&
+    !config.personality.includes('【喜欢】') &&
+    !config.personality.includes('【不喜欢】'));
+  const facts = config.seedFacts.map((f) => (typeof f === 'string' ? f : f.fact_core));
+  ok('background 进 seedFacts (且只进这一处, personality 里已确认没有)', facts.includes('两人网恋奔现'));
+  ok('values 进 seedFacts', facts.includes('经济独立, 不喜欢被哄'));
+  ok('likes 每条拆成独立 seedFact', facts.some((f) => f.includes('被叫宝宝')));
+  ok('dislikes 每条拆成独立 seedFact', facts.some((f) => f.includes('被当小孩哄')));
+  const backgroundFact = config.seedFacts.find((f) => typeof f === 'object' && f.fact_core === '两人网恋奔现');
+  ok('background fact 重要性沿用原先的 8', backgroundFact?.importance === 8);
 }
 
 console.log('personaJsonToConfig: 顶层 knowledge 数组映射到 knowledgeBank (M9 知识滴灌库)');
@@ -282,6 +311,30 @@ console.log('loadPersonaConfig (目录式人设优先于同名单文件)');
   ok('没有目录也没有文件 -> null', single === null);
   await fsp.writeFile(nodePath.join(dir, 'solo.json'), JSON.stringify({ persona: { name: '单文件' } }));
   ok('纯单文件仍兼容', loadPersonaConfig(nodePath.join(dir, 'solo.json')).config.name === '单文件');
+
+  await fsp.rm(dir, { recursive: true, force: true });
+}
+
+console.log('loadPersonaConfig 不再静默吞掉损坏文件的错误 (之前 catch 直接吃掉, 分片写错逗号会悄悄退化成空人设)');
+{
+  const dir = await fsp.mkdtemp(nodePath.join(os.tmpdir(), 'persona-broken-'));
+  await fsp.writeFile(nodePath.join(dir, 'broken.json'), '{ 这不是合法 json');
+
+  let threw = false;
+  try {
+    loadPersonaConfigOrThrow(nodePath.join(dir, 'broken.json'));
+  } catch {
+    threw = true;
+  }
+  ok('loadPersonaConfigOrThrow 对损坏 JSON 抛错 (供校验脚本/调用方感知)', threw);
+
+  const origError = console.error;
+  const logs = [];
+  console.error = (...args) => logs.push(args.join(' '));
+  const result = loadPersonaConfig(nodePath.join(dir, 'broken.json'));
+  console.error = origError;
+  ok('loadPersonaConfig 容错版仍返回 null (不抛, 不炸调用方)', result === null);
+  ok('但会打印清晰的错误日志, 不再静默', logs.some((l) => l.includes('broken.json')));
 
   await fsp.rm(dir, { recursive: true, force: true });
 }

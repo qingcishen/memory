@@ -57,7 +57,7 @@ export function toEmotionPrompt(state) {
   const warmth = s.warmth < 0.35 ? '对对方会稍微收着一点' : s.warmth > 0.72 ? '语气可以更柔软亲近' : '';
   const parts = [`你现在${mood}`];
   if (warmth) parts.push(warmth);
-  return `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的情绪状态。`;
+  return `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的情绪状态（禁止说「我现在心情不错/有点低落」这类自我播报）。`;
 }
 
 // ---- helpers (纯) ----

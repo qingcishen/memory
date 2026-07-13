@@ -16,7 +16,7 @@ const dismissed = settleDesiresFromTurns({ attention: 0.4, security: 0.2 }, [{ r
 ok('敷衍回应加剧 attention/security', dismissed.attention > 0.4 && dismissed.security > 0.2);
 ok('低于阈值时不注入需求 prompt', toDesirePrompt({ attention: 0.4 }) === '');
 const needPrompt = toDesirePrompt({ attention: 0.8, comfort: 0.7 });
-ok('高需求转成表现指引且不暴露数值', needPrompt.includes('求关注但嘴硬') && needPrompt.includes('想被安慰') && !needPrompt.includes('0.8'));
+ok('高需求转成表现指引且不暴露数值', needPrompt.includes('求关注') && needPrompt.includes('安慰') && !needPrompt.includes('0.8'));
 
 console.log('DesireDimension lazy evolution/persistence');
 {

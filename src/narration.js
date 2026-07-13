@@ -28,6 +28,21 @@ export const NARRATION_DIRECTIVES = {
     '【性爱/亲密场景·硬性规则】只要场景已经是性爱/亲密动作（对方描述了具体动作，或你们已经调情确认要做），这一轮的输出里必须包含至少一个 narration part，不能只有 dialogue part——这是本条规则最重要的一句，任何时候不能违反。错误示范（禁止）: parts 里只有 dialogue，没有 narration。正确示范: dialogue part 的 text 是"……坐好"，同时有一个 narration part 写她被这一下顶得腰软了，手撑住了对方的肩膀。narration part 要具体、比 dialogue part 长: 身体反应、动作细节；narration 是全知视角，她和对方两边的动作反应都要写，不要只写她一边。调情但还没正式开始时 narration 可以简短，但同样不能完全没有——也就是说这个场景下 narration part 永远不是可选项。',
 };
 
+/** I2: intimacy.scene_phase → 旁白细分；缺省回退 sceneType 指令。 */
+export const PHASE_NARRATION_DIRECTIVES = {
+  none: '',
+  flirting:
+    '【旁白提示·暧昧试探】若出 narration part: 写神态、距离、呼吸、小动作（脸红、凑近、手指相触），点到即可，不要写具体性爱动作或高潮。不是每轮都必须有 narration。',
+  foreplay:
+    '【旁白提示·前戏/亲密推进】建议包含 narration part: 触感、身体反应、节奏与情绪，中等长度；两边都可写。尚未到收尾，不要无故跳到事后。',
+  peak:
+    '【性爱场景·高峰·硬性规则】输出必须包含至少一个 narration part，不能只有 dialogue。narration 要具体、比 dialogue 长：身体反应、动作细节；全知视角，双方都要写。错误示范: 只有 dialogue。',
+  aftercare:
+    '【旁白提示·事后余韵】若出 narration part: 写拥抱、呼吸、余韵、想贴着的安静，少写技巧堆砌；禁止无缝续车推进正戏。dialogue 可以短、软。',
+  cooldown:
+    '【旁白提示·冷却】回到日常黏的过渡；不要再写正戏动作。旁白可有可无，点到神态即可。',
+};
+
 /**
  * 场景基调之上的情绪细节层 (B 行为策略线的 inferEmotionLabel 产出)。
  * 只覆盖"场景本身猜不出、但情绪标签能猜出"的那部分微妙意味——委屈/吃醋/撒娇/心疼
@@ -49,10 +64,25 @@ export const EMOTION_NUANCE = {
  * emotionLabel: B 线的离散情绪推断结果 (见 src/state/emotionLabel.js), 只在
  * 场景本身已经决定要写旁白(base 非空)时才叠加情绪细节——不会让纯日常聊天
  * 单纯因为"有点委屈"就被迫多写一条 narration part, 维持"不是每轮都需要"的原则。
+ * intimacyPhase: I 线 scene_phase；在 romantic/intimate 或 phase≠none 时优先用阶段旁白。
  */
-export function buildNarrationPrompt(sceneType, overrides = null, emotionLabel = null) {
-  const o = overrides?.[sceneType];
-  const base = typeof o === 'string' && o.trim() ? o : NARRATION_DIRECTIVES[sceneType] ?? '';
+export function buildNarrationPrompt(sceneType, overrides = null, emotionLabel = null, intimacyPhase = null) {
+  const phase = intimacyPhase && PHASE_NARRATION_DIRECTIVES[intimacyPhase] !== undefined ? intimacyPhase : null;
+  let base = '';
+  if (phase && phase !== 'none') {
+    // 人设可按 phase 键覆盖，也可仍用 intimate/romantic 场景键
+    const phaseOverride = overrides?.[phase];
+    const sceneOverride = overrides?.[sceneType];
+    if (typeof phaseOverride === 'string' && phaseOverride.trim()) base = phaseOverride;
+    else if (PHASE_NARRATION_DIRECTIVES[phase]) base = PHASE_NARRATION_DIRECTIVES[phase];
+    else if (typeof sceneOverride === 'string' && sceneOverride.trim()) base = sceneOverride;
+    else base = NARRATION_DIRECTIVES[sceneType] ?? '';
+  } else {
+    const o = overrides?.[sceneType];
+    base = typeof o === 'string' && o.trim() ? o : NARRATION_DIRECTIVES[sceneType] ?? '';
+  }
+  // peak 硬规则：若阶段是 peak 但 base 被设成空，回退 peak 指令
+  if (phase === 'peak' && !base.trim()) base = PHASE_NARRATION_DIRECTIVES.peak;
   const nuance = base && EMOTION_NUANCE[emotionLabel];
   return nuance ? `${base}\n【情绪基调】${nuance}` : base;
 }

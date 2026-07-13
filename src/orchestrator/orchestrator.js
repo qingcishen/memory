@@ -17,6 +17,8 @@ import { inferEmotionLabel } from '../state/emotionLabel.js';
 import { behaviorPolicy, behaviorToPrompt } from '../state/behavior.js';
 import { StoryEngine } from '../story/index.js';
 import { buildConversationGoals, goalsToPrompt } from './goals.js';
+import { prepareIntimacyForTurn, defaultIntimacy, mergeIntimacyConfig } from '../state/intimacy.js';
+import { normalizeWardrobe } from '../state/outfit.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
@@ -46,12 +48,37 @@ export class Orchestrator {
       ...options,
     };
 
-    // 先建状态层, 再把它内部的 LifeDimension 注入记忆适配器 —— 让 memory.observe 与状态层
-    // 共用同一个 life 实例 (L4: 生病/被照顾由 memory.observe 统一演变, 避免双写 life_state)。
-    this.stateLayer = deps.stateLayer ?? new StateLayerAdapter(userId, companionId, null, { activityFn, lifeConfig });
+    // 先建状态层, 再把它内部的 LifeDimension / IntimacyDimension 注入记忆适配器 ——
+    // 让 memory.observe 与状态层共用同一实例 (L4 身心耦合 + I 线亲密演变, 避免双写)。
+    this.stateLayer =
+      deps.stateLayer ??
+      new StateLayerAdapter(userId, companionId, null, {
+        activityFn,
+        lifeConfig,
+        intimacyBaseline: config?.intimacyBaseline ?? null,
+        intimacyHardBoundaries: config?.intimacyHardBoundaries ?? null,
+        intimacyConfig: {
+          ...mergeIntimacyConfig(PARAMS.intimacy, config?.intimacyDrive),
+          ...(config?.intimacyKnowledge ? { knowledge: config.intimacyKnowledge } : {}),
+        },
+        outfitWardrobe: config?.outfitWardrobe ?? null,
+      });
     const sharedLife = this.stateLayer?.stateLayer?.life ?? null;
     const sharedDesire = this.stateLayer?.stateLayer?.desire ?? null;
-    this.memory = deps.memory ?? new MemoryAdapter({ userId, companionId, subjectName, companionName, life: sharedLife, desire: sharedDesire });
+    const sharedIntimacy = this.stateLayer?.stateLayer?.intimacy ?? null;
+    const sharedOutfit = this.stateLayer?.stateLayer?.outfit ?? null;
+    this.memory =
+      deps.memory ??
+      new MemoryAdapter({
+        userId,
+        companionId,
+        subjectName,
+        companionName,
+        life: sharedLife,
+        desire: sharedDesire,
+        intimacy: sharedIntimacy,
+        outfit: sharedOutfit,
+      });
     this.relationship = deps.relationship ?? new RelationshipAdapter(userId, companionId);
     this.persona = deps.persona ?? new PersonaAdapter({ userId, companionId, subjectName: companionName });
     this.llm = deps.llm ?? new DefaultLLM();
@@ -104,6 +131,27 @@ export class Orchestrator {
         // 只在这个 (user, companion) 还没有任何 affective_state 记录时生效一次, 见 RelationshipAdapter.seedIfNew。
         if (typeof this.relationship?.seedIfNew === 'function') {
           await this.relationship.seedIfNew(this._config);
+        }
+        // I 线: 配置加载后把人设基线/硬边界/欲望 drive 挂到共享 IntimacyDimension
+        const intimacyDim = this.stateLayer?.stateLayer?.intimacy;
+        if (intimacyDim && this._config) {
+          if (this._config.intimacyBaseline) intimacyDim.baseline = this._config.intimacyBaseline;
+          if (this._config.intimacyHardBoundaries?.length) intimacyDim.hardBoundaries = this._config.intimacyHardBoundaries;
+          if (this._config.intimacyDrive || this._config.intimacyKnowledge) {
+            intimacyDim.config = {
+              ...mergeIntimacyConfig(PARAMS.intimacy, this._config.intimacyDrive),
+              ...(this._config.intimacyKnowledge ? { knowledge: this._config.intimacyKnowledge } : {}),
+            };
+            if (this._config.intimacyKnowledge) intimacyDim.knowledge = this._config.intimacyKnowledge;
+          }
+          if (this._config.intimacyEnabled === false && intimacyDim.config) {
+            intimacyDim.config = { ...intimacyDim.config, enabled: false };
+          }
+        }
+        // O 线: 衣橱目录挂到 OutfitDimension
+        const outfitDim = this.stateLayer?.stateLayer?.outfit;
+        if (outfitDim && this._config?.outfitWardrobe) {
+          outfitDim.wardrobe = normalizeWardrobe(this._config.outfitWardrobe);
         }
         if (!this._storyProvided && (this._config.storyCast?.length || this._config.storylines?.length)) {
           this.story = new StoryEngine({
@@ -205,8 +253,32 @@ export class Orchestrator {
       [...this.history.slice(-4), { role: 'user', content: userMessage }]
     );
     const behavior = behaviorPolicy(emotionLabel, { relationship: relState?.relationship ?? relState ?? {}, ...(opts.behaviorState ?? {}) });
-    const goals = buildConversationGoals({ dueItems, desires: stateSnapshot?.desires, storyBeat: storySnapshot?.today });
+    // I2: 回复前预演亲密阶段（不写库），驱动旁白细分与 prompt 指引
+    const intimacyLive =
+      PARAMS.intimacy?.enabled !== false
+        ? prepareIntimacyForTurn(
+            stateSnapshot?.intimacy ?? defaultIntimacy(),
+            {
+              userMessage,
+              sceneType,
+              relationship: relState?.relationship ?? relState ?? stateSnapshot?.relationship,
+              life: stateSnapshot?.life,
+              desires: stateSnapshot?.desires,
+            },
+            this.stateLayer?.stateLayer?.intimacy?.config ?? PARAMS.intimacy
+          )
+        : stateSnapshot?.intimacy ?? null;
+    const stateForPrompt = stateSnapshot ? { ...stateSnapshot, intimacy: intimacyLive ?? stateSnapshot.intimacy } : stateSnapshot;
+    const goals = buildConversationGoals({
+      dueItems,
+      desires: stateSnapshot?.desires,
+      storyBeat: storySnapshot?.today,
+      intimacy: intimacyLive ?? stateSnapshot?.intimacy,
+      intimacyPolicy: this.stateLayer?.stateLayer?.intimacy?.config?.proactive,
+    });
     if (this.narration) this._lastSceneType = sceneType; // 供下一轮连续性提示; 未启用旁白则不维护
+    this._lastSceneTypeForObserve = sceneType;
+    if (typeof this.memory.setSceneType === 'function') this.memory.setSceneType(sceneType);
 
     // B3: Telegram 明确要求执行 stonewall 时，不生成一条永远不会送达的假回复，也不把它写进历史。
     if (opts.executeStonewall && behavior.stonewall) {
@@ -222,18 +294,30 @@ export class Orchestrator {
       storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
-      statePrompt: [this.stateLayer.toPrompt(stateSnapshot), behaviorToPrompt(behavior)].filter(Boolean).join('\n\n'),
+      statePrompt: [
+        this.stateLayer.toPrompt(stateForPrompt, {
+          relationship: relState?.relationship ?? relState,
+          hardBoundaries: this._config?.intimacyHardBoundaries,
+          intimacyConfig: this.stateLayer?.stateLayer?.intimacy?.config,
+        }),
+        behaviorToPrompt(behavior),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       goalsPrompt: goalsToPrompt(goals),
       memoryBlock: memoryBlock ?? '',
-      // 旁白指令: 角色人设的按场景覆盖优先 (companions/<id>/narration.json), 缺省用通用默认;
-      // 叠加本轮离散情绪 (emotionLabel) 的细节层, 让委屈/吃醋/撒娇/心疼在旁白里有区分。
-      narrationPrompt: this.narration ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel) : '',
+      // 旁白指令: 角色人设覆盖 + 场景 + I 线 phase 细分 + 离散情绪细节层
+      narrationPrompt: this.narration
+        ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive?.scene_phase)
+        : intimacyLive && ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyLive.scene_phase)
+          ? buildNarrationPrompt(sceneType === 'daily' ? 'intimate' : sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive.scene_phase)
+          : '',
     };
 
     let monologue = '';
     if (this.options.useMonologue) {
       const ctx = buildMonologueContext({ userMessage, ...promptParts });
-      monologue = await this.llm.think(ctx, { signal: opts.signal }).catch(() => '');
+      monologue = await this.llm.think(ctx, { signal: opts.signal, maxTokens: PARAMS.orchestrator.monologueMaxTokens }).catch(() => '');
     }
 
     const messages = assemble({
@@ -261,7 +345,8 @@ export class Orchestrator {
 
     // parts 给调用方(bot.js)按 narration/dialogue 分开发多条消息; text 是拼好的整段, 供日志/兼容用。
     const debug = opts.debug ? {
-      stateSnapshot,
+      stateSnapshot: stateForPrompt,
+      intimacyPhase: intimacyLive?.scene_phase ?? null,
       relationshipState: relState,
       worldSnapshot,
       storySnapshot,
@@ -276,7 +361,15 @@ export class Orchestrator {
       samplingHints,
       historyTurns: this.options.historyTurns,
     } : undefined;
-    return { text: reply, parts, emotionLabel, behaviorPolicy: behavior, goals, ...(debug ? { debug } : {}) };
+    return {
+      text: reply,
+      parts,
+      emotionLabel,
+      behaviorPolicy: behavior,
+      goals,
+      intimacyPhase: intimacyLive?.scene_phase ?? null,
+      ...(debug ? { debug } : {}),
+    };
   }
 
   /**
@@ -320,7 +413,7 @@ export class Orchestrator {
     let monologue = '';
     if (ctx.useMonologue ?? this.options.useMonologue) {
       const situation = buildProactiveSituation(effCtx);
-      monologue = await this.llm.think(buildMonologueContext({ situation, ...promptParts })).catch(() => '');
+      monologue = await this.llm.think(buildMonologueContext({ situation, ...promptParts }), { maxTokens: PARAMS.orchestrator.monologueMaxTokens }).catch(() => '');
     }
 
     const messages = assemble({
@@ -477,7 +570,11 @@ function buildPersonaExtra(config) {
 function buildIdentityConstraints(config) {
   if (!config?.identityConstraints?.length) return '';
   const bullets = config.identityConstraints.map((s) => `- ${s}`).join('\n');
-  return `【身份设定·硬约束】以下是关于对方身份的确定事实, 任何时候都不能编造/推测出与之矛盾的内容:\n${bullets}`;
+  return [
+    '【身份设定·硬约束】以下是关于对方身份的确定事实, 任何时候都不能编造/推测出与之矛盾的内容:',
+    bullets,
+    '用法: 只用于避免身份穿帮(如别问公司/加班/回宿舍)。不要每轮主动念这些约束, 更不要在亲密话题里突然跳到「明天上课困了别怪我」当万能结尾。',
+  ].join('\n');
 }
 
 function normalizeHistory(turns = []) {

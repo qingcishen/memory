@@ -18,24 +18,34 @@ const EXTRACT_SYSTEM = `你是一个记忆提取器, 服务于一个 AI 伴侣�
 不要使用"AI"、"机器人"、"用户"这类系统身份词指代对话双方; 用输入里给出的真实名字。
 不要输出 JSON 以外的任何内容, 不要用 markdown 代码块。`;
 
+const EXTRACT_INTIMATE_EXTRA = `
+【亲密场景补充】本轮对话含亲密/性爱语境时，额外优先提取：
+- 明确的性偏好/节奏/姿势偏好 → type=preference, subject_kind 多为 self 或 user
+- 明确的雷点与边界（说停必须停、不喜欢某种称呼）→ preference 且 fact_locked=true, importance≥7
+- 对双方关系有意义的亲密里程碑（第一次、特别温柔的一次事后）→ episode + subject_kind=dyad
+不要把每一句动作描写都记成记忆；只记可复用的偏好、边界与里程碑。`;
+
 /**
  * 从最近若干轮对话里提取记忆。
  * @param {Array<{role:string, content:string}>} turns
  * @param {string} subjectName 对方的名字, 用于 user 主语
  * @param {string} companionName 伴侣角色名, 用于 assistant 主语
+ * @param {{ intimate?: boolean }} opts 亲密轮次时附加偏好/边界抽取提示
  * @returns {Promise<Array>} 提取出的记忆 (未含 embedding)
  */
-export async function extractMemories(turns, subjectName = '用户', companionName = '她') {
+export async function extractMemories(turns, subjectName = '用户', companionName = '她', opts = {}) {
   const transcript = turns
     .map((t) => `${t.role === 'user' ? subjectName : companionName}: ${t.content}`)
     .join('\n');
+
+  const system = opts.intimate ? `${EXTRACT_SYSTEM}\n${EXTRACT_INTIMATE_EXTRA}` : EXTRACT_SYSTEM;
 
   const res = await llm.chat.completions.create({
     model: LLM_MODEL,
     temperature: 0.2,
     response_format: { type: 'json_object' },
     messages: [
-      { role: 'system', content: EXTRACT_SYSTEM },
+      { role: 'system', content: system },
       { role: 'user', content: `对方名字: ${subjectName}\n伴侣名字: ${companionName}\n\n对话:\n${transcript}` },
     ],
   });
