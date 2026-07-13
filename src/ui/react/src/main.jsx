@@ -693,6 +693,23 @@ function Params() {
 function DebugKV({ label, value }) { return <div className="debug-kv"><span>{label}</span><b>{value ?? '—'}</b></div>; }
 function DebugBlock({ title, value }) { return <details className="debug-block"><summary>{title}</summary><pre>{value == null ? '—' : typeof value === 'string' ? value : JSON.stringify(value, null, 2)}</pre></details>; }
 
+const EMOTION_BADGE_TONE = {
+  平静: 'neutral', 开心: 'ok', 撒娇: 'ok', 心疼: 'ok',
+  委屈: 'warn', 吃醋: 'warn', 失落: 'warn', 生气: 'danger',
+};
+
+function EmotionBadge({ label, intensity, size = 'sm' }) {
+  if (!label) return null;
+  const tone = EMOTION_BADGE_TONE[label] || 'neutral';
+  const i = Number(intensity);
+  const showI = Number.isFinite(i) && i > 0.05 && label !== '平静';
+  return (
+    <span className={`emotion-badge emotion-badge--${tone} emotion-badge--${size}`} title={showI ? `强度 ${i.toFixed(2)}` : label}>
+      {label}{showI ? ` · ${Math.round(i * 100)}%` : ''}
+    </span>
+  );
+}
+
 function DebugPanel({ debug }) {
   const [tab, setTab] = useState('summary');
   const hits = debug.memoryHits || [];
@@ -700,6 +717,9 @@ function DebugPanel({ debug }) {
   const promptParts = debug.promptParts || {};
   const recallExplain = debug.recallExplain || [];
   const turnPlan = debug.turnPlan || null;
+  const residue = debug.emotionResidue || null;
+  const journal = debug.emotionJournal || [];
+  const flags = debug.emotionPromptFlags || null;
   const sections = [
     ['summary', '本轮概览'],
     ['why', `为何想起 · ${recallExplain.length || hits.length}`],
@@ -715,9 +735,11 @@ function DebugPanel({ debug }) {
       {tab === 'summary' && <div className="debug-kv-grid">
         <DebugKV label="场景" value={debug.sceneType}/>
         <DebugKV label="亲密阶段" value={debug.intimacyPhase || debug.stateSnapshot?.intimacy?.scene_phase || '—'}/>
-        <DebugKV label="情绪标签" value={debug.emotionLabel}/>
+        <DebugKV label="情绪标签" value={debug.emotionLabel || residue?.label || '—'}/>
+        <DebugKV label="情绪残留" value={residue ? `${residue.label || '—'} · ${Number(residue.intensity ?? 0).toFixed(2)}` : '—'}/>
         <DebugKV label="关系阶段" value={debug.relationshipStage?.id || debug.relationshipStage || '—'}/>
         <DebugKV label="场景锁" value={(debug.sceneLocks || []).join('+') || '—'}/>
+        <DebugKV label="prompt 表现/余波/本场" value={flags ? `${flags.has表现 ? '表现✓' : '表现·'} ${flags.has余波 ? '余波✓' : '余波·'} ${flags.has本场 ? '本场✓' : '本场·'}` : '—'}/>
         <DebugKV label="修复台阶" value={debug.behaviorPolicy?.mustGiveRepairStep ? '需处理' : '稳定'}/>
         <DebugKV label="LLM 调用次数" value={debug.metrics?.calls ?? debug.metrics?.callCount}/>
         <DebugKV label="Token 用量" value={debug.metrics?.totalTokens ?? debug.metrics?.tokens}/>
@@ -727,6 +749,7 @@ function DebugPanel({ debug }) {
         <DebugKV label="parts 预算" value={turnPlan?.partsBudget ?? debug.behaviorPolicy?.partsBudget}/>
         {turnPlan?.recallQuery && <div className="debug-kv debug-kv-wide"><span>召回 query</span><b>{turnPlan.recallQuery}</b></div>}
         {turnPlan?.turnBrief && <div className="debug-kv debug-kv-wide"><span>本轮简报</span><b>{turnPlan.turnBrief}</b></div>}
+        {journal.length > 0 && <div className="debug-kv debug-kv-wide"><span>情绪 journal</span><b>{journal.slice(-3).map((j) => `${j.fromLabel || '?'}→${j.toLabel}`).join(' · ')}</b></div>}
         {debug.monologue && <div className="debug-kv debug-kv-wide"><span>内心独白</span><b>{typeof debug.monologue === 'string' ? debug.monologue : JSON.stringify(debug.monologue)}</b></div>}
       </div>}
       {tab === 'why' && <div className="debug-stack">
@@ -774,6 +797,7 @@ function Chat({ scope, seed, draft, onSeedConsumed, onDraftConsumed }) {
   const [busy, setBusy] = useState(false);
   const [debugEnabled, setDebugEnabled] = useState(false);
   const [debug, setDebug] = useState(null);
+  const [lastEmotion, setLastEmotion] = useState(null); // { label, intensity }
   const [selectedPhoto, setSelectedPhoto] = useState(null);
   const logRef = useRef(null);
   const composerRef = useRef(null);
@@ -840,13 +864,21 @@ function Chat({ scope, seed, draft, onSeedConsumed, onDraftConsumed }) {
         // 降级整包
         const result = await api('/api/chat', json('POST', { message, userId: scope.userId || 'ui:playground', companionId: scope.companionId, debug: debugEnabled }));
         if (!result.ok) throw new Error(result.message || '生成失败');
-        const replyMessages = (result.parts || []).map(part => ({ role: part.type === 'narration' ? 'narration' : 'assistant', text: part.text }));
+        const emo = result.emotionLabel || result.emotionResidue?.label || result.debug?.emotionLabel || null;
+        const emoI = result.emotionResidue?.intensity ?? result.debug?.emotionResidue?.intensity;
+        if (emo) setLastEmotion({ label: emo, intensity: emoI });
+        const replyMessages = (result.parts || []).map(part => ({
+          role: part.type === 'narration' ? 'narration' : 'assistant',
+          text: part.text,
+          emotionLabel: part.type === 'narration' ? null : emo,
+          emotionIntensity: part.type === 'narration' ? null : emoI,
+        }));
         const photoMessages = (result.photos || []).map(photo => ({ role: 'photo', ...photo }));
         setMessages(current => {
           const withoutStream = current.filter(m => !m.streaming);
           return [...withoutStream, ...replyMessages, ...photoMessages];
         });
-        setDebug(result.debug || null);
+        setDebug(result.debug || { emotionLabel: emo, emotionResidue: result.emotionResidue });
         return;
       }
       const reader = response.body.getReader();
@@ -878,8 +910,17 @@ function Chat({ scope, seed, draft, onSeedConsumed, onDraftConsumed }) {
           if (ev.event === 'done') {
             if (ev.ok === false) throw new Error(ev.message || '生成失败');
             finalParts = ev.parts || (ev.text ? [{ type: 'dialogue', text: ev.text }] : []);
-            if (ev.debug) setDebug(ev.debug);
-            const replyMessages = finalParts.map(part => ({ role: part.type === 'narration' ? 'narration' : 'assistant', text: part.text }));
+            const emo = ev.emotionLabel || ev.emotionResidue?.label || ev.debug?.emotionLabel || null;
+            const emoI = ev.emotionResidue?.intensity ?? ev.debug?.emotionResidue?.intensity;
+            if (emo) setLastEmotion({ label: emo, intensity: emoI });
+            if (ev.debug) setDebug({ ...ev.debug, emotionLabel: emo || ev.debug.emotionLabel, emotionResidue: ev.emotionResidue || ev.debug.emotionResidue });
+            else if (emo) setDebug({ emotionLabel: emo, emotionResidue: ev.emotionResidue });
+            const replyMessages = finalParts.map(part => ({
+              role: part.type === 'narration' ? 'narration' : 'assistant',
+              text: part.text,
+              emotionLabel: part.type === 'narration' ? null : emo,
+              emotionIntensity: part.type === 'narration' ? null : emoI,
+            }));
             const photoMessages = (ev.photos || []).map(photo => ({ role: 'photo', ...photo }));
             setMessages(current => {
               const withoutStream = current.filter(m => !m.streaming);
@@ -911,14 +952,34 @@ function Chat({ scope, seed, draft, onSeedConsumed, onDraftConsumed }) {
     if (item.role === 'photo') return <div className="chat-message" key={index}>{herAvatar}<div className="chat-message-body"><div className="chat-message-meta"><b>{companionName}</b><time>刚刚</time></div><div className="chat-photo-wrap"><button className="chat-photo-button" onClick={() => setSelectedPhoto(item.url)}><img src={item.url} alt="她分享的照片"/>{item.reason && <span>{item.kind === 'selfie' ? '自拍' : '照片'} · {item.reason}</span>}</button><button className="chat-photo-remove" aria-label="删除这张照片" onClick={() => setMessages(current => current.filter((_, messageIndex) => messageIndex !== index))}><X size={14}/></button></div></div></div>;
     if (item.role === 'narration') return <div className="chat-narration" key={index}><span>SCENE</span>{item.text}</div>;
     const isUser = item.role === 'user';
-    return <div className={`chat-message ${isUser ? 'is-user' : 'is-her'} ${item.role === 'error' ? 'is-error' : ''} ${item.streaming ? 'is-streaming' : ''}`} key={index}>{isUser ? <div className="chat-avatar avatar-user">你</div> : herAvatar}<div className="chat-message-body"><div className="chat-message-meta"><b>{isUser ? '你' : companionName}</b><time>{item.streaming ? '输入中' : '刚刚'}</time></div><p>{item.text || (item.streaming ? '…' : '')}</p></div></div>;
+    return (
+      <div className={`chat-message ${isUser ? 'is-user' : 'is-her'} ${item.role === 'error' ? 'is-error' : ''} ${item.streaming ? 'is-streaming' : ''}`} key={index}>
+        {isUser ? <div className="chat-avatar avatar-user">你</div> : herAvatar}
+        <div className="chat-message-body">
+          <div className="chat-message-meta">
+            <b>{isUser ? '你' : companionName}</b>
+            {!isUser && item.emotionLabel ? <EmotionBadge label={item.emotionLabel} intensity={item.emotionIntensity} /> : null}
+            <time>{item.streaming ? '输入中' : '刚刚'}</time>
+          </div>
+          <p>{item.text || (item.streaming ? '…' : '')}</p>
+        </div>
+      </div>
+    );
   };
 
   return <div className="chat-shell">
     <header className="chat-header">
       <div className="chat-header-identity">
         {herAvatar}
-        <div><strong>{companionName}</strong><small>与真实编排器相同的对话管线 · 会真的写入她的记忆</small></div>
+        <div>
+          <strong>{companionName}</strong>
+          <small className="chat-header-sub">
+            与真实编排器相同的对话管线 · 会真的写入她的记忆
+            {lastEmotion?.label ? (
+              <span className="chat-header-emotion"> · 此刻 <EmotionBadge label={lastEmotion.label} intensity={lastEmotion.intensity} size="md" /></span>
+            ) : null}
+          </small>
+        </div>
       </div>
       <label className="chat-debug-toggle"><input type="checkbox" checked={debugEnabled} onChange={event => setDebugEnabled(event.target.checked)}/> 调试</label>
     </header>

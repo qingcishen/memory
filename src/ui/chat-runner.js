@@ -238,6 +238,8 @@ async function main() {
         const deliverableParts = Array.isArray(ev.parts) && ev.parts.length
           ? ev.parts
           : (ev.text ? [{ type: 'dialogue', text: ev.text }] : []);
+        const emotionLabel = ev.emotionLabel ?? bot._lastEmotionLabel ?? null;
+        const emotionResidue = ev.emotionResidue ?? bot._emotionResidue ?? null;
         process.stdout.write(`${JSON.stringify({
           event: 'done',
           ok: true,
@@ -247,7 +249,22 @@ async function main() {
           persona: persona?.config?.name ?? null,
           recallExplain: ev.recallExplain,
           streamed: ev.streamed,
-          ...(debugMode && ev.debug ? { debug: { ...trace, ...ev.debug, metrics: metricsSnapshot() } } : {}),
+          emotionLabel,
+          emotionResidue: emotionResidue
+            ? { label: emotionResidue.label, intensity: emotionResidue.intensity }
+            : null,
+          sceneLocks: ev.sceneLocks ?? null,
+          ...(debugMode && ev.debug
+            ? {
+                debug: {
+                  ...trace,
+                  ...ev.debug,
+                  emotionLabel: emotionLabel ?? ev.debug?.emotionLabel,
+                  emotionResidue: emotionResidue ?? ev.debug?.emotionResidue,
+                  metrics: metricsSnapshot(),
+                },
+              }
+            : {}),
         })}\n`);
       } else {
         process.stdout.write(`${JSON.stringify(ev)}\n`);
@@ -256,6 +273,8 @@ async function main() {
     await bot._lastPhoto?.catch(() => {});
     await bot._lastAfterReply?.catch(() => {});
     await bot._lastHistoryPersist?.catch(() => {});
+    await bot._lastEmotionPersist?.catch(() => {});
+    await bot._lastSessionPersist?.catch(() => {});
     if (!final) {
       process.stdout.write(`${JSON.stringify({ event: 'done', ok: false, message: '流式无结果' })}\n`);
     }

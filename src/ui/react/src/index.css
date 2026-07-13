@@ -305,6 +305,25 @@ textarea.input { padding: 12px !important; resize: vertical; }
 .chat-header-identity small { display: block; margin-top: 2px; color: var(--sw-text-2); font-size: 11px; }
 .chat-debug-toggle { display: inline-flex; flex: 0 0 auto; align-items: center; gap: 5px; color: var(--sw-text-2); font-size: 11px; white-space: nowrap; cursor: pointer; }
 .chat-debug-toggle input { accent-color: var(--sw-accent); }
+.chat-header-sub { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; }
+.chat-header-emotion { display: inline-flex; align-items: center; gap: 4px; }
+.emotion-badge {
+  display: inline-flex; align-items: center; gap: 3px;
+  border: 1px solid var(--sw-border); border-radius: 999px !important;
+  padding: 1px 7px; font-size: 10px !important; letter-spacing: .04em;
+  line-height: 1.4; white-space: nowrap; vertical-align: middle;
+  color: var(--sw-text-2) !important; background: color-mix(in srgb, var(--sw-text) 4%, transparent) !important;
+  text-transform: none !important;
+}
+.emotion-badge--md { font-size: 11px !important; padding: 2px 9px; }
+.emotion-badge--ok { color: #17805e !important; border-color: color-mix(in srgb, #17805e 40%, var(--sw-border)); background: color-mix(in srgb, #17805e 10%, transparent) !important; }
+.dark .emotion-badge--ok { color: #6ed1a9 !important; }
+.emotion-badge--warn { color: #b45309 !important; border-color: color-mix(in srgb, #b45309 40%, var(--sw-border)); background: color-mix(in srgb, #f59e0b 12%, transparent) !important; }
+.dark .emotion-badge--warn { color: #fbbf24 !important; }
+.emotion-badge--danger { color: #b91c1c !important; border-color: color-mix(in srgb, #b91c1c 45%, var(--sw-border)); background: color-mix(in srgb, #ef4444 12%, transparent) !important; }
+.dark .emotion-badge--danger { color: #fca5a5 !important; }
+.emotion-badge--neutral { opacity: .9; }
+.chat-message-meta .emotion-badge { margin-left: 2px; }
 .chat-log { flex: 1; min-height: 0; overflow: auto; padding: 24px 22px 18px; }
 .chat-welcome { padding: 42px 0 24px; border-bottom: 1px solid var(--sw-border); }
 .chat-welcome-mark { width: 60px; height: 60px; display: grid; place-items: center; margin-bottom: 18px; border-radius: 0; color: var(--sw-on-accent); background: linear-gradient(135deg, #e99b8d, #b45261); font-size: 22px; font-weight: 700; }
