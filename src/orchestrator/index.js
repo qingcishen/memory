@@ -6,7 +6,14 @@ export {
   PersonaAdapter,
   formatRelationshipPrompt,
 } from './adapters.js';
-export { DefaultLLM, parseReplyParts, joinReplyParts, normalizeReplyResult, rewriteNarrationParts } from './llm.js';
+export {
+  DefaultLLM,
+  parseReplyParts,
+  joinReplyParts,
+  normalizeReplyResult,
+  rewriteNarrationParts,
+  extractStreamingDialoguePreview,
+} from './llm.js';
 export { assemble, buildSystemPrompt, buildTimePrompt, buildGapHint, buildMonologueContext } from './assemble.js';
 export {
   planTurn,
@@ -15,6 +22,7 @@ export {
   stripStockEndingsFromParts,
   buildTurnBrief,
 } from './turnPlan.js';
+export { explainRecallHits, formatRecallExplanation } from './explainRecall.js';
 export { LocalJsonHistoryStore, SupabaseHistoryStore } from './historyStore.js';
 export {
   DEFAULT_PROACTIVE_POLICY,

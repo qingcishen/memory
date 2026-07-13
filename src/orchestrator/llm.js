@@ -100,12 +100,7 @@ export async function rewriteNarrationParts(parts, messages, { client = narratio
 export class DefaultLLM {
   /** 生成给用户的回复 (好模型, 温度高一点更有人味)。返回结构化 { parts }, 旁白/台词分开发消息。 */
   async generateReply(messages, opts = {}) {
-    const payload = {
-      model: opts.model ?? REPLY_MODEL,
-      temperature: opts.temperature ?? 0.8,
-      ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
-      messages: [...messages, { role: 'system', content: REPLY_JSON_INSTRUCTION }],
-    };
+    const payload = buildReplyPayload(messages, opts);
     let res;
     try {
       res = await replyLlm.chat.completions.create({ ...payload, response_format: { type: 'json_object' } }, { signal: opts.signal });
@@ -127,6 +122,60 @@ export class DefaultLLM {
     return { parts: await rewriteNarrationParts(parts, messages, { signal: opts.signal }) };
   }
 
+  /**
+   * 流式回复：边生成边 yield。
+   * 事件:
+   *   { event:'delta', text }     — 增量原文（或从 JSON 里抠出的 dialogue 预览）
+   *   { event:'preview', text }   — 当前累计可见台词预览
+   *   { event:'done', parts, text, raw } — 结束
+   * 失败安全：流式不可用时退化为一次 generateReply，只 yield done。
+   */
+  async *generateReplyStream(messages, opts = {}) {
+    const payload = { ...buildReplyPayload(messages, opts), stream: true };
+    let raw = '';
+    try {
+      let stream;
+      try {
+        stream = await replyLlm.chat.completions.create(
+          { ...payload, response_format: { type: 'json_object' } },
+          { signal: opts.signal },
+        );
+      } catch (error) {
+        if (!looksLikeUnsupportedResponseFormat(error)) throw error;
+        stream = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
+      }
+
+      for await (const chunk of stream) {
+        const delta = chunk?.choices?.[0]?.delta?.content ?? chunk?.choices?.[0]?.text ?? '';
+        if (!delta) continue;
+        raw += delta;
+        yield { event: 'delta', text: delta };
+        const preview = extractStreamingDialoguePreview(raw);
+        if (preview) yield { event: 'preview', text: preview };
+      }
+      recordLlmCall('reply', undefined);
+    } catch {
+      // 流式失败：整包降级
+      const full = await this.generateReply(messages, { ...opts, stream: false });
+      const text = joinReplyParts(full.parts);
+      yield { event: 'preview', text };
+      yield { event: 'done', parts: full.parts, text, raw: text, streamed: false };
+      return;
+    }
+
+    if (!raw.trim()) {
+      const full = await this.generateReply(messages, { ...opts, stream: false });
+      const text = joinReplyParts(full.parts);
+      yield { event: 'done', parts: full.parts, text, raw: text, streamed: false };
+      return;
+    }
+
+    let parts = parseReplyParts(raw);
+    parts = await rewriteNarrationParts(parts, messages, { signal: opts.signal });
+    const text = joinReplyParts(parts);
+    yield { event: 'done', parts, text, raw, streamed: true };
+  }
+
   /** 生成不展示的内心独白 (便宜模型)。串行 await 在正式回复之前, 加 max_tokens 上限防止
    *  模型话痨拖长这一步的生成时间——独白本来就只要一两句话 (见 PARAMS.orchestrator.monologueMaxTokens)。 */
   async think(context, opts = {}) {
@@ -144,7 +193,50 @@ export class DefaultLLM {
   }
 }
 
+function buildReplyPayload(messages, opts = {}) {
+  return {
+    model: opts.model ?? REPLY_MODEL,
+    temperature: opts.temperature ?? 0.8,
+    ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+    messages: [...messages, { role: 'system', content: REPLY_JSON_INSTRUCTION }],
+  };
+}
+
 function looksLikeUnsupportedResponseFormat(error) {
   const text = [error?.message, error?.code, error?.type, error?.param, error?.cause?.message].filter(Boolean).join(' ');
   return /response_format|json_object|unsupported|not support|不支持/i.test(text);
+}
+
+/**
+ * 从半截 JSON 流里抠 dialogue text 预览（启发式，失败返回 ''）。
+ * 优先取最后一个 "type":"dialogue" 附近的 "text":"..."。
+ */
+export function extractStreamingDialoguePreview(buffer = '') {
+  const s = String(buffer || '');
+  if (!s.trim()) return '';
+  // 完整可解析
+  try {
+    const parsed = JSON.parse(s);
+    if (Array.isArray(parsed?.parts)) {
+      const dialogues = parsed.parts.filter((p) => p?.type === 'dialogue' && p.text);
+      if (dialogues.length) return dialogues.map((p) => p.text).join('\n');
+    }
+  } catch {
+    /* partial */
+  }
+  // 半截：抓 "text":"..." 片段（反斜杠转义粗处理）
+  const texts = [];
+  const re = /"text"\s*:\s*"((?:\\.|[^"\\])*)"/g;
+  let m;
+  while ((m = re.exec(s)) !== null) {
+    try {
+      texts.push(JSON.parse(`"${m[1]}"`));
+    } catch {
+      texts.push(m[1].replace(/\\n/g, '\n').replace(/\\"/g, '"'));
+    }
+  }
+  if (texts.length) return texts.join('\n');
+  // 纯散文流
+  if (!s.includes('{') && s.trim().length > 0) return s.trim();
+  return '';
 }

@@ -306,6 +306,8 @@ export const DEFAULT_PARAMS = {
     enforcePartsBudget: true,
     // 跳戏重试失败后，仍尝试从 dialogue 里抠掉库存结尾
     stripStockEndings: true,
+    // 超短用户句时瘦身 world/story 段，减 prompt 体积
+    compactShortTurns: true,
   },
 
   // ---- P1 双向关系触发规则 ----

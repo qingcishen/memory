@@ -6,7 +6,7 @@
 // 详见编排器设计方案 §5。
 
 import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
-import { DefaultLLM, normalizeReplyResult } from './llm.js';
+import { DefaultLLM, normalizeReplyResult, joinReplyParts } from './llm.js';
 import { assemble, buildMonologueContext, buildTimePrompt } from './assemble.js';
 import { hoursSince } from '../decay.js';
 import { getCompanion } from '../companion.js';
@@ -30,7 +30,7 @@ import {
   enforcePartsBudget,
   stripStockEndingsFromParts,
 } from './turnPlan.js';
-import { joinReplyParts } from './llm.js';
+import { explainRecallHits, formatRecallExplanation } from './explainRecall.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
@@ -348,13 +348,6 @@ export class Orchestrator {
     });
     this._lastTurnPlan = turn;
 
-    const memoryResult = await this.memory
-      .recall(turn.recallQuery || userMessage, { debug: Boolean(opts.debug) })
-      .catch(() => '');
-    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
-    const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
-    const episodeTexts = extractEpisodeTexts(memoryHits);
-
     if (this.narration) this._lastSceneType = sceneType;
     this._lastSceneTypeForObserve = sceneType;
     if (typeof this.memory.setSceneType === 'function') this.memory.setSceneType(sceneType);
@@ -367,7 +360,8 @@ export class Orchestrator {
     }
 
     const askAboutDay = /(今天|最近|最近在忙|怎么样|过得|忙什么)/.test(userMessage);
-    const promptParts = {
+    // 先拼「无记忆」上下文，独白与召回并行（降延迟突破）
+    const promptBase = {
       timePrompt: buildTimePrompt(new Date(), { weather, gapHours }),
       personaPrompt: this.persona.toPrompt() ?? '',
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
@@ -382,7 +376,6 @@ export class Orchestrator {
         topGoalText: goals[0]?.text,
       }),
       turnBriefPrompt: turn.turnBrief || '',
-      episodePrompt: episodesToPrompt(episodeTexts),
       statePrompt: [
         this.stateLayer.toPrompt(stateForPrompt, {
           relationship: rel,
@@ -395,7 +388,6 @@ export class Orchestrator {
         .filter(Boolean)
         .join('\n\n'),
       goalsPrompt: goalsToPrompt(goals),
-      memoryBlock: memoryBlock ?? '',
       narrationPrompt: this.narration
         ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive?.scene_phase)
         : intimacyLive && ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyLive.scene_phase)
@@ -403,11 +395,37 @@ export class Orchestrator {
           : '',
     };
 
-    let monologue = '';
-    if (turn.useMonologue) {
-      const ctx = buildMonologueContext({ userMessage, ...promptParts });
-      monologue = await this.llm.think(ctx, { signal: opts.signal, maxTokens: PARAMS.orchestrator.monologueMaxTokens }).catch(() => '');
+    // 短轮可对 prompt 做轻量瘦身（少塞世界线/长故事）
+    const compact = PARAMS.orchestrator?.compactShortTurns !== false && userMessage.trim().length <= 12 && !sceneLocks.length;
+    if (compact) {
+      if (promptBase.worldPrompt && promptBase.worldPrompt.length > 200) promptBase.worldPrompt = '';
+      if (promptBase.storyPrompt && !askAboutDay) promptBase.storyPrompt = promptBase.storyPrompt.slice(0, 180);
     }
+
+    const monologuePromise = turn.useMonologue
+      ? this.llm
+          .think(buildMonologueContext({ userMessage, ...promptBase, memoryBlock: '' }), {
+            signal: opts.signal,
+            maxTokens: PARAMS.orchestrator.monologueMaxTokens,
+          })
+          .catch(() => '')
+      : Promise.resolve('');
+
+    const memoryPromise = this.memory
+      .recall(turn.recallQuery || userMessage, { debug: Boolean(opts.debug) })
+      .catch(() => '');
+
+    const [monologue, memoryResult] = await Promise.all([monologuePromise, memoryPromise]);
+    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
+    const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
+    const episodeTexts = extractEpisodeTexts(memoryHits);
+    const recallExplain = explainRecallHits(memoryHits, turn.recallQuery || userMessage);
+
+    const promptParts = {
+      ...promptBase,
+      episodePrompt: episodesToPrompt(episodeTexts),
+      memoryBlock: memoryBlock ?? '',
+    };
 
     const messages = assemble({
       userMessage,
@@ -419,8 +437,37 @@ export class Orchestrator {
 
     const baseSampling =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
-    // 在 life sampling 之上叠行为话量/身体，不覆盖 stateLayer 给出的基线
     const samplingHints = applyBehaviorSampling(baseSampling, behavior, bodySit);
+
+    // 流式路径：调用方 for await 消费；非流式保持原语义
+    if (opts.stream && typeof this.llm.generateReplyStream === 'function') {
+      return this._replyStreaming({
+        userMessage,
+        opts,
+        messages,
+        samplingHints,
+        turn,
+        sceneLocks,
+        stateSnapshot,
+        stateForPrompt,
+        relState,
+        relStage,
+        bodySit,
+        unfinished,
+        worldSnapshot,
+        storySnapshot,
+        storyBeat,
+        sceneType,
+        emotionLabel,
+        behavior,
+        goals,
+        memoryHits,
+        recallExplain,
+        promptParts,
+        monologue,
+        intimacyLive,
+      });
+    }
 
     let { text: reply, parts } = normalizeReplyResult(
       await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal })
@@ -447,66 +494,47 @@ export class Orchestrator {
       }
     }
 
-    // 后处理：parts 预算 + 库存结尾抠除
-    if (PARAMS.orchestrator?.enforcePartsBudget !== false) {
-      parts = enforcePartsBudget(parts, turn.partsBudget);
-      reply = joinReplyParts(parts);
-    }
-    if (PARAMS.orchestrator?.stripStockEndings !== false) {
-      const stripped = stripStockEndingsFromParts(parts, sceneLocks);
-      if (stripped !== parts) {
-        parts = stripped;
-        reply = joinReplyParts(parts);
-      }
-    }
+    ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
     this.recordHistory([
       { role: 'user', content: userMessage },
       { role: 'assistant', content: reply },
     ], { eventId: opts.eventId });
 
-    // fire-and-forget; 暴露在 _lastAfterReply 上仅供测试 await。
     this._lastAfterReply = this.afterReply(userMessage, reply, {
       history: this.history,
       sceneLocks,
       relationshipStage: relStage,
     });
 
-    // A1: 用户要看她样子时, 后台生成一张自拍 (fire-and-forget, 经 onPhoto 投递, 不阻塞文字)。
-    // 统一走 maybePhoto：快照里已含 outfit，selfie 管线用同一份 current look。
     if (PHOTO_REQUEST_RE.test(userMessage)) this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: true });
 
-    // parts 给调用方(bot.js)按 narration/dialogue 分开发多条消息; text 是拼好的整段, 供日志/兼容用。
-    const debug = opts.debug ? {
-      stateSnapshot: stateForPrompt,
-      intimacyPhase: intimacyLive?.scene_phase ?? null,
-      relationshipState: relState,
-      relationshipStage: relStage,
-      bodySituation: bodySit,
-      sceneLocks: sceneLocks.map((l) => l.id),
-      unfinished,
-      turnPlan: {
-        historyTurns: turn.historyTurns,
-        useMonologue: turn.useMonologue,
-        recallQuery: turn.recallQuery,
-        partsBudget: turn.partsBudget,
-        turnBrief: turn.turnBrief,
-      },
-      coherenceRepair: repair.needsRetry ? repair.reasons : [],
-      worldSnapshot,
-      storySnapshot,
-      storyBeat,
-      sceneType,
-      emotionLabel,
-      behaviorPolicy: behavior,
-      goals,
-      memoryHits: memoryHits.map(({ embedding, media_embedding, ...m }) => m),
-      promptParts,
-      monologue,
-      messages,
-      samplingHints,
-      historyTurns: turn.historyTurns,
-    } : undefined;
+    const debug = opts.debug
+      ? this._buildDebug({
+          stateForPrompt,
+          intimacyLive,
+          relState,
+          relStage,
+          bodySit,
+          sceneLocks,
+          unfinished,
+          turn,
+          repair,
+          worldSnapshot,
+          storySnapshot,
+          storyBeat,
+          sceneType,
+          emotionLabel,
+          behavior,
+          goals,
+          memoryHits,
+          recallExplain,
+          promptParts,
+          monologue,
+          messages,
+          samplingHints,
+        })
+      : undefined;
     return {
       text: reply,
       parts,
@@ -517,7 +545,170 @@ export class Orchestrator {
       relationshipStage: relStage?.id ?? null,
       sceneLocks: sceneLocks.map((l) => l.id),
       bodySituation: bodySit,
+      recallExplain,
       ...(debug ? { debug } : {}),
+    };
+  }
+
+  /**
+   * 流式回复：async generator。yield 与 llm.generateReplyStream 相同事件，最后附带完整 result 字段。
+   * for await (const ev of orch.replyStream(msg)) { if (ev.event==='preview') ... if (ev.event==='done') ... }
+   */
+  async *replyStream(userMessage, opts = {}) {
+    // async reply() 在 stream:true 时 resolve 为一个 async generator
+    const gen = await this.reply(userMessage, { ...opts, stream: true });
+    if (gen && typeof gen[Symbol.asyncIterator] === 'function') {
+      yield* gen;
+      return;
+    }
+    // 降级：非流式结果
+    const result = gen;
+    yield { event: 'preview', text: result?.text || '' };
+    yield { event: 'done', ...result, streamed: false };
+  }
+
+  async *_replyStreaming(ctx) {
+    const {
+      userMessage, opts, messages, samplingHints, turn, sceneLocks, stateSnapshot,
+      emotionLabel, behavior, goals, intimacyLive, relStage, bodySit, recallExplain,
+    } = ctx;
+    let lastPreview = '';
+    let finalParts = [];
+    let finalText = '';
+    let streamed = true;
+
+    try {
+      for await (const ev of this.llm.generateReplyStream(messages, { ...samplingHints, signal: opts.signal })) {
+        if (ev.event === 'delta' || ev.event === 'preview') {
+          if (ev.event === 'preview') lastPreview = ev.text || lastPreview;
+          yield ev;
+        } else if (ev.event === 'done') {
+          finalParts = ev.parts || [];
+          finalText = ev.text || joinReplyParts(finalParts);
+          streamed = ev.streamed !== false;
+        }
+      }
+    } catch {
+      const full = normalizeReplyResult(
+        await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal })
+      );
+      finalParts = full.parts;
+      finalText = full.text;
+      streamed = false;
+      yield { event: 'preview', text: finalText };
+    }
+
+    let reply = finalText;
+    let parts = finalParts;
+    ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
+
+    this.recordHistory(
+      [
+        { role: 'user', content: userMessage },
+        { role: 'assistant', content: reply },
+      ],
+      { eventId: opts.eventId },
+    );
+    this._lastAfterReply = this.afterReply(userMessage, reply, {
+      history: this.history,
+      sceneLocks,
+      relationshipStage: relStage,
+    });
+    if (PHOTO_REQUEST_RE.test(userMessage)) this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: true });
+
+    const result = {
+      text: reply,
+      parts,
+      emotionLabel,
+      behaviorPolicy: behavior,
+      goals,
+      intimacyPhase: intimacyLive?.scene_phase ?? null,
+      relationshipStage: relStage?.id ?? null,
+      sceneLocks: sceneLocks.map((l) => l.id),
+      bodySituation: bodySit,
+      recallExplain,
+      streamed,
+    };
+    if (opts.debug) {
+      result.debug = this._buildDebug({ ...ctx, repair: { needsRetry: false, reasons: [] }, messages, monologue: ctx.monologue, samplingHints });
+    }
+    yield { event: 'done', ...result };
+  }
+
+  _postProcessParts(reply, parts, turn, sceneLocks) {
+    let p = parts;
+    let r = reply;
+    if (PARAMS.orchestrator?.enforcePartsBudget !== false) {
+      p = enforcePartsBudget(p, turn.partsBudget);
+      r = joinReplyParts(p);
+    }
+    if (PARAMS.orchestrator?.stripStockEndings !== false) {
+      const stripped = stripStockEndingsFromParts(p, sceneLocks);
+      if (stripped !== p) {
+        p = stripped;
+        r = joinReplyParts(p);
+      }
+    }
+    return { reply: r, parts: p };
+  }
+
+  _buildDebug({
+    stateForPrompt,
+    intimacyLive,
+    relState,
+    relStage,
+    bodySit,
+    sceneLocks,
+    unfinished,
+    turn,
+    repair,
+    worldSnapshot,
+    storySnapshot,
+    storyBeat,
+    sceneType,
+    emotionLabel,
+    behavior,
+    goals,
+    memoryHits,
+    recallExplain,
+    promptParts,
+    monologue,
+    messages,
+    samplingHints,
+  }) {
+    return {
+      stateSnapshot: stateForPrompt,
+      intimacyPhase: intimacyLive?.scene_phase ?? null,
+      relationshipState: relState,
+      relationshipStage: relStage,
+      bodySituation: bodySit,
+      sceneLocks: (sceneLocks || []).map((l) => l.id),
+      unfinished,
+      turnPlan: turn
+        ? {
+            historyTurns: turn.historyTurns,
+            useMonologue: turn.useMonologue,
+            recallQuery: turn.recallQuery,
+            partsBudget: turn.partsBudget,
+            turnBrief: turn.turnBrief,
+          }
+        : null,
+      recallExplain: recallExplain || [],
+      recallExplainText: formatRecallExplanation(recallExplain || [], turn?.recallQuery),
+      coherenceRepair: repair?.needsRetry ? repair.reasons : [],
+      worldSnapshot,
+      storySnapshot,
+      storyBeat,
+      sceneType,
+      emotionLabel,
+      behaviorPolicy: behavior,
+      goals,
+      memoryHits: (memoryHits || []).map(({ embedding, media_embedding, ...m }) => m),
+      promptParts,
+      monologue,
+      messages,
+      samplingHints,
+      historyTurns: turn?.historyTurns,
     };
   }
 
@@ -535,7 +726,6 @@ export class Orchestrator {
         : ctx.shouldSend ?? true;
     if (!shouldSend) return null;
 
-    // L3: 没显式给触发原因时, 先拉状态再拼内容包（故事/穿搭/未完/活动）。
     const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
@@ -567,10 +757,37 @@ export class Orchestrator {
       contentPack: pack,
     };
 
-    const seed = effCtx.query ?? effCtx.memoryQuery ?? effCtx.reason ?? '想主动找对方聊一句';
-    const memoryBlock = await this.memory.recall(seed).catch(() => '');
     const rel = relState?.relationship ?? relState ?? {};
     const relStage = inferRelationshipStage(rel);
+    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual);
+    const emotionLabel = inferEmotionLabel(
+      { ...(stateSnapshot ?? {}), relationship: rel },
+      stateSnapshot?.desires,
+      this.history.slice(-4),
+    );
+    let behavior = behaviorPolicy(emotionLabel, { relationship: rel });
+    behavior = applyStageToBehavior(behavior, relStage);
+    behavior = applyBodyToBehavior(behavior, bodySit);
+
+    // 与 reply 同一套 turnPlan（主动消息用内容包 reason 当「用户句」）
+    const pseudoUser = String(effCtx.query || effCtx.reason || '想找你聊一句');
+    const turn = planTurn({
+      userMessage: pseudoUser,
+      sceneLocks: [],
+      behavior,
+      goals: [{ kind: 'proactive', text: pack.reason, priority: 1 }],
+      bodySit,
+      historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
+      useMonologueDefault: ctx.useMonologue ?? this.options.useMonologue,
+    });
+    // 主动消息默认更短
+    turn.partsBudget = Math.min(turn.partsBudget, 2);
+    turn.historyTurns = Math.min(turn.historyTurns, 4);
+    this._lastTurnPlan = turn;
+
+    const seed = turn.recallQuery || effCtx.query || effCtx.reason || '想主动找对方聊一句';
+    const memoryResult = await this.memory.recall(seed, { debug: false }).catch(() => '');
+    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
 
     const promptParts = {
       timePrompt: buildTimePrompt(new Date(), { weather }),
@@ -580,34 +797,57 @@ export class Orchestrator {
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       relationshipStagePrompt: relationshipStageToPrompt(relStage, rel),
-      statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
+      turnBriefPrompt: turn.turnBrief || '',
+      statePrompt: [
+        this.stateLayer.toPrompt(stateSnapshot) ?? '',
+        bodyStateToPrompt(bodySit, stateSnapshot?.intimacy),
+        behaviorToPrompt(behavior),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       memoryBlock: memoryBlock ?? '',
     };
 
     let monologue = '';
-    if (ctx.useMonologue ?? this.options.useMonologue) {
+    if (turn.useMonologue) {
       const situation = buildProactiveSituation(effCtx);
-      monologue = await this.llm.think(buildMonologueContext({ situation, ...promptParts }), { maxTokens: PARAMS.orchestrator.monologueMaxTokens }).catch(() => '');
+      monologue = await this.llm
+        .think(buildMonologueContext({ situation, ...promptParts }), {
+          maxTokens: PARAMS.orchestrator.monologueMaxTokens,
+        })
+        .catch(() => '');
     }
 
     const messages = assemble({
       userMessage: buildProactiveInstruction(effCtx),
       history: this.history,
-      historyTurns: this.options.historyTurns,
+      historyTurns: turn.historyTurns,
       ...promptParts,
       monologue,
     });
 
-    const samplingHints =
+    const baseSampling =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
-    const { text: proactive, parts } = normalizeReplyResult(await this.llm.generateReply(messages, samplingHints));
+    const samplingHints = applyBehaviorSampling(baseSampling, behavior, bodySit);
+    let { text: proactive, parts } = normalizeReplyResult(await this.llm.generateReply(messages, samplingHints));
+    ({ reply: proactive, parts } = this._postProcessParts(proactive, parts, turn, []));
 
     if (ctx.recordHistory !== false) this.recordHistory([{ role: 'assistant', content: proactive }]);
 
-    // A1: 主动找你时也可能顺手分享一张照片 (在外面看到风景/猫狗的随手拍, 或心情好的自拍)。
     this._lastPhoto = this.maybePhoto(stateSnapshot, {});
 
-    return { text: proactive, parts, contentPack: pack, relationshipStage: relStage?.id ?? null };
+    return {
+      text: proactive,
+      parts,
+      contentPack: pack,
+      relationshipStage: relStage?.id ?? null,
+      turnPlan: {
+        historyTurns: turn.historyTurns,
+        useMonologue: turn.useMonologue,
+        recallQuery: turn.recallQuery,
+        partsBudget: turn.partsBudget,
+      },
+    };
   }
 
   /**
