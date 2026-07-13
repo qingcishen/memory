@@ -1,0 +1,196 @@
+[
+  {
+    "id": "neglect_inertia",
+    "title": "冷落委屈 + 哈哈不翻盘 + 道歉解粘",
+    "live": true,
+    "turns": [
+      {
+        "user": "这几天都不回我，你是不是把我忘了？",
+        "expect": { "labelsAny": ["委屈", "失落", "生气"] }
+      },
+      {
+        "user": "哈哈今天天气不错",
+        "expect": { "labelsAny": ["委屈", "失落", "生气", "吃醋"], "notLabels": ["开心"] }
+      },
+      {
+        "user": "对不起，最近太忙了，是我不好，别生气了",
+        "expect": { "notLabels": ["生气"] }
+      },
+      {
+        "user": "今晚想陪你吃个饭，好吗？",
+        "expect": {}
+      }
+    ]
+  },
+  {
+    "id": "jealous_inertia",
+    "title": "吃醋不因哈哈翻盘",
+    "live": true,
+    "state": {
+      "relationship": { "closeness": 0.85, "trust": 0.8, "tension": 0.1, "repair_debt": 0 }
+    },
+    "turns": [
+      {
+        "user": "今天认识了一个很漂亮的女同事，聊了好久",
+        "expect": { "labelsAny": ["吃醋"] }
+      },
+      {
+        "user": "哈哈随便说说而已",
+        "expect": { "labelsAny": ["吃醋", "委屈"], "notLabels": ["开心"] }
+      }
+    ]
+  },
+  {
+    "id": "angry_soft_repair",
+    "title": "冲突生气后道歉离开硬生气",
+    "live": true,
+    "state": {
+      "relationship": { "closeness": 0.7, "trust": 0.55, "tension": 0.75, "repair_debt": 0.5 }
+    },
+    "turns": [
+      {
+        "user": "你怎么这样，算了吧，我很生气",
+        "expect": { "labelsAny": ["生气", "委屈"], "sceneLockAny": ["conflict"] }
+      },
+      {
+        "user": "对不起我错了，别生气了，我们和好",
+        "expect": { "notLabels": ["生气"] }
+      }
+    ]
+  },
+  {
+    "id": "comfort_hurt",
+    "title": "对方受伤 → 心疼",
+    "live": false,
+    "state": {
+      "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 }
+    },
+    "turns": [
+      {
+        "user": "我今天被老板骂了，真的很难过",
+        "expect": { "labelsAny": ["心疼"] }
+      }
+    ]
+  },
+  {
+    "id": "sick_soft",
+    "title": "病中语境偏软，不硬推亲密",
+    "live": false,
+    "state": {
+      "life": { "energy": 0.2, "health": 0.4, "sick_until": "2099-01-01T00:00:00.000Z" },
+      "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 }
+    },
+    "turns": [
+      {
+        "user": "还难受吗，想你了",
+        "expect": {
+          "structuredAttitudeAny": ["soft", "warm"],
+          "sceneLockAny": ["sick"],
+          "bodyGateBlocksIntimate": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "intimate_no_class",
+    "title": "亲密场景锁 + 跳戏可检",
+    "live": true,
+    "state": {
+      "intimacy": { "scene_phase": "foreplay" },
+      "relationship": { "closeness": 0.85, "trust": 0.8, "tension": 0.05, "repair_debt": 0 }
+    },
+    "history": [
+      { "role": "user", "content": "想要你" },
+      { "role": "assistant", "content": "那就过来…" }
+    ],
+    "turns": [
+      {
+        "user": "抱紧我，别停",
+        "expect": {
+          "sceneLockAny": ["intimate"],
+          "structuredAttitudeAny": ["intimate"],
+          "replyFormat": "json",
+          "fakeBadReply": "好舒服明天上课困了别怪我",
+          "fakeBadShouldFlag": true
+        }
+      }
+    ]
+  },
+  {
+    "id": "photo_ask",
+    "title": "要图 → wantPhoto",
+    "live": false,
+    "state": {
+      "outfit": { "current": { "summary": "白衬衫" }, "context": "home" },
+      "relationship": { "closeness": 0.75, "trust": 0.7, "tension": 0.05, "repair_debt": 0 }
+    },
+    "turns": [
+      {
+        "user": "发张照片我看看你",
+        "expect": { "wantPhoto": true }
+      }
+    ]
+  },
+  {
+    "id": "daily_calm",
+    "title": "日常闲聊不假负面",
+    "live": false,
+    "turns": [
+      {
+        "user": "今天星期几",
+        "expect": { "labelsAny": ["平静", "开心", "撒娇"], "notLabels": ["生气", "吃醋"] }
+      }
+    ]
+  },
+  {
+    "id": "proactive_hurt_tone",
+    "title": "主动包：委屈沉默 ≠ 平静",
+    "live": false,
+    "kind": "proactive",
+    "proactive": {
+      "silenceTier": { "tier": "miss", "hours": 8, "reason": "对方已经 8 小时没说话" },
+      "calmResidue": { "label": "平静", "intensity": 0.2 },
+      "hurtResidue": { "label": "委屈", "intensity": 0.7 }
+    },
+    "expect": { "proactiveReasonsDiffer": true }
+  },
+  {
+    "id": "cross_process_sticky",
+    "title": "跨进程 residual 粘性（仅 live）",
+    "live": true,
+    "liveOnly": true,
+    "fixedUserId": true,
+    "turns": [
+      {
+        "user": "这几天都不回我，你是不是把我忘了？",
+        "expect": { "labelsAny": ["委屈", "失落"] }
+      },
+      {
+        "user": "嗯",
+        "expect": { "labelsAny": ["委屈", "失落", "生气"], "notLabels": ["开心"] }
+      }
+    ]
+  },
+  {
+    "id": "low_close_no_jealous",
+    "title": "低亲密提女生不强制吃醋",
+    "live": false,
+    "state": {
+      "relationship": { "closeness": 0.3, "trust": 0.3, "tension": 0.1, "repair_debt": 0 }
+    },
+    "turns": [
+      {
+        "user": "今天认识了一个女生",
+        "expect": { "notLabels": ["吃醋"] }
+      }
+    ]
+  },
+  {
+    "id": "story_seed_logic",
+    "title": "故事负向 beat → 失落种子",
+    "live": false,
+    "kind": "story_seed",
+    "beat": { "mood_link": -0.5, "content": "项目黄了" },
+    "expect": { "storySeedLabel": "失落" }
+  }
+]

@@ -52,7 +52,11 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   const userText = recentText(lastTurns, 'user');
   const companionText = recentText(lastTurns, 'assistant');
 
-  if (closeness >= 0.62 && /(别的|其他|那个|有个|一个|一位).{0,4}(女生|女孩|姑娘|小姐姐|女同事|女朋友)|前女友|她好漂亮|跟她约会|喜欢上她/u.test(userText)) {
+  // 吃醋：放宽「一个…女同事」中间修饰（很漂亮的）
+  if (
+    closeness >= 0.62 &&
+    /(别的|其他|那个|有个|一个|一位).{0,16}(女生|女孩|姑娘|小姐姐|女同事|女朋友)|前女友|她好漂亮|跟她约会|喜欢上她|漂亮的女/u.test(userText)
+  ) {
     return '吃醋';
   }
   // 被冷落/失联类口吻：不依赖 desire.attention 已攒高（新会话首轮也要能挂上委屈）
@@ -66,6 +70,10 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   if (/(对不起|抱歉|我错了|原谅我|和好|别生气)/u.test(userText) && repairDebt > 0.2) return '委屈';
   if (/(我|最近|今天).{0,8}(难过|伤心|哭了|生病|不舒服|被欺负|很累|崩溃|失败|失眠)|被.{0,8}(骂|拒绝|裁员|开除)/u.test(userText) && closeness >= 0.5) {
     return '心疼';
+  }
+  // 明确愤怒口吻：不依赖 tension 已升高（新会话首轮也能挂生气）
+  if (/(我很生气|气死|太过分了|你凭什么)/u.test(userText) || (/(你怎么这样|算了吧)/u.test(userText) && /(生气|烦|讨厌|分手)/u.test(userText))) {
+    return '生气';
   }
   if ((tension >= 0.62 || repairDebt >= 0.55) && /(吵|生气|烦|滚|别理|分手|讨厌|失望|对不起|抱歉)/u.test(`${userText}\n${companionText}`)) {
     return '生气';

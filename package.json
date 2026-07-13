@@ -45,6 +45,8 @@
     "eval:golden": "node examples/eval/golden-sessions.eval.js",
     "eval:replay": "node examples/eval/replay-sessions.eval.js",
     "eval:import": "node examples/eval/import-replay.eval.js",
+    "eval:live-matrix": "node examples/eval/live-matrix.eval.js",
+    "eval:live-chat": "node scripts/emotion-live-chat.js",
     "db:sql": "node scripts/run-sql.js",
     "test:state-layer": "node examples/state-layer.test.js",
     "test:desire": "node examples/desire.test.js",

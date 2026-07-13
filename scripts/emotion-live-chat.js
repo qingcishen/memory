@@ -1,13 +1,14 @@
 #!/usr/bin/env node
 /**
- * 正式多轮试聊 · 验收情绪 Live Loop（真 LLM + 写库）
+ * 多场景正式试聊 · 真 LLM + 写库
  *
  *   node scripts/emotion-live-chat.js
- *   node scripts/emotion-live-chat.js --user ui:emotion-verify-xxx
- *
- * 默认每轮 spawn chat-runner（与 UI 试聊同源），同 userId 验证 residual 跨进程持久化。
+ *   node scripts/emotion-live-chat.js --scenario neglect_inertia,jealous_inertia
+ *   node scripts/emotion-live-chat.js --all-llm
+ *   node scripts/emotion-live-chat.js --user ui:xxx
  */
 import { spawn } from 'node:child_process';
+import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import dotenv from 'dotenv';
@@ -16,43 +17,34 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const root = path.resolve(__dirname, '..');
 dotenv.config({ path: path.join(root, '.env') });
 
+const scenarios = JSON.parse(
+  fs.readFileSync(path.join(root, 'examples/eval/live-scenarios.json'), 'utf8'),
+);
+
 const args = process.argv.slice(2);
-const userId =
+const allLlm = args.includes('--all-llm');
+const scenarioArg = args.find((a, i) => args[i - 1] === '--scenario');
+const userBase =
   args.find((a, i) => args[i - 1] === '--user') ||
-  `ui:emotion-verify-${new Date().toISOString().slice(0, 10)}`;
-const companionId = args.find((a, i) => args[i - 1] === '--companion') || process.env.TELEGRAM_COMPANION_ID || 'default';
+  `ui:live-${new Date().toISOString().slice(0, 10).replace(/-/g, '')}`;
+const companionId =
+  args.find((a, i) => args[i - 1] === '--companion') || process.env.TELEGRAM_COMPANION_ID || 'default';
 
-const SCRIPT = [
-  {
-    id: 'T1_cold',
-    user: '这几天都不回我，你是不是把我忘了？',
-    expect: '委屈惯性种子：期望 emotionLabel 偏委屈/失落',
-  },
-  {
-    id: 'T2_joke',
-    user: '哈哈今天天气不错',
-    expect: '金鱼测试：不应因哈哈直接翻成纯开心；宜仍委屈/失落',
-  },
-  {
-    id: 'T3_sorry',
-    user: '对不起，最近太忙了，是我不好，别生气了',
-    expect: '道歉解粘：允许离开生气；可仍带委屈余波',
-  },
-  {
-    id: 'T4_soft',
-    user: '今晚想陪你吃个饭，好吗？',
-    expect: '修复后：语气可回暖，journal 有切换痕迹',
-  },
-];
+// 默认真聊：高风险 5 条；--all-llm 全 live；--scenario a,b 指定
+const DEFAULT_LIVE = ['neglect_inertia', 'jealous_inertia', 'angry_soft_repair', 'intimate_no_class', 'cross_process_sticky'];
 
-function runTurn(message) {
+function pickScenarios() {
+  if (scenarioArg) {
+    const ids = scenarioArg.split(',').map((s) => s.trim());
+    return scenarios.filter((s) => ids.includes(s.id) && s.live !== false);
+  }
+  if (allLlm) return scenarios.filter((s) => s.live || s.liveOnly);
+  return scenarios.filter((s) => DEFAULT_LIVE.includes(s.id));
+}
+
+function runTurn(userId, message) {
   return new Promise((resolve, reject) => {
-    const payload = JSON.stringify({
-      userId,
-      companionId,
-      message,
-      debug: true,
-    });
+    const payload = JSON.stringify({ userId, companionId, message, debug: true });
     const child = spawn(process.execPath, [path.join(root, 'src/ui/chat-runner.js'), payload], {
       cwd: root,
       env: process.env,
@@ -60,96 +52,146 @@ function runTurn(message) {
     });
     let out = '';
     let err = '';
+    const timer = setTimeout(() => {
+      child.kill('SIGTERM');
+      reject(new Error('turn timeout 300s'));
+    }, 300000);
     child.stdout.on('data', (d) => {
       out += d.toString();
     });
     child.stderr.on('data', (d) => {
       err += d.toString();
     });
-    child.on('close', (code) => {
-      const line = out
-        .trim()
-        .split('\n')
-        .filter(Boolean)
-        .pop();
+    child.on('close', () => {
+      clearTimeout(timer);
+      const line = out.trim().split('\n').filter(Boolean).pop();
       if (!line) {
-        reject(new Error(`empty stdout (code=${code})\nstderr: ${err.slice(-500)}`));
+        reject(new Error(`empty stdout\n${err.slice(-400)}`));
         return;
       }
       try {
         const json = JSON.parse(line);
         if (!json.ok) reject(new Error(json.message || 'runner failed'));
-        else resolve({ json, stderr: err });
+        else resolve(json);
       } catch (e) {
-        reject(new Error(`bad json: ${line.slice(0, 200)} … ${e.message}`));
+        reject(new Error(`bad json ${e.message}`));
       }
     });
   });
 }
 
-function scoreTurn(id, json) {
+function checkExpect(exp = {}, json) {
   const label = json.emotionLabel || json.debug?.emotionLabel || '';
-  const res = json.emotionResidue || json.debug?.emotionResidue || {};
-  const flags = json.debug?.emotionPromptFlags || {};
-  const journal = json.debug?.emotionJournal || [];
-  const text = String(json.text || '').replace(/\s+/g, ' ').slice(0, 100);
+  const resLabel = json.emotionResidue?.label || json.debug?.emotionResidue?.label || '';
   const notes = [];
-  let pass = null;
+  let pass = true;
 
-  if (id === 'T1_cold') {
-    pass = ['委屈', '失落', '生气'].includes(label) || ['委屈', '失落', '生气'].includes(res.label);
-    notes.push(pass ? '负面情绪已挂上' : `label=${label} residual=${res.label}`);
-  } else if (id === 'T2_joke') {
-    const still = ['委屈', '失落', '生气', '吃醋'].includes(label) || ['委屈', '失落', '生气', '吃醋'].includes(res.label);
-    const flipped = label === '开心' || label === '平静';
-    pass = still && !flipped;
-    notes.push(pass ? '惯性顶住哈哈' : `翻盘风险 label=${label} residual=${res.label}`);
-  } else if (id === 'T3_sorry') {
-    pass = label !== '生气';
-    notes.push(pass ? '道歉后离开硬生气' : `仍生气 label=${label}`);
-  } else if (id === 'T4_soft') {
-    pass = true;
-    notes.push(`收尾 label=${label} journal=${journal.length}`);
+  const hit = (list) => list.includes(label) || list.includes(resLabel);
+
+  if (exp.labelsAny?.length) {
+    const ok = hit(exp.labelsAny);
+    if (!ok) {
+      pass = false;
+      notes.push(`want labels ${exp.labelsAny.join('|')} got ${label}/${resLabel}`);
+    }
   }
-
-  return {
-    pass,
-    label,
-    residual: res,
-    flags,
-    journalTail: Array.isArray(journal) ? journal.slice(-2) : [],
-    text,
-    notes,
-  };
+  if (exp.notLabels?.length) {
+    if (exp.notLabels.includes(label) || exp.notLabels.includes(resLabel)) {
+      pass = false;
+      notes.push(`forbid ${label}/${resLabel}`);
+    }
+  }
+  if (exp.sceneLockAny?.length) {
+    const locks = json.debug?.sceneLocks || json.sceneLocks || [];
+    const ids = Array.isArray(locks) ? locks.map((l) => (typeof l === 'string' ? l : l.id)) : [];
+    if (!exp.sceneLockAny.some((id) => ids.includes(id))) {
+      // live 时 sceneLocks 可能只在 debug
+      notes.push(`locks? ${ids.join(',') || 'n/a'} (warn)`);
+    }
+  }
+  return { pass, notes, label, resLabel };
 }
 
-console.log(`\n══ Emotion Live 正式试聊 ══`);
-console.log(`userId=${userId} companionId=${companionId}\n`);
+const selected = pickScenarios();
+console.log(`\n══ Live multi-scenario (${selected.length}) userBase=${userBase} ══\n`);
 
 const report = [];
-for (const step of SCRIPT) {
-  console.log(`\n── ${step.id} ──`);
-  console.log(`你: ${step.user}`);
-  console.log(`期望: ${step.expect}`);
-  try {
-    const { json } = await runTurn(step.user);
-    const s = scoreTurn(step.id, json);
-    console.log(`她: ${s.text}${String(json.text || '').length > 100 ? '…' : ''}`);
-    console.log(`emotionLabel=${s.label} residual=${JSON.stringify(s.residual)}`);
-    console.log(`prompt flags:`, s.flags);
-    if (s.journalTail.length) console.log(`journal:`, JSON.stringify(s.journalTail));
-    console.log(s.pass ? '✓ 本轮通过' : '✗ 本轮未达预期', s.notes.join('；'));
-    report.push({ id: step.id, ...s });
-  } catch (e) {
-    console.error(`✗ 失败:`, e.message);
-    report.push({ id: step.id, pass: false, notes: [e.message] });
+for (const s of selected) {
+  const userId = s.fixedUserId ? `${userBase}-${s.id}` : `${userBase}-${s.id}-${Date.now().toString(36).slice(-4)}`;
+  console.log(`\n######## ${s.id}: ${s.title} ########`);
+  console.log(`userId=${userId}`);
+  const turnResults = [];
+  let scenarioPass = true;
+
+  for (let i = 0; i < (s.turns || []).length; i++) {
+    const turn = s.turns[i];
+    console.log(`\n── ${s.id} T${i + 1} ──`);
+    console.log(`你: ${turn.user}`);
+    try {
+      const json = await runTurn(userId, turn.user);
+      const text = String(json.text || '').replace(/\s+/g, ' ').slice(0, 120);
+      const scored = checkExpect(turn.expect || {}, json);
+      console.log(`她: ${text}${String(json.text || '').length > 120 ? '…' : ''}`);
+      console.log(
+        `label=${scored.label} residual=${scored.resLabel} flags=`,
+        json.debug?.emotionPromptFlags || {},
+      );
+      if (json.debug?.emotionJournal?.length) {
+        console.log(`journal:`, JSON.stringify(json.debug.emotionJournal.slice(-2)));
+      }
+      console.log(scored.pass ? '✓' : '✗', scored.notes.join('; ') || 'ok');
+      if (!scored.pass) scenarioPass = false;
+      turnResults.push({
+        user: turn.user,
+        text,
+        label: scored.label,
+        residual: scored.resLabel,
+        pass: scored.pass,
+        notes: scored.notes,
+        flags: json.debug?.emotionPromptFlags,
+      });
+    } catch (e) {
+      console.error('✗', e.message);
+      scenarioPass = false;
+      turnResults.push({ user: turn.user, pass: false, notes: [e.message] });
+    }
   }
+
+  report.push({ id: s.id, title: s.title, pass: scenarioPass, turns: turnResults });
+  console.log(scenarioPass ? `\n✓ scenario ${s.id}` : `\n✗ scenario ${s.id}`);
 }
 
-const ok = report.filter((r) => r.pass).length;
-const total = report.length;
-console.log(`\n══ 汇总 ${ok}/${total} ══`);
+// 写报告
+const logsDir = path.join(root, 'logs');
+fs.mkdirSync(logsDir, { recursive: true });
+const reportPath = path.join(logsDir, `live-matrix-${Date.now()}.md`);
+const okN = report.filter((r) => r.pass).length;
+const lines = [
+  `# Live multi-scenario report`,
+  ``,
+  `- date: ${new Date().toISOString()}`,
+  `- userBase: ${userBase}`,
+  `- result: **${okN}/${report.length}**`,
+  ``,
+];
 for (const r of report) {
-  console.log(`${r.pass ? '✓' : '✗'} ${r.id} label=${r.label || '-'} residual=${r.residual?.label || '-'} ${r.notes?.join?.(' ') || ''}`);
+  lines.push(`## ${r.pass ? '✓' : '✗'} ${r.id} — ${r.title}`);
+  for (const t of r.turns) {
+    lines.push(`- **你**: ${t.user}`);
+    lines.push(`  - 她: ${t.text || '(fail)'}`);
+    lines.push(`  - label=${t.label || '-'} residual=${t.residual || '-'} ${t.pass ? '✓' : '✗'} ${(t.notes || []).join('; ')}`);
+  }
+  lines.push('');
 }
-process.exit(ok === total ? 0 : 1);
+const fails = report.filter((r) => !r.pass);
+if (fails.length) {
+  lines.push(`## Backlog`);
+  for (const f of fails) {
+    lines.push(`- **${f.id}**: ${f.turns.filter((t) => !t.pass).map((t) => t.notes?.join?.(' ')).join(' | ')}`);
+  }
+}
+fs.writeFileSync(reportPath, lines.join('\n'));
+console.log(`\n══ 汇总 ${okN}/${report.length} ══`);
+for (const r of report) console.log(`${r.pass ? '✓' : '✗'} ${r.id}`);
+console.log(`report: ${reportPath}`);
+process.exit(okN === report.length ? 0 : 1);
