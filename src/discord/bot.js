@@ -3,6 +3,7 @@ import { Client, GatewayIntentBits, Partials } from 'discord.js';
 import { MemoryChannel, mergedOutgoingTexts } from '../channels/memory-channel.js';
 import { ChannelEventStore } from '../channels/idempotency.js';
 import { acquireProcessLock } from '../channels/process-lock.js';
+import { gateIncomingMessage } from '../product/gate.js';
 
 dotenv.config();
 
@@ -45,9 +46,28 @@ export class DiscordMemoryBot {
     const text = cleanDiscordText(message.content, botId);
     if (!text) return;
     const senderId = message.author.id;
+    const companionId = process.env.DISCORD_COMPANION_ID || process.env.TELEGRAM_COMPANION_ID || 'default';
+    const gate = gateIncomingMessage({
+      text,
+      userId: `discord:${senderId}`,
+      companionId,
+      channel: 'discord',
+    });
+    if (!gate.allow) {
+      await message.reply({
+        content: gate.replyText || '这条消息我这边接不了。',
+        allowedMentions: { repliedUser: false },
+      }).catch(() => {});
+      console.log(`[discord] gated user=${senderId} reasons=${(gate.reasons || []).join(',')}`);
+      return;
+    }
     try {
       await message.channel.sendTyping().catch(() => {});
-      const result = await this.memory.reply(senderId, text, { eventId: message.id });
+      const result = await this.memory.reply(senderId, text, {
+        eventId: message.id,
+        stopIntimate: gate.stopIntimate,
+        intimacyAllowed: gate.intimacyAllowed,
+      });
       for (const part of mergedOutgoingTexts(result.parts, 1900)) {
         await message.reply({ content: part, allowedMentions: { repliedUser: false } });
       }

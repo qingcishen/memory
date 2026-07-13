@@ -136,4 +136,21 @@ console.log('gate + album quote + identity + billing');
   ok('审计可写可读', readAuditTail({ limit: 5 }).length >= 1);
 }
 
+console.log('preference tiers');
+{
+  const { inferPreferenceTier, canSupersedePreference, formatMemoryLine } = await import('../src/product/preferenceTier.js');
+  ok('生日→locked', inferPreferenceTier({ type: 'fact', fact_core: '对方生日是3月1日', fact_locked: true }) === 'locked');
+  ok('喜欢香菜→soft', inferPreferenceTier({ type: 'preference', fact_core: '对方喜欢香菜', importance: 5 }) === 'soft');
+  ok('今天想喝奶茶→whim', inferPreferenceTier({ type: 'preference', fact_core: '今天想喝奶茶', importance: 2 }) === 'whim');
+  ok('whim 不能 supersede soft', canSupersedePreference(
+    { type: 'preference', fact_core: '喜欢香菜', importance: 5 },
+    { type: 'preference', fact_core: '今天想喝黑咖啡', importance: 2 },
+  ) === false);
+  ok('soft 不能 supersede locked', canSupersedePreference(
+    { type: 'preference', fact_core: '雷点：不要某种称呼', fact_locked: true },
+    { type: 'preference', fact_core: '其实可以用那个称呼', importance: 5 },
+  ) === false);
+  ok('prompt 行带硬边界标', formatMemoryLine({ type: 'preference', fact_core: '雷点：停就停', fact_locked: true }).includes('硬边界'));
+}
+
 console.log(`\nproduct P2 全部 ${passed} 条断言通过 ✅`);

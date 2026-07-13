@@ -38,3 +38,12 @@ export {
   gateIncomingMessage,
   buildAlbumQuoteMessage,
 } from './gate.js';
+
+export {
+  inferPreferenceTier,
+  preferenceTierPrefix,
+  canSupersedePreference,
+  formatMemoryLine,
+  attachPreferenceTier,
+  PREFERENCE_TIERS,
+} from './preferenceTier.js';
