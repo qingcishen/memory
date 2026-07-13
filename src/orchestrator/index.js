@@ -13,6 +13,7 @@ export {
   normalizeReplyResult,
   rewriteNarrationParts,
   extractStreamingDialoguePreview,
+  pickReplyFormat,
 } from './llm.js';
 export { assemble, buildSystemPrompt, buildTimePrompt, buildGapHint, buildMonologueContext } from './assemble.js';
 export {

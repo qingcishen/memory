@@ -2130,12 +2130,12 @@ function deleteCompanion(companionId, { confirm } = {}) {
 // ---------------------------------------------------------------
 // 编排器试聊: 每条消息 spawn 一次 chat-runner (真实走完整管线, 会调 LLM + 写库)
 // ---------------------------------------------------------------
-function runChat({ message, userId, companionId, debug = false, stopIntimate = false, intimacyAllowed = true } = {}) {
+function runChat({ message, userId, companionId, debug = false, stopIntimate = false, intimacyAllowed = true, stream = false, onEvent = null } = {}) {
   return new Promise((resolve) => {
     const proc = spawn(
       process.execPath,
       [path.join(__dirname, 'chat-runner.js'), JSON.stringify({
-        message, userId, companionId, debug, stopIntimate, intimacyAllowed,
+        message, userId, companionId, debug, stopIntimate, intimacyAllowed, stream: Boolean(stream),
       })],
       { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
     );
@@ -2152,23 +2152,29 @@ function runChat({ message, userId, companionId, debug = false, stopIntimate = f
       proc.kill('SIGKILL');
       finish({ ok: false, message: '回复超时 (120s)' });
     }, 180000);
-    proc.stdout.on('data', (chunk) => {
-      out += chunk;
-      // 协议: runner 输出一行 JSON。防御性地跳过混进 stdout 的杂散日志行,
-      // 只认第一条能解析出 ok 字段的行; 找到后不杀进程, 让 runner 把
-      // afterReply (记忆提取/状态演变) 跑完再自行退出。
-      let nl;
-      while (!settled && (nl = out.indexOf('\n')) >= 0) {
-        const line = out.slice(0, nl).trim();
-        out = out.slice(nl + 1);
-        if (!line) continue;
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed && typeof parsed.ok === 'boolean') {
+    const handleLine = (line) => {
+      if (!line) return;
+      try {
+        const parsed = JSON.parse(line);
+        if (stream && typeof onEvent === 'function' && parsed?.event) {
+          onEvent(parsed);
+        }
+        // 非流式：第一条带 ok 的就是结果；流式：event=done 且 ok 为结果
+        if (parsed && typeof parsed.ok === 'boolean') {
+          if (!stream || parsed.event === 'done' || !parsed.event) {
             clearTimeout(timer);
             finish(parsed);
           }
-        } catch {} // 杂散日志行, 忽略
+        }
+      } catch { /* 杂散日志 */ }
+    };
+    proc.stdout.on('data', (chunk) => {
+      out += chunk;
+      let nl;
+      while ((nl = out.indexOf('\n')) >= 0) {
+        const line = out.slice(0, nl).trim();
+        out = out.slice(nl + 1);
+        handleLine(line);
       }
     });
     proc.stderr.on('data', (chunk) => {
@@ -2176,6 +2182,7 @@ function runChat({ message, userId, companionId, debug = false, stopIntimate = f
     });
     proc.on('exit', () => {
       clearTimeout(timer);
+      if (!settled && out.trim()) handleLine(out.trim());
       finish({ ok: false, message: `runner 退出且无输出${err ? `: ${err.slice(-300)}` : ''}` });
     });
   });
@@ -2712,13 +2719,14 @@ async function handle(req, res) {
     const companionId = url.searchParams.get('companionId') || 'default';
     return serveCardMedia(readEnvValues(), companionId, 'album', cardId, res);
   }
-  if (route === 'POST /api/chat') {
+  if (route === 'POST /api/chat' || route === 'POST /api/chat/stream') {
     const body = await readBody(req);
     const message = String(body?.message ?? '').trim();
     if (!message) return json(res, 200, { ok: false, message: '消息为空' });
     const env = readEnvValues();
     const userId = String(body?.userId || 'ui:playground');
     const companionId = String(body?.companionId || env.TELEGRAM_COMPANION_ID || 'default');
+    const wantStream = route === 'POST /api/chat/stream' || Boolean(body?.stream);
     // 与 Telegram/飞书同一套 gate（安全+配额+身份+审计+账单计数）
     const gate = gateIncomingMessage({
       text: message,
@@ -2727,6 +2735,16 @@ async function handle(req, res) {
       channel: 'ui',
     });
     if (!gate.allow) {
+      if (wantStream) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+        });
+        res.write(`data: ${JSON.stringify({ event: 'done', ok: false, message: gate.replyText || '消息未发送', blocked: true })}\n\n`);
+        res.end();
+        return;
+      }
       return json(res, 200, {
         ok: false,
         blocked: !gate.safety?.ok,
@@ -2737,6 +2755,50 @@ async function handle(req, res) {
         reasons: gate.reasons,
       });
     }
+
+    if (wantStream) {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+      });
+      let doneSent = false;
+      const result = await runChat({
+        message,
+        userId,
+        companionId,
+        debug: Boolean(body?.debug),
+        stopIntimate: gate.stopIntimate,
+        intimacyAllowed: gate.intimacyAllowed,
+        stream: true,
+        onEvent: (ev) => {
+          try {
+            const payload =
+              ev.event === 'done'
+                ? {
+                    ...ev,
+                    safety: { stopIntimate: gate.stopIntimate, intimacyAllowed: gate.intimacyAllowed },
+                  }
+                : ev;
+            res.write(`data: ${JSON.stringify(payload)}\n\n`);
+            if (ev.event === 'done') doneSent = true;
+          } catch { /* client gone */ }
+        },
+      });
+      // runner 异常退出时补一条 done
+      if (!doneSent && result) {
+        try {
+          res.write(`data: ${JSON.stringify({
+            event: 'done',
+            ...result,
+            safety: { stopIntimate: gate.stopIntimate, intimacyAllowed: gate.intimacyAllowed },
+          })}\n\n`);
+        } catch { /* */ }
+      }
+      res.end();
+      return;
+    }
+
     const result = await runChat({
       message,
       userId,

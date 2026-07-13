@@ -222,11 +222,47 @@ async function main() {
     deps,
   });
 
-  const { text, parts, emotionLabel, behaviorPolicy: behavior, intimacyPhase, debug: replyDebug } = await bot.reply(String(req.message ?? ''), {
+  const replyOpts = {
     debug: debugMode,
     stopIntimate: Boolean(req.stopIntimate),
     intimacyAllowed: req.intimacyAllowed !== false,
-  });
+    replyFormat: req.replyFormat,
+  };
+
+  // 流式：每行一个 JSON 事件；done 行带 ok:true 完整结果；最后仍跑 afterReply
+  if (req.stream) {
+    let final = null;
+    for await (const ev of bot.replyStream(String(req.message ?? ''), replyOpts)) {
+      if (ev.event === 'done') {
+        final = ev;
+        const deliverableParts = Array.isArray(ev.parts) && ev.parts.length
+          ? ev.parts
+          : (ev.text ? [{ type: 'dialogue', text: ev.text }] : []);
+        process.stdout.write(`${JSON.stringify({
+          event: 'done',
+          ok: true,
+          text: ev.text,
+          parts: deliverableParts,
+          photos,
+          persona: persona?.config?.name ?? null,
+          recallExplain: ev.recallExplain,
+          streamed: ev.streamed,
+          ...(debugMode && ev.debug ? { debug: { ...trace, ...ev.debug, metrics: metricsSnapshot() } } : {}),
+        })}\n`);
+      } else {
+        process.stdout.write(`${JSON.stringify(ev)}\n`);
+      }
+    }
+    await bot._lastPhoto?.catch(() => {});
+    await bot._lastAfterReply?.catch(() => {});
+    await bot._lastHistoryPersist?.catch(() => {});
+    if (!final) {
+      process.stdout.write(`${JSON.stringify({ event: 'done', ok: false, message: '流式无结果' })}\n`);
+    }
+    process.exit(0);
+  }
+
+  const { text, parts, emotionLabel, behaviorPolicy: behavior, intimacyPhase, debug: replyDebug, recallExplain } = await bot.reply(String(req.message ?? ''), replyOpts);
   // Orchestrator 在消息渠道中会后台发图；runner 是短命进程，必须等这一张图
   // 生成并收进 payload 后再退出，否则子进程结束时图片会一起丢失。
   await bot._lastPhoto?.catch(() => {});
@@ -238,6 +274,8 @@ async function main() {
     if (intimacyPhase != null) trace.intimacyPhase = intimacyPhase;
     if (replyDebug?.stateSnapshot) trace.stateSnapshot = slim(replyDebug.stateSnapshot);
     if (replyDebug?.intimacyPhase) trace.intimacyPhase = replyDebug.intimacyPhase;
+    if (recallExplain) trace.recallExplain = recallExplain;
+    if (replyDebug?.recallExplain) trace.recallExplain = replyDebug.recallExplain;
     trace.promptParts.narration = buildNarrationPrompt(
       trace.sceneType,
       persona?.config?.narrationDirectives,
@@ -255,6 +293,7 @@ async function main() {
     parts: deliverableParts,
     photos,
     persona: persona?.config?.name ?? null,
+    recallExplain,
     ...(debugMode ? { debug: trace } : {}),
   };
   process.stdout.write(`${JSON.stringify(payload)}\n`);

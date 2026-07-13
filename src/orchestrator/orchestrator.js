@@ -6,7 +6,7 @@
 // 详见编排器设计方案 §5。
 
 import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
-import { DefaultLLM, normalizeReplyResult, joinReplyParts } from './llm.js';
+import { DefaultLLM, normalizeReplyResult, joinReplyParts, pickReplyFormat } from './llm.js';
 import { assemble, buildMonologueContext, buildTimePrompt } from './assemble.js';
 import { hoursSince } from '../decay.js';
 import { getCompanion } from '../companion.js';
@@ -438,6 +438,14 @@ export class Orchestrator {
     const baseSampling =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
     const samplingHints = applyBehaviorSampling(baseSampling, behavior, bodySit);
+    // 日常 plain 更快首包；亲密/车内/有旁白指令 → json
+    const replyFormat = pickReplyFormat({
+      sceneLocks,
+      intimacyPhase: intimacyLive?.scene_phase,
+      needNarration: Boolean(promptParts.narrationPrompt && promptParts.narrationPrompt.trim()),
+      forceFormat: opts.replyFormat,
+    });
+    samplingHints.format = replyFormat;
 
     // 流式路径：调用方 for await 消费；非流式保持原语义
     if (opts.stream && typeof this.llm.generateReplyStream === 'function') {

@@ -102,6 +102,55 @@ export function typingDelayMs(text = '') {
   return Math.min(1200, Math.max(600, String(text ?? '').length * 12));
 }
 
+/**
+ * 把 parts 拆成「像真人连发」的多条气泡：旁白单独一条，长台词按句号拆 2～3 条。
+ * TELEGRAM_MERGE_MESSAGES=1 时退回整段合并（旧行为）。
+ */
+export function buildHumanOutgoingMessages(parts = [], { maxDialogueBubbles = 3, minSplitLen = 28 } = {}) {
+  if (process.env.TELEGRAM_MERGE_MESSAGES === '1' || process.env.TELEGRAM_MERGE_MESSAGES === 'true') {
+    return buildMergedOutgoingMessages(parts);
+  }
+  const out = [];
+  for (const p of parts || []) {
+    const text = String(p?.text || '').trim();
+    if (!text) continue;
+    if (p.type === 'narration') {
+      out.push({ type: 'narration', text });
+      continue;
+    }
+    const bubbles = splitDialogueBubbles(text, maxDialogueBubbles, minSplitLen);
+    for (const b of bubbles) out.push({ type: 'dialogue', text: b });
+  }
+  if (!out.length) return buildMergedOutgoingMessages(parts);
+  // 超长仍按 Telegram 限制切块
+  return out.flatMap((msg) =>
+    chunkMessage(msg.text)
+      .filter(Boolean)
+      .map((text) => ({ type: msg.type, text })),
+  );
+}
+
+/** 按中文/英文句号等拆成最多 max 条，短句不拆。 */
+export function splitDialogueBubbles(text = '', max = 3, minSplitLen = 28) {
+  const s = String(text || '').trim();
+  if (!s) return [];
+  if (s.length < minSplitLen || max <= 1) return [s];
+  // 先按换行，再按句末标点
+  let pieces = s.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+  if (pieces.length === 1) {
+    pieces = s.split(/(?<=[。！？!?…])\s*/).map((x) => x.trim()).filter(Boolean);
+  }
+  if (pieces.length <= 1) return [s];
+  if (pieces.length <= max) return pieces;
+  // 合并到 max 条
+  const out = [];
+  const bucket = Math.ceil(pieces.length / max);
+  for (let i = 0; i < pieces.length; i += bucket) {
+    out.push(pieces.slice(i, i + bucket).join(''));
+  }
+  return out.slice(0, max);
+}
+
 export function pickPolicyDelay(policy = {}, rng = Math.random) {
   const [rawMin, rawMax] = Array.isArray(policy.replyDelayMs) ? policy.replyDelayMs : [0, 0];
   const min = Math.max(0, Number(rawMin) || 0);
@@ -388,10 +437,14 @@ export class TelegramMemoryBot {
    * 用户主动发消息这条路径需要失败能冒泡到外层, 好触发"卡了一下"的兜底回复。
    */
   async sendParts(chatId, parts) {
-    const outgoing = buildMergedOutgoingMessages(parts);
-    for (const msg of outgoing) {
+    // 默认像真人连发：旁白 / 多句台词分多条 + typing 间隔；MERGE=1 可关
+    const outgoing = buildHumanOutgoingMessages(parts);
+    for (let i = 0; i < outgoing.length; i++) {
+      const msg = outgoing[i];
       await this.api.sendChatAction(chatId, 'typing').catch(() => {});
-      await sleep(typingDelayMs(msg.text));
+      // 第二条起略加停顿，模拟「又打了一句」
+      const delay = typingDelayMs(msg.text) + (i > 0 ? 280 + Math.floor(Math.random() * 420) : 0);
+      await sleep(delay);
       await this.api.sendMessage(chatId, msg.text);
     }
     return outgoing;

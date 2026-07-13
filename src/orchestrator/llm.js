@@ -13,6 +13,26 @@ parts 至少有一个 dialogue part。dialogue 是她说/发出去的话本身�
 她的话默认只用一个 dialogue part；只有偶尔她像真人分几条发消息时（比如一句感叹接一句追问、或说到一半又补一句），才拆成 2-3 个连续的 dialogue part，每个 part 都短，不要为了拆而拆，大多数时候一个就够。
 要不要加 narration part、narration 怎么写，按上面的场景旁白指令来；日常场景通常不需要 narration part。`;
 
+/** 日常 plain 模式：首 token 更快，适合流式打字机；亲密场景仍用 JSON。 */
+const REPLY_PLAIN_INSTRUCTION = `【输出格式·纯台词】直接输出她要发出去/说出口的话，像微信聊天。
+不要 JSON、不要 markdown 代码块、不要用引号包住整段、不要写旁白/动作描写、不要「角色名：」前缀。
+可以偶尔用换行拆成两句短消息感，但多数时候一两句即可。`;
+
+/**
+ * 选择输出格式：亲密/车内/有旁白需求 → json；日常 → plain（更快首包）。
+ * @param {{ sceneLocks?, intimacyPhase?, forceFormat?, needNarration? }} ctx
+ */
+export function pickReplyFormat(ctx = {}) {
+  if (ctx.forceFormat === 'json' || ctx.forceFormat === 'plain') return ctx.forceFormat;
+  const locks = ctx.sceneLocks || [];
+  const phase = ctx.intimacyPhase;
+  const intimate =
+    locks.some((l) => l?.id === 'intimate' || l?.id === 'car') ||
+    ['foreplay', 'peak', 'aftercare', 'flirting'].includes(phase);
+  if (intimate || ctx.needNarration) return 'json';
+  return 'plain';
+}
+
 function dialoguePart(text) {
   const clean = String(text ?? '').trim();
   return { type: 'dialogue', text: clean || '...' };
@@ -100,48 +120,56 @@ export async function rewriteNarrationParts(parts, messages, { client = narratio
 export class DefaultLLM {
   /** 生成给用户的回复 (好模型, 温度高一点更有人味)。返回结构化 { parts }, 旁白/台词分开发消息。 */
   async generateReply(messages, opts = {}) {
-    const payload = buildReplyPayload(messages, opts);
+    const format = opts.format === 'plain' ? 'plain' : 'json';
+    const payload = buildReplyPayload(messages, { ...opts, format });
     let res;
-    try {
-      res = await replyLlm.chat.completions.create({ ...payload, response_format: { type: 'json_object' } }, { signal: opts.signal });
-    } catch (error) {
-      if (!looksLikeUnsupportedResponseFormat(error)) throw error;
+    if (format === 'json') {
+      try {
+        res = await replyLlm.chat.completions.create({ ...payload, response_format: { type: 'json_object' } }, { signal: opts.signal });
+      } catch (error) {
+        if (!looksLikeUnsupportedResponseFormat(error)) throw error;
+        res = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
+      }
+    } else {
       res = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
     }
     recordLlmCall('reply', res.usage);
     let content = res.choices[0].message.content;
     // DeepSeek 在 json_object 模式下偶发返回空 content (官方文档已知问题)。
-    // 空回复绝不能变成 "..." 发给用户: 退回普通模式重试一次; 若返回的是散文,
-    // parseReplyParts 会兜底把它整段当 dialogue part, 消息照样发得出去。
     if (!content || !String(content).trim()) {
       res = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
       recordLlmCall('reply', res.usage);
       content = res.choices[0].message.content;
     }
-    const parts = parseReplyParts(content);
-    return { parts: await rewriteNarrationParts(parts, messages, { signal: opts.signal }) };
+    let parts = format === 'plain' ? [dialoguePart(content)] : parseReplyParts(content);
+    if (format === 'json') {
+      parts = await rewriteNarrationParts(parts, messages, { signal: opts.signal });
+    }
+    return { parts, format };
   }
 
   /**
    * 流式回复：边生成边 yield。
-   * 事件:
-   *   { event:'delta', text }     — 增量原文（或从 JSON 里抠出的 dialogue 预览）
-   *   { event:'preview', text }   — 当前累计可见台词预览
-   *   { event:'done', parts, text, raw } — 结束
-   * 失败安全：流式不可用时退化为一次 generateReply，只 yield done。
+   * format=plain（日常）首 token 更快；format=json（亲密）支持旁白。
+   * 事件: delta | preview | done
    */
   async *generateReplyStream(messages, opts = {}) {
-    const payload = { ...buildReplyPayload(messages, opts), stream: true };
+    const format = opts.format === 'plain' ? 'plain' : 'json';
+    const payload = { ...buildReplyPayload(messages, { ...opts, format }), stream: true };
     let raw = '';
     try {
       let stream;
-      try {
-        stream = await replyLlm.chat.completions.create(
-          { ...payload, response_format: { type: 'json_object' } },
-          { signal: opts.signal },
-        );
-      } catch (error) {
-        if (!looksLikeUnsupportedResponseFormat(error)) throw error;
+      if (format === 'json') {
+        try {
+          stream = await replyLlm.chat.completions.create(
+            { ...payload, response_format: { type: 'json_object' } },
+            { signal: opts.signal },
+          );
+        } catch (error) {
+          if (!looksLikeUnsupportedResponseFormat(error)) throw error;
+          stream = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
+        }
+      } else {
         stream = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
       }
 
@@ -149,31 +177,33 @@ export class DefaultLLM {
         const delta = chunk?.choices?.[0]?.delta?.content ?? chunk?.choices?.[0]?.text ?? '';
         if (!delta) continue;
         raw += delta;
-        yield { event: 'delta', text: delta };
-        const preview = extractStreamingDialoguePreview(raw);
-        if (preview) yield { event: 'preview', text: preview };
+        yield { event: 'delta', text: delta, format };
+        const preview =
+          format === 'plain' ? raw.trim() : extractStreamingDialoguePreview(raw);
+        if (preview) yield { event: 'preview', text: preview, format };
       }
       recordLlmCall('reply', undefined);
     } catch {
-      // 流式失败：整包降级
-      const full = await this.generateReply(messages, { ...opts, stream: false });
+      const full = await this.generateReply(messages, { ...opts, stream: false, format });
       const text = joinReplyParts(full.parts);
-      yield { event: 'preview', text };
-      yield { event: 'done', parts: full.parts, text, raw: text, streamed: false };
+      yield { event: 'preview', text, format };
+      yield { event: 'done', parts: full.parts, text, raw: text, streamed: false, format };
       return;
     }
 
     if (!raw.trim()) {
-      const full = await this.generateReply(messages, { ...opts, stream: false });
+      const full = await this.generateReply(messages, { ...opts, stream: false, format });
       const text = joinReplyParts(full.parts);
-      yield { event: 'done', parts: full.parts, text, raw: text, streamed: false };
+      yield { event: 'done', parts: full.parts, text, raw: text, streamed: false, format };
       return;
     }
 
-    let parts = parseReplyParts(raw);
-    parts = await rewriteNarrationParts(parts, messages, { signal: opts.signal });
+    let parts = format === 'plain' ? [dialoguePart(raw)] : parseReplyParts(raw);
+    if (format === 'json') {
+      parts = await rewriteNarrationParts(parts, messages, { signal: opts.signal });
+    }
     const text = joinReplyParts(parts);
-    yield { event: 'done', parts, text, raw, streamed: true };
+    yield { event: 'done', parts, text, raw, streamed: true, format };
   }
 
   /** 生成不展示的内心独白 (便宜模型)。串行 await 在正式回复之前, 加 max_tokens 上限防止
@@ -194,11 +224,13 @@ export class DefaultLLM {
 }
 
 function buildReplyPayload(messages, opts = {}) {
+  const format = opts.format === 'plain' ? 'plain' : 'json';
+  const instruction = format === 'plain' ? REPLY_PLAIN_INSTRUCTION : REPLY_JSON_INSTRUCTION;
   return {
     model: opts.model ?? REPLY_MODEL,
     temperature: opts.temperature ?? 0.8,
     ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
-    messages: [...messages, { role: 'system', content: REPLY_JSON_INSTRUCTION }],
+    messages: [...messages, { role: 'system', content: instruction }],
   };
 }
 

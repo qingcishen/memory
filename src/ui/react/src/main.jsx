@@ -780,14 +780,90 @@ function Chat({ scope, seed, draft, onSeedConsumed, onDraftConsumed }) {
     event.preventDefault();
     const message = input.trim();
     if (!message || busy) return;
-    setInput(''); setMessages(current => [...current, { role: 'user', text: message }]); setBusy(true);
+    setInput('');
+    setMessages(current => [...current, { role: 'user', text: message }, { role: 'assistant', text: '', streaming: true }]);
+    setBusy(true);
+    setDebug(null);
     try {
-      const result = await api('/api/chat', json('POST', { message, userId: scope.userId || 'ui:playground', companionId: scope.companionId, debug: debugEnabled }));
-      if (!result.ok) throw new Error(result.message || '生成失败');
-      const replyMessages = (result.parts || []).map(part => ({ role: part.type === 'narration' ? 'narration' : 'assistant', text: part.text }));
-      const photoMessages = (result.photos || []).map(photo => ({ role: 'photo', ...photo }));
-      setMessages(current => [...current, ...replyMessages, ...photoMessages]); setDebug(result.debug || null);
-    } catch (error) { setMessages(current => [...current, { role: 'error', text: error.message }]); } finally { setBusy(false); }
+      const token = localStorage.getItem('cyber-memory-admin-token') || '';
+      const response = await fetch('/api/chat/stream', {
+        method: 'POST',
+        headers: {
+          'content-type': 'application/json',
+          ...(token ? { authorization: `Bearer ${token}` } : {}),
+        },
+        body: JSON.stringify({
+          message,
+          userId: scope.userId || 'ui:playground',
+          companionId: scope.companionId,
+          debug: debugEnabled,
+        }),
+      });
+      if (response.status === 401) {
+        const next = window.prompt('请输入管理控制台 Token');
+        if (next) localStorage.setItem('cyber-memory-admin-token', next);
+        throw new Error('需要管理 Token，请重试');
+      }
+      if (!response.ok || !response.body) {
+        // 降级整包
+        const result = await api('/api/chat', json('POST', { message, userId: scope.userId || 'ui:playground', companionId: scope.companionId, debug: debugEnabled }));
+        if (!result.ok) throw new Error(result.message || '生成失败');
+        const replyMessages = (result.parts || []).map(part => ({ role: part.type === 'narration' ? 'narration' : 'assistant', text: part.text }));
+        const photoMessages = (result.photos || []).map(photo => ({ role: 'photo', ...photo }));
+        setMessages(current => {
+          const withoutStream = current.filter(m => !m.streaming);
+          return [...withoutStream, ...replyMessages, ...photoMessages];
+        });
+        setDebug(result.debug || null);
+        return;
+      }
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = '';
+      let finalParts = null;
+      while (true) {
+        const { done, value } = await reader.read();
+        if (done) break;
+        buffer += decoder.decode(value, { stream: true });
+        const chunks = buffer.split('\n\n');
+        buffer = chunks.pop() || '';
+        for (const chunk of chunks) {
+          const line = chunk.split('\n').find(l => l.startsWith('data: '));
+          if (!line) continue;
+          let ev;
+          try { ev = JSON.parse(line.slice(6)); } catch { continue; }
+          if (ev.event === 'preview' && ev.text != null) {
+            setMessages(current => {
+              const next = [...current];
+              let i = -1;
+              for (let j = next.length - 1; j >= 0; j--) {
+                if (next[j].streaming) { i = j; break; }
+              }
+              if (i >= 0) next[i] = { role: 'assistant', text: ev.text, streaming: true };
+              return next;
+            });
+          }
+          if (ev.event === 'done') {
+            if (ev.ok === false) throw new Error(ev.message || '生成失败');
+            finalParts = ev.parts || (ev.text ? [{ type: 'dialogue', text: ev.text }] : []);
+            if (ev.debug) setDebug(ev.debug);
+            const replyMessages = finalParts.map(part => ({ role: part.type === 'narration' ? 'narration' : 'assistant', text: part.text }));
+            const photoMessages = (ev.photos || []).map(photo => ({ role: 'photo', ...photo }));
+            setMessages(current => {
+              const withoutStream = current.filter(m => !m.streaming);
+              return [...withoutStream, ...replyMessages, ...photoMessages];
+            });
+          }
+        }
+      }
+    } catch (error) {
+      setMessages(current => {
+        const withoutStream = current.filter(m => !m.streaming);
+        return [...withoutStream, { role: 'error', text: error.message }];
+      });
+    } finally {
+      setBusy(false);
+    }
   };
 
   const herAvatar = avatarPhoto
@@ -803,7 +879,7 @@ function Chat({ scope, seed, draft, onSeedConsumed, onDraftConsumed }) {
     if (item.role === 'photo') return <div className="chat-message" key={index}>{herAvatar}<div className="chat-message-body"><div className="chat-message-meta"><b>{companionName}</b><time>刚刚</time></div><div className="chat-photo-wrap"><button className="chat-photo-button" onClick={() => setSelectedPhoto(item.url)}><img src={item.url} alt="她分享的照片"/>{item.reason && <span>{item.kind === 'selfie' ? '自拍' : '照片'} · {item.reason}</span>}</button><button className="chat-photo-remove" aria-label="删除这张照片" onClick={() => setMessages(current => current.filter((_, messageIndex) => messageIndex !== index))}><X size={14}/></button></div></div></div>;
     if (item.role === 'narration') return <div className="chat-narration" key={index}><span>SCENE</span>{item.text}</div>;
     const isUser = item.role === 'user';
-    return <div className={`chat-message ${isUser ? 'is-user' : 'is-her'} ${item.role === 'error' ? 'is-error' : ''}`} key={index}>{isUser ? <div className="chat-avatar avatar-user">你</div> : herAvatar}<div className="chat-message-body"><div className="chat-message-meta"><b>{isUser ? '你' : companionName}</b><time>刚刚</time></div><p>{item.text}</p></div></div>;
+    return <div className={`chat-message ${isUser ? 'is-user' : 'is-her'} ${item.role === 'error' ? 'is-error' : ''} ${item.streaming ? 'is-streaming' : ''}`} key={index}>{isUser ? <div className="chat-avatar avatar-user">你</div> : herAvatar}<div className="chat-message-body"><div className="chat-message-meta"><b>{isUser ? '你' : companionName}</b><time>{item.streaming ? '输入中' : '刚刚'}</time></div><p>{item.text || (item.streaming ? '…' : '')}</p></div></div>;
   };
 
   return <div className="chat-shell">
@@ -816,14 +892,14 @@ function Chat({ scope, seed, draft, onSeedConsumed, onDraftConsumed }) {
     </header>
     <div ref={logRef} className="chat-log scrollbar">
       {messages.map(renderMessage)}
-      {busy && <div className="chat-message chat-typing">{herAvatar}<div><div className="chat-message-meta"><b>{companionName}</b><time>正在输入</time></div><div className="chat-typing-dots"><i/><i/><i/></div></div></div>}
+      {busy && !messages.some(m => m.streaming && m.text) && <div className="chat-message chat-typing">{herAvatar}<div><div className="chat-message-meta"><b>{companionName}</b><time>正在输入</time></div><div className="chat-typing-dots"><i/><i/><i/></div></div></div>}
     </div>
     {debugEnabled && debug && <DebugPanel debug={debug}/>}
     <form onSubmit={send} className="chat-composer">
       <textarea ref={composerRef} rows={1} value={input} onChange={event => setInput(event.target.value)} onKeyDown={event => { if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); send(event); } }} placeholder={`给${companionName}发消息`}/>
       <button className="chat-send" disabled={busy || !input.trim()}>{busy ? <LoaderCircle className="animate-spin" size={17}/> : '发送'}</button>
     </form>
-    <div className="chat-composer-hint">按 Enter 发送 · Shift + Enter 换行 · 当前模型回复会同步写入记忆</div>
+    <div className="chat-composer-hint">按 Enter 发送 · Shift + Enter 换行 · 流式打字机 · 会写入记忆</div>
     {selectedPhoto && <div className="photo-lightbox" role="dialog" aria-modal="true" aria-label="照片预览" onClick={() => setSelectedPhoto(null)}><button className="photo-lightbox-close" onClick={() => setSelectedPhoto(null)}><X size={20}/></button><img src={selectedPhoto} alt="她分享的照片预览"/></div>}
   </div>;
 }
