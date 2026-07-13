@@ -132,7 +132,11 @@ console.log('TelegramMemoryBot.deliverReply B3 完整发送/合并');
   await delivery.deliverReply(42, [{ type: 'dialogue', text: '给你一个台阶' }, { type: 'dialogue', text: '多余第二条' }], {
     policy: { replyDelayMs: [0, 0], partsBudget: 1, stonewall: false }, behaviorState: saved.at(-1), bot: memoryBot,
   });
-  ok('下一轮完整发送全部台词并合并为一条', sent.at(-1) === '给你一个台阶\n\n多余第二条');
+  // 默认多气泡连发（非 MERGE=1）；两条台词都会发出
+  ok(
+    '下一轮完整发送全部台词（多气泡）',
+    sent.includes('给你一个台阶') && sent.includes('多余第二条'),
+  );
   ok('正常回复后清除强制台阶标志', saved.length === 0);
 }
 
