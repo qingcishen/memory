@@ -7,7 +7,7 @@ import crypto from 'node:crypto';
 import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeWardrobe, PIECE_KEYS } from './outfit.js';
-import { applyPromptKit } from '../appearance/promptKit.js';
+import { applyPromptKit, applyProductPromptKit, isPersonOutfitCard, assemblePersonImagePrompt } from '../appearance/promptKit.js';
 
 const ALLOWED = new Map([
   ['image/png', 'png'],
@@ -73,47 +73,117 @@ function piecesText(pieces = {}) {
   return parts.join('；');
 }
 
-/** 默认出图提示词（英文为主，方便 SD / MJ / GPT Image） */
+/**
+ * 默认出图提示词（英文为主，方便 SD / MJ / GPT Image）
+ * - look / lingerie：有人，全身套装
+ * - bag / shoe / beauty / …：纯产品静物，禁止出人
+ */
 export function defaultPromptForCard(card) {
-  const base =
-    'Photorealistic luxury editorial, East Asian woman, elegant reserved heiress aesthetic, soft natural light, refined color grading, magazine quality, no text, no watermark, no logo.';
+  const title = card.title || card.summary || '';
+  const brand = card.brand ? ` by ${card.brand}` : '';
+
+  // —— 整套套装：有人 ——
   if (card.kind === 'look') {
     const pieceLine = piecesText(card.pieces || {});
-    return `${base} Full-body or three-quarter portrait wearing this complete look: ${card.summary || card.title}. Details: ${pieceLine}. Context mood: ${card.context || 'daily'}.`;
+    const assembled = assemblePersonImagePrompt({
+      appearance: 'elegant adult East Asian woman, refined facial proportions',
+      outfitMods: [
+        `wearing complete look: ${card.summary || title}`,
+        pieceLine ? `details: ${pieceLine}` : '',
+        card.pieces?.shoes
+          ? `shoes: ${card.pieces.shoes}, fully visible`
+          : 'complete elegant footwear fully visible',
+      ].filter(Boolean),
+      scene: `context mood: ${card.context || 'daily'}, refined lifestyle or soft editorial set`,
+      kind: 'lookbook',
+      pieces: card.pieces || {},
+      appendNegative: true,
+    });
+    return assembled.prompt;
   }
-  if (card.kind === 'piece') {
-    return `${base} Fashion still-life and worn detail of ${card.pieceKeyLabel || 'garment'}: ${card.title}. Luxury materials, premium craftsmanship, clean studio or soft lifestyle background.`;
-  }
-  if (card.kind === 'bag') {
-    return `${base} Luxury handbag product photography and lifestyle carry shot: ${card.title}. Hermès/Chanel-level craftsmanship feel, soft shadows, premium leather texture.`;
-  }
-  if (card.kind === 'beauty') {
-    return `${base} Luxury beauty product flat-lay and soft glam detail: ${card.title} (${card.beautyCategoryLabel || 'beauty'}). Chanel/Dior/CPB-level packaging aesthetic, clean vanity light.`;
-  }
+
   if (card.kind === 'lingerie') {
     const detail = [card.bra, card.panties, card.color].filter(Boolean).join(', ');
-    return `${base} Tasteful luxury lingerie editorial (artistic, non-explicit): ${card.title}. ${detail}. Soft boudoir lighting, silk and lace texture, high-end La Perla aesthetic.`;
+    const assembled = assemblePersonImagePrompt({
+      appearance: 'elegant adult East Asian woman, refined facial proportions',
+      outfitMods: [
+        `tasteful luxury lingerie look (artistic, non-explicit): ${title}`,
+        detail,
+        'silk and lace texture, high-end La Perla aesthetic, covered elegant styling',
+        'soft house slippers or elegant mules fully visible, not barefoot',
+      ].filter(Boolean),
+      scene: 'soft boudoir lighting, refined private interior, classy not vulgar',
+      kind: 'lookbook',
+      appendNegative: true,
+    });
+    return assembled.prompt;
+  }
+
+  // —— 以下全部：只有单品，没有人 ——
+  const product = (desc) =>
+    [
+      'Luxury product photography, single item only, no person, no model, no human face, no body,',
+      desc,
+      'premium materials, soft studio shadows, clean background, magazine still-life quality,',
+      'no text, no watermark, no logo.',
+      'Avoid: person, model, woman, face, portrait, full body, hands as lifestyle portrait subject, collage, low quality.',
+    ].join(' ');
+
+  if (card.kind === 'piece') {
+    return product(
+      `Garment still life of ${card.pieceKeyLabel || 'fashion piece'}: ${title}. ` +
+        'Flat-lay or on a minimal hanger / bust form without face, fabric weave and construction detail.',
+    );
+  }
+  if (card.kind === 'bag') {
+    return product(
+      `Luxury handbag only: ${title}${brand}. Hermès/Chanel-level leather grain and hardware, ` +
+        'hero product angle, optional soft reflection surface, no model carrying it as a portrait.',
+    );
+  }
+  if (card.kind === 'beauty') {
+    return product(
+      `Luxury beauty product packaging only: ${title} (${card.beautyCategoryLabel || 'beauty'})${brand}. ` +
+        'Chanel/Dior/CPB-level bottle or compact, vanity flat-lay, clean glam light.',
+    );
   }
   if (card.kind === 'shoe') {
     const detail = [card.brand, card.itemKind, card.heel, card.material].filter(Boolean).join(', ');
-    return `${base} Luxury footwear product photography and worn detail: ${card.title}. ${detail}. Manolo/Louboutin/Chanel level, elegant heels or premium flats, soft studio light, leather texture.`;
+    return product(
+      `Luxury footwear product shot only: ${title}. ${detail}. ` +
+        'Single pair or hero shoe, full shoe silhouette clear, Manolo/Louboutin/Chanel craftsmanship, no person wearing them in full-body portrait.',
+    );
   }
   if (card.kind === 'jewelry') {
-    return `${base} High jewelry still life and on-skin detail: ${card.title}${card.brand ? ` by ${card.brand}` : ''}. Cartier/Van Cleef aesthetic, soft sparkle, platinum gold diamonds, macro luxury photography.`;
+    return product(
+      `High jewelry still life only: ${title}${brand}. Cartier/Van Cleef aesthetic, soft sparkle, macro metal and stone detail, no model face.`,
+    );
   }
   if (card.kind === 'watch') {
-    return `${base} Luxury women's watch product shot: ${card.title}${card.brand ? ` by ${card.brand}` : ''}. Cartier Tank aesthetic, wrist detail, refined steel gold, soft daylight.`;
+    return product(
+      `Luxury women's watch product photography only: ${title}${brand}. ` +
+        'Cartier Tank level, watch alone or on a neutral display, optional anonymous wrist crop without face/body, refined steel gold.',
+    );
   }
   if (card.kind === 'accessory') {
-    return `${base} Luxury accessory still life: ${card.title}${card.brand ? ` by ${card.brand}` : ''} (${card.itemKind || 'accessory'}). Hermès scarf / Celine sunglasses level craftsmanship, clean editorial light.`;
+    return product(
+      `Luxury accessory still life only: ${title}${brand} (${card.itemKind || 'accessory'}). ` +
+        'Hermès scarf / Celine sunglasses level, product only, clean editorial light.',
+    );
   }
   if (card.kind === 'outerwear') {
-    return `${base} Luxury outerwear editorial and garment detail: ${card.title}${card.brand ? ` by ${card.brand}` : ''}. Max Mara/The Row/Loro Piana coat aesthetic, cashmere wool texture, full silhouette.`;
+    return product(
+      `Luxury outerwear garment still life: ${title}${brand}. ` +
+        'Coat on a minimal form or hanger, Max Mara/The Row/Loro Piana cashmere wool texture, full garment silhouette, no face no lifestyle model.',
+    );
   }
   if (card.kind === 'travel') {
-    return `${base} Luxury travel still life: ${card.title}${card.brand ? ` by ${card.brand}` : ''} (${card.itemKind || 'travel'}). Rimowa / first-class cabin aesthetic, polished metal luggage or beauty mini kit, soft hotel light.`;
+    return product(
+      `Luxury travel item still life: ${title}${brand} (${card.itemKind || 'travel'}). ` +
+        'Rimowa / first-class aesthetic, luggage or beauty mini kit only, soft hotel light, no person.',
+    );
   }
-  return `${base} ${card.title || card.summary || ''}`;
+  return product(title || 'premium luxury item');
 }
 
 function drawerToCards(list, kind, subtitleDefault) {
@@ -395,10 +465,14 @@ export function enrichCatalogWithAssets(catalog, companionRoot, { companionId = 
   const enrich = (card) => {
     const entry = assets.cards?.[card.id] || {};
     const rawPrompt = entry.prompt?.trim() ? entry.prompt : card.defaultPrompt;
-    const prompt = applyPromptKit(rawPrompt || '', { forceFullBody: true, appendNegative: true }).prompt;
+    // 套装/内衣着装 → 人像 kit；包鞋美妆等 → 纯产品 kit（禁止套用全身人像）
+    const prompt = isPersonOutfitCard(card.kind)
+      ? applyPromptKit(rawPrompt || '', { forceFullBody: true, appendNegative: true }).prompt
+      : applyProductPromptKit(rawPrompt || card.title || '', { appendNegative: true }).prompt;
     return {
       ...card,
       prompt,
+      promptMode: isPersonOutfitCard(card.kind) ? 'person_look' : 'product_only',
       hasCustomPrompt: Boolean(entry.prompt?.trim()),
       imageUrl: entry.file
         ? `/api/outfit/media/${encodeURIComponent(card.id)}/file?companionId=${encodeURIComponent(companionId)}&t=${encodeURIComponent(entry.updatedAt || '')}`

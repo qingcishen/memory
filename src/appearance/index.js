@@ -26,7 +26,11 @@ export {
   MATURE_WIFE_AURA,
   FULL_BODY_SHOES,
   IMAGE_NEGATIVE,
+  IMAGE_NEGATIVE_PRODUCT,
+  PRODUCT_ONLY,
   assemblePersonImagePrompt,
   applyPromptKit,
+  applyProductPromptKit,
+  isPersonOutfitCard,
   sanitizeShoesForImage,
 } from './promptKit.js';

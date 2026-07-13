@@ -145,7 +145,7 @@ export function assemblePersonImagePrompt({
 }
 
 /**
- * 给已有长 prompt 包一层身份锁 + 参考图禁区 + 负向（卡片自定义 prompt 用）
+ * 给已有长 prompt 包一层身份锁 + 参考图禁区 + 负向（**套装/人像卡**用）
  */
 export function applyPromptKit(rawPrompt = '', { hasReferences = false, forceFullBody = true, appendNegative = true } = {}) {
   const body = String(rawPrompt || '').trim();
@@ -165,4 +165,37 @@ export function applyPromptKit(rawPrompt = '', { hasReferences = false, forceFul
     prompt += `. Avoid: ${IMAGE_NEGATIVE}`;
   }
   return { prompt, negative: IMAGE_NEGATIVE };
+}
+
+/** 单品出图：禁止出现人物 */
+export const PRODUCT_ONLY =
+  'luxury product photography of a single item only, no person, no model, no human face, no body, no hands as portrait subject, ' +
+  'isolated product or premium still life, soft studio light, material texture detail, clean background, no text, no watermark';
+
+export const IMAGE_NEGATIVE_PRODUCT =
+  'person, model, woman, man, face, portrait, full body, human hands holding as lifestyle portrait, multiple products clutter, ' +
+  'collage, grid, text, watermark, logo, low quality, cartoon, plastic cheap materials';
+
+/**
+ * 单品卡 prompt 包装：只有产品，没有人
+ */
+export function applyProductPromptKit(rawPrompt = '', { appendNegative = true } = {}) {
+  const body = String(rawPrompt || '').trim();
+  // 去掉误拼的人像套件残留
+  const cleaned = body
+    .replace(/same woman[^.]*\./gi, '')
+    .replace(/full body head-to-toe[^.]*\./gi, '')
+    .replace(/married-woman[^.]*\./gi, '')
+    .replace(/East Asian woman[^.]*\./gi, '')
+    .trim();
+  let prompt = `${PRODUCT_ONLY}. ${cleaned || 'premium luxury item'}`;
+  if (appendNegative && !/Avoid:|no person/i.test(prompt)) {
+    prompt += `. Avoid: ${IMAGE_NEGATIVE_PRODUCT}`;
+  }
+  return { prompt, negative: IMAGE_NEGATIVE_PRODUCT };
+}
+
+/** 是否「有人」的套装/着装卡 */
+export function isPersonOutfitCard(kind = '') {
+  return kind === 'look' || kind === 'lingerie';
 }
