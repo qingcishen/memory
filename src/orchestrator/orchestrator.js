@@ -24,6 +24,13 @@ import { inferRelationshipStage, relationshipStageToPrompt, applyStageToBehavior
 import { buildEpisodeHeuristic, episodesToPrompt, synthesizeEpisodeChain } from '../companion/episode.js';
 import { buildProactiveContentPack, PROACTIVE_STYLE_GUIDE } from '../companion/proactiveContent.js';
 import { inferBodySituation, bodyStateToPrompt, applyBodyToBehavior, bodyIntimacyGate } from '../companion/bodyState.js';
+import {
+  planTurn,
+  applyBehaviorSampling,
+  enforcePartsBudget,
+  stripStockEndingsFromParts,
+} from './turnPlan.js';
+import { joinReplyParts } from './llm.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
@@ -233,24 +240,19 @@ export class Orchestrator {
     }
     this._lastUserMessageAt = Date.now();
 
-    const [stateSnapshot, relState, memoryResult, weather, worldSnapshot, storySnapshot, dueItems, sceneType, lastUserMessageAt] = await Promise.all([
+    // 先并行拉状态/场景；记忆召回用 turnPlan 增强 query，故分两段（状态极快，不显著增延迟）
+    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot, dueItems, sceneType, lastUserMessageAt] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
-      this.memory.recall(userMessage, { debug: Boolean(opts.debug) }).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
       this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
       typeof this.memory.checkProspective === 'function' ? this.memory.checkProspective({ query: userMessage }).catch(() => []) : Promise.resolve([]),
-      // 场景分类 (旁白系统): 用最近历史 + 这句话判断当前场景, 决定这一轮用哪条旁白指令。
-      // 带上上一轮场景做连续性提示, 减少单轮误判导致的场景来回跳变。
       this.narration ? this.narration.classify({ userMessage, history: this.history, previousScene: this._lastSceneType, signal: opts.signal }).catch(() => 'daily') : Promise.resolve('daily'),
-      // 时间跳跃感: 取"对方上次说话"的时间(早于本轮, 因为本轮还没 recordHistory) -> 距今多久。
       this.historyStore && typeof this.historyStore.lastUserMessageAt === 'function'
         ? this.historyStore.lastUserMessageAt({ userId: this.userId, companionId: this.companionId }).catch(() => null)
         : Promise.resolve(null),
     ]);
-    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
-    const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
     const gapHours = lastUserMessageAt != null ? hoursSince(lastUserMessageAt) : null;
     const emotionLabel = inferEmotionLabel(
       { ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} },
@@ -283,7 +285,6 @@ export class Orchestrator {
     const sceneLocks = detectSceneLocks(userMessage, this.history, intimacyLive?.scene_phase);
     this._lastSceneLocks = sceneLocks;
     const unfinished = extractUnfinishedHooks(this.history);
-    const episodeTexts = extractEpisodeTexts(memoryHits);
     // 故事 beat：今日 + 未分享的 pending 都可作内容源
     let storyBeat = storySnapshot?.today ?? null;
     if (!storyBeat && typeof this.story?.pendingShare === 'function') {
@@ -331,11 +332,30 @@ export class Orchestrator {
           : '亲密策略限制中：正常聊天即可。',
       });
       goals.sort((a, b) => b.priority - a.priority);
-      if (!sceneLocks.some((l) => l.id === 'conflict') && opts.stopIntimate) {
-        // 不强制 conflict 锁，但连贯性提示
-      }
     }
-    if (this.narration) this._lastSceneType = sceneType; // 供下一轮连续性提示; 未启用旁白则不维护
+
+    // 本轮计划：历史深度 / 独白 / 召回 query / 采样 / parts 预算 / 简报
+    const turn = planTurn({
+      userMessage,
+      sceneLocks,
+      behavior,
+      goals,
+      intimacyPhase: intimacyLive?.scene_phase,
+      bodySit,
+      gapHours,
+      historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
+      useMonologueDefault: this.options.useMonologue,
+    });
+    this._lastTurnPlan = turn;
+
+    const memoryResult = await this.memory
+      .recall(turn.recallQuery || userMessage, { debug: Boolean(opts.debug) })
+      .catch(() => '');
+    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
+    const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
+    const episodeTexts = extractEpisodeTexts(memoryHits);
+
+    if (this.narration) this._lastSceneType = sceneType;
     this._lastSceneTypeForObserve = sceneType;
     if (typeof this.memory.setSceneType === 'function') this.memory.setSceneType(sceneType);
 
@@ -361,6 +381,7 @@ export class Orchestrator {
         intimacyPhase: intimacyLive?.scene_phase,
         topGoalText: goals[0]?.text,
       }),
+      turnBriefPrompt: turn.turnBrief || '',
       episodePrompt: episodesToPrompt(episodeTexts),
       statePrompt: [
         this.stateLayer.toPrompt(stateForPrompt, {
@@ -375,7 +396,6 @@ export class Orchestrator {
         .join('\n\n'),
       goalsPrompt: goalsToPrompt(goals),
       memoryBlock: memoryBlock ?? '',
-      // 旁白指令: 角色人设覆盖 + 场景 + I 线 phase 细分 + 离散情绪细节层
       narrationPrompt: this.narration
         ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive?.scene_phase)
         : intimacyLive && ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyLive.scene_phase)
@@ -384,7 +404,7 @@ export class Orchestrator {
     };
 
     let monologue = '';
-    if (this.options.useMonologue) {
+    if (turn.useMonologue) {
       const ctx = buildMonologueContext({ userMessage, ...promptParts });
       monologue = await this.llm.think(ctx, { signal: opts.signal, maxTokens: PARAMS.orchestrator.monologueMaxTokens }).catch(() => '');
     }
@@ -392,14 +412,19 @@ export class Orchestrator {
     const messages = assemble({
       userMessage,
       history: this.history,
-      historyTurns: this.options.historyTurns,
+      historyTurns: turn.historyTurns,
       ...promptParts,
       monologue,
     });
 
-    const samplingHints =
+    const baseSampling =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
-    let { text: reply, parts } = normalizeReplyResult(await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal }));
+    // 在 life sampling 之上叠行为话量/身体，不覆盖 stateLayer 给出的基线
+    const samplingHints = applyBehaviorSampling(baseSampling, behavior, bodySit);
+
+    let { text: reply, parts } = normalizeReplyResult(
+      await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal })
+    );
 
     // 跳戏软修复：最多再生成一次（失败安全，不阻塞）
     const repair = nonSequiturRepairHint(reply, sceneLocks);
@@ -419,6 +444,19 @@ export class Orchestrator {
         }
       } catch {
         /* 保持原稿 */
+      }
+    }
+
+    // 后处理：parts 预算 + 库存结尾抠除
+    if (PARAMS.orchestrator?.enforcePartsBudget !== false) {
+      parts = enforcePartsBudget(parts, turn.partsBudget);
+      reply = joinReplyParts(parts);
+    }
+    if (PARAMS.orchestrator?.stripStockEndings !== false) {
+      const stripped = stripStockEndingsFromParts(parts, sceneLocks);
+      if (stripped !== parts) {
+        parts = stripped;
+        reply = joinReplyParts(parts);
       }
     }
 
@@ -447,6 +485,13 @@ export class Orchestrator {
       bodySituation: bodySit,
       sceneLocks: sceneLocks.map((l) => l.id),
       unfinished,
+      turnPlan: {
+        historyTurns: turn.historyTurns,
+        useMonologue: turn.useMonologue,
+        recallQuery: turn.recallQuery,
+        partsBudget: turn.partsBudget,
+        turnBrief: turn.turnBrief,
+      },
       coherenceRepair: repair.needsRetry ? repair.reasons : [],
       worldSnapshot,
       storySnapshot,
@@ -460,7 +505,7 @@ export class Orchestrator {
       monologue,
       messages,
       samplingHints,
-      historyTurns: this.options.historyTurns,
+      historyTurns: turn.historyTurns,
     } : undefined;
     return {
       text: reply,

@@ -15,6 +15,7 @@ export function buildSystemPrompt({
   relationshipPrompt = '',
   relationshipStagePrompt = '',
   coherencePrompt = '',
+  turnBriefPrompt = '',
   episodePrompt = '',
   statePrompt = '',
   emotionPrompt = '',
@@ -23,7 +24,7 @@ export function buildSystemPrompt({
   identityConstraintsPrompt = '',
   narrationPrompt = '',
 } = {}) {
-  // 连贯性/关系阶段放在业务段靠前：场景锁必须压过散落的人设与时间提示。
+  // 连贯性/本轮简报放在业务段靠前：场景锁与本轮计划必须压过散落的人设与时间提示。
   const sections = [
     timePrompt,
     personaPrompt,
@@ -32,6 +33,7 @@ export function buildSystemPrompt({
     relationshipPrompt,
     relationshipStagePrompt,
     coherencePrompt,
+    turnBriefPrompt,
     statePrompt || emotionPrompt,
     goalsPrompt,
     episodePrompt,
@@ -147,6 +149,7 @@ export function buildMonologueContext({
   relationshipPrompt = '',
   relationshipStagePrompt = '',
   coherencePrompt = '',
+  turnBriefPrompt = '',
   episodePrompt = '',
   statePrompt = '',
   emotionPrompt = '',
@@ -160,6 +163,7 @@ export function buildMonologueContext({
     relationshipPrompt,
     relationshipStagePrompt,
     coherencePrompt,
+    turnBriefPrompt,
     goalsPrompt,
     episodePrompt,
     identityConstraintsPrompt,

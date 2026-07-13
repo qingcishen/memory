@@ -298,6 +298,14 @@ export const DEFAULT_PARAMS = {
     // 内心独白 (think()) 本来只要"一两句话", 之前没封顶, 模型话痨起来会白白拉长回复延迟
     // (独白是串行 await 的, 生成得越久, 用户等得越久)。
     monologueMaxTokens: 120,
+    // 默认短期历史轮数（可被 turnPlan 按场景调高/调低）
+    historyTurnsDefault: 6,
+    // 寒暄/极短句跳过内心独白，降低首包延迟
+    skipMonologueOnShort: true,
+    // 生成后按 behavior.partsBudget 截断 dialogue parts
+    enforcePartsBudget: true,
+    // 跳戏重试失败后，仍尝试从 dialogue 里抠掉库存结尾
+    stripStockEndings: true,
   },
 
   // ---- P1 双向关系触发规则 ----
