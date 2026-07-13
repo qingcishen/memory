@@ -659,17 +659,13 @@ export class Orchestrator {
       userProfilePrompt: PARAMS.orchestrator?.residentSlots === false ? '' : this._userProfilePrompt || '',
       sessionThreadPrompt: sessionPeek ? sessionThreadToPrompt(sessionPeek) : '',
       statePrompt: [
-        // StateLayer 真实现会融合 label；mock adapter 无 ctx 时下面再补 emotionLabelToPrompt
+        // 标量温度（StateLayer）+ 离散【情绪表现】（始终注入，不因 adapter 形态跳过）
         this.stateLayer.toPrompt(stateForPrompt, {
           relationship: rel,
           hardBoundaries: this._config?.intimacyHardBoundaries,
           intimacyConfig: this.stateLayer?.stateLayer?.intimacy?.config,
-          emotionLabel,
-          emotionResidual: this._emotionResidue,
         }),
-        ...(typeof this.stateLayer?.stateLayer?.toPrompt === 'function'
-          ? []
-          : [emotionLabelToPrompt(emotionLabel, this._emotionResidue)]),
+        emotionLabelToPrompt(emotionLabel, this._emotionResidue),
         PARAMS.emotion?.journal?.enabled !== false
           ? emotionJournalToPrompt(this._emotionJournal, PARAMS.emotion?.journal?.promptLimit ?? 2)
           : '',

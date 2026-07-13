@@ -102,11 +102,20 @@ function checkExpect(exp = {}, json) {
     }
   }
   if (exp.sceneLockAny?.length) {
-    const locks = json.debug?.sceneLocks || json.sceneLocks || [];
+    const locks = json.sceneLocks || json.debug?.sceneLocks || [];
     const ids = Array.isArray(locks) ? locks.map((l) => (typeof l === 'string' ? l : l.id)) : [];
     if (!exp.sceneLockAny.some((id) => ids.includes(id))) {
-      // live 时 sceneLocks 可能只在 debug
-      notes.push(`locks? ${ids.join(',') || 'n/a'} (warn)`);
+      notes.push(`locks missing want ${exp.sceneLockAny.join('|')} got ${ids.join(',') || 'n/a'}`);
+      // 真聊 soft：有 label 预期时 locks 失败不整轮打挂，只记 note
+      if (!exp.labelsAny?.length) pass = false;
+    }
+  }
+  // 负面标签时期望表现段进 system（验收 has表现）
+  if (exp.expect表现 || ['委屈', '吃醋', '生气', '失落', '撒娇', '心疼'].includes(label) || ['委屈', '吃醋', '生气', '失落', '撒娇', '心疼'].includes(resLabel)) {
+    const flags = json.debug?.emotionPromptFlags || {};
+    if (flags.has表现 === false) {
+      notes.push('has表现=false');
+      if (exp.require表现) pass = false;
     }
   }
   return { pass, notes, label, resLabel };

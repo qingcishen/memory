@@ -263,7 +263,18 @@ async function main() {
   }
 
   const result = await bot.reply(String(req.message ?? ''), replyOpts);
-  const { text, parts, emotionLabel, behaviorPolicy: behavior, intimacyPhase, debug: replyDebug, recallExplain, emotionResidue, sessionThread } = result;
+  const {
+    text,
+    parts,
+    emotionLabel,
+    behaviorPolicy: behavior,
+    intimacyPhase,
+    debug: replyDebug,
+    recallExplain,
+    emotionResidue,
+    sessionThread,
+    sceneLocks,
+  } = result;
   // Orchestrator 在消息渠道中会后台发图；runner 是短命进程，必须等这一张图
   // 生成并收进 payload 后再退出，否则子进程结束时图片会一起丢失。
   await bot._lastPhoto?.catch(() => {});
@@ -281,8 +292,15 @@ async function main() {
     if (replyDebug?.emotionJournal) trace.emotionJournal = replyDebug.emotionJournal;
     if (emotionResidue) trace.emotionResidue = emotionResidue;
     if (bot._emotionJournal) trace.emotionJournal = bot._emotionJournal.slice(-5);
-    // system 情绪段是否注入
-    const sys = replyDebug?.messages?.find?.((m) => m.role === 'system')?.content || '';
+    if (sceneLocks) trace.sceneLocks = sceneLocks;
+    else if (replyDebug?.sceneLocks) trace.sceneLocks = replyDebug.sceneLocks;
+    // system 情绪段是否注入（messages + promptParts 双扫，避免只看 messages 漏检）
+    const sys =
+      (replyDebug?.messages?.find?.((m) => m.role === 'system')?.content || '') +
+      '\n' +
+      Object.values(replyDebug?.promptParts || {}).join('\n') +
+      '\n' +
+      Object.values(trace.promptParts || {}).join('\n');
     trace.emotionPromptFlags = {
       has表现: sys.includes('【情绪表现】'),
       has余波: sys.includes('【情绪余波】'),
@@ -309,6 +327,7 @@ async function main() {
     emotionLabel: emotionLabel ?? null,
     emotionResidue: emotionResidue ?? bot._emotionResidue ?? null,
     sessionThread: sessionThread ?? null,
+    sceneLocks: sceneLocks ?? replyDebug?.sceneLocks ?? null,
     ...(debugMode ? { debug: trace } : {}),
   };
   process.stdout.write(`${JSON.stringify(payload)}\n`);

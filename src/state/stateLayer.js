@@ -8,8 +8,7 @@
 //   - intimacy (I 线)
 
 import { readState, decayState, emotionDecayOverridesFromConfig } from './affect.js';
-import { moodToEmotion, toEmotionPrompt, fuseEmotionPrompt } from '../emotion.js';
-import { emotionLabelToPrompt } from './emotionLabel.js';
+import { moodToEmotion, toEmotionPrompt } from '../emotion.js';
 import { LifeDimension, toLifePrompt, lifeSamplingHints } from './life.js';
 import { DesireDimension, toDesirePrompt } from './desire.js';
 import { IntimacyDimension, toIntimacyPrompt, defaultIntimacy } from './intimacy.js';
@@ -116,12 +115,9 @@ export class StateLayer {
       desires: snapshot.desires,
       hardBoundaries: ctx.hardBoundaries ?? this.intimacy?.hardBoundaries,
     };
-    const emotionBlock =
-      ctx.emotionLabel != null
-        ? fuseEmotionPrompt(snapshot.emotion, ctx.emotionLabel, ctx.emotionResidual, emotionLabelToPrompt)
-        : toEmotionPrompt(snapshot.emotion);
+    // 标量温度由 StateLayer 注入；离散【情绪表现】由 Orchestrator 统一拼（避免真适配器跳过表现段）
     return [
-      emotionBlock,
+      toEmotionPrompt(snapshot.emotion),
       toLifePrompt(snapshot.life),
       toDesirePrompt(snapshot.desires),
       intimacyCfg?.enabled !== false ? toIntimacyPrompt(snapshot.intimacy, intimacyCtx, intimacyCfg) : '',

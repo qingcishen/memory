@@ -54,10 +54,11 @@ console.log('E1 inertia');
 console.log('E2 label prompt');
 {
   const p = emotionLabelToPrompt('委屈', { intensity: 0.7, cause: '冷落' });
-  ok('委屈表现段', p.includes('【情绪表现】') && p.includes('委屈') === false || p.includes('别扭'));
+  ok('委屈表现段含【情绪表现】', p.includes('【情绪表现】'));
+  ok('委屈有别扭/收着指引', /别扭|委屈|收着|闷/.test(p));
   ok('禁止自我播报口吻提示', p.includes('别') || p.includes('禁止') || p.includes('别扭'));
   const fused = fuseEmotionPrompt({ valence: -0.3, warmth: 0.4 }, '委屈', { intensity: 0.6 }, emotionLabelToPrompt);
-  ok('融合含标量+离散', fused.includes('低落') || fused.includes('平静') || fused.includes('情绪表现'));
+  ok('融合含标量+离散', fused.includes('【情绪表现】') && (fused.includes('低落') || fused.includes('平静')));
   ok('标量 toPrompt 仍可用', toEmotionPrompt({ valence: 0.6, warmth: 0.8 }).includes('心情不错'));
 }
 
