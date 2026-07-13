@@ -1,7 +1,16 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Check, Copy, ImagePlus, LoaderCircle, RefreshCw, Shirt, Sparkles, Upload, WandSparkles, X,
+  Check, Copy, ImagePlus, LoaderCircle, RefreshCw, Save, Shirt, Sparkles, Upload, WandSparkles, X,
 } from 'lucide-react';
+
+/** 穿搭页旁：IMAGE_* + 脸参考（与设置页共用 /api/config、/api/image-references） */
+const IMAGE_FIELD_KEYS = [
+  { key: 'IMAGE_BASE_URL', label: 'Base URL', placeholder: 'https://api.openai.com/v1', secret: false },
+  { key: 'IMAGE_API_KEY', label: 'API Key', placeholder: '留空则不改 / 可复用 EMBED 密钥', secret: true },
+  { key: 'IMAGE_MODEL', label: '图片模型', placeholder: 'gpt-image-2', secret: false },
+  { key: 'IMAGE_SIZE', label: '尺寸', placeholder: '1024x1536', secret: false },
+  { key: 'IMAGE_QUALITY', label: '画质', placeholder: 'high', secret: false },
+];
 
 const KIND_META = {
   looks: { label: '整套造型', hint: '可一键上身 · 完整 look', empty: '还没有造型' },
@@ -33,6 +42,312 @@ function fileToBase64(file) {
     reader.onerror = () => reject(new Error('读取文件失败'));
     reader.readAsDataURL(file);
   });
+}
+
+/**
+ * 生图模型配置 + 脸参考上传（放在今日穿搭旁边）
+ */
+function ImageGenAndFacePanel({
+  scope,
+  api,
+  qs,
+  json,
+  flash,
+  onReadyChange,
+}) {
+  const companionId = scope.companionId || 'default';
+  const refInput = useRef(null);
+  const [configMeta, setConfigMeta] = useState({});
+  const [values, setValues] = useState({});
+  const [dirty, setDirty] = useState({});
+  const [refs, setRefs] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+  const [testing, setTesting] = useState(false);
+  const [testMsg, setTestMsg] = useState('');
+  const [uploading, setUploading] = useState(false);
+  const [busyRefId, setBusyRefId] = useState('');
+
+  const loadAll = async () => {
+    setLoading(true);
+    try {
+      const cfg = await api('/api/config');
+      const meta = cfg?.values || {};
+      setConfigMeta(meta);
+      const next = {};
+      for (const f of IMAGE_FIELD_KEYS) {
+        // secret 不回填明文，只显示空（已配置时用 preview）
+        next[f.key] = f.secret ? '' : (meta[f.key]?.value ?? '');
+      }
+      setValues(next);
+      setDirty({});
+
+      if (scope.userId) {
+        const r = await api(`/api/image-references?${qs({ userId: scope.userId, companionId })}`);
+        setRefs(r?.items || []);
+      } else {
+        setRefs([]);
+      }
+    } catch (e) {
+      flash?.(e.message || '加载生图配置失败');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  useEffect(() => { loadAll(); }, [scope.userId, companionId]);
+
+  const modelSet = Boolean(configMeta.IMAGE_MODEL?.value || values.IMAGE_MODEL);
+  const keySet = Boolean(configMeta.IMAGE_API_KEY?.set || dirty.IMAGE_API_KEY);
+  const imageReady = modelSet && (keySet || configMeta.EMBED_API_KEY?.set || configMeta.LLM_API_KEY?.set);
+  const refsReady = refs.length > 0;
+
+  useEffect(() => {
+    onReadyChange?.({ imageReady, refsReady, refCount: refs.length, model: values.IMAGE_MODEL || configMeta.IMAGE_MODEL?.value || '' });
+  }, [imageReady, refsReady, refs.length, values.IMAGE_MODEL, configMeta.IMAGE_MODEL?.value]);
+
+  const setField = (key, v) => {
+    setValues((x) => ({ ...x, [key]: v }));
+    setDirty((x) => ({ ...x, [key]: v }));
+  };
+
+  const saveConfig = async () => {
+    setSaving(true);
+    try {
+      const payload = { ...dirty };
+      for (const f of IMAGE_FIELD_KEYS) {
+        if (f.secret && payload[f.key] === '') delete payload[f.key];
+      }
+      if (!Object.keys(payload).length) {
+        flash?.('没有改动需要保存');
+        return;
+      }
+      const result = await api('/api/config', json('PUT', { values: payload }));
+      if (result?.ok === false) throw new Error(result.message || '保存失败');
+      flash?.('生图配置已保存到本机 .env');
+      setDirty({});
+      await loadAll();
+    } catch (e) {
+      flash?.(e.message || '保存失败');
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const testImage = async () => {
+    setTesting(true);
+    setTestMsg('');
+    try {
+      const result = await api('/api/test/image', { method: 'POST' });
+      setTestMsg(`${result.ok ? '✓' : '✗'} ${result.message || (result.ok ? 'OK' : '失败')}${result.ms != null ? ` · ${result.ms}ms` : ''}`);
+    } catch (e) {
+      setTestMsg(`✗ ${e.message}`);
+    } finally {
+      setTesting(false);
+    }
+  };
+
+  const onPickRefs = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!files.length) return;
+    if (!scope.userId) {
+      flash?.('请先在顶部选择用户和角色');
+      return;
+    }
+    setUploading(true);
+    let okCount = 0;
+    try {
+      for (const file of files) {
+        if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) {
+          flash?.(`跳过不支持的格式：${file.name}`);
+          continue;
+        }
+        const data = await fileToBase64(file);
+        const result = await api('/api/image-references', json('POST', {
+          scope: { userId: scope.userId, companionId },
+          mime: file.type,
+          name: file.name,
+          data,
+          isAvatar: refs.length === 0 && okCount === 0,
+        }));
+        if (!result.ok) throw new Error(result.message || '上传失败');
+        okCount += 1;
+      }
+      flash?.(okCount ? `已上传 ${okCount} 张脸参考` : '没有成功上传的图片');
+      await loadAll();
+    } catch (e) {
+      flash?.(e.message || '上传失败');
+      await loadAll();
+    } finally {
+      setUploading(false);
+    }
+  };
+
+  const setAvatar = async (item) => {
+    if (!scope.userId) return;
+    setBusyRefId(item.id);
+    try {
+      await api(`/api/image-references/${item.id}/avatar`, json('PATCH', {
+        scope: { userId: scope.userId, companionId },
+      }));
+      flash?.('已设为脸锁头像');
+      await loadAll();
+    } catch (e) {
+      flash?.(e.message);
+    } finally {
+      setBusyRefId('');
+    }
+  };
+
+  const deleteRef = async (item) => {
+    if (!scope.userId) return;
+    if (!confirm('删除这张脸参考图？')) return;
+    setBusyRefId(item.id);
+    try {
+      const result = await api(`/api/image-references/${item.id}?${qs({ userId: scope.userId, companionId })}`, {
+        method: 'DELETE',
+      });
+      if (!result.ok) throw new Error(result.message || '删除失败');
+      flash?.('已删除参考图');
+      await loadAll();
+    } catch (e) {
+      flash?.(e.message);
+    } finally {
+      setBusyRefId('');
+    }
+  };
+
+  return (
+    <section className="panel outfit-image-setup">
+      <div className="outfit-image-setup-head">
+        <div>
+          <span className="page-header-kicker">IMAGE · 脸锁</span>
+          <h3>生图配置与脸参考</h3>
+          <p>
+            生成今日照片需要图片模型（IMAGE_*）和脸参考图。配置写入本机 .env；参考图按当前用户+角色保存。
+          </p>
+        </div>
+        <div className="outfit-image-setup-badges">
+          <span className={`badge ${imageReady ? 'badge-ok' : 'badge-warn'}`}>
+            {imageReady ? `模型就绪${configMeta.IMAGE_MODEL?.value ? ` · ${configMeta.IMAGE_MODEL.value}` : ''}` : '模型未配置'}
+          </span>
+          <span className={`badge ${refsReady ? 'badge-ok' : 'badge-warn'}`}>
+            {refsReady ? `${refs.length} 张脸参考` : '无脸参考'}
+          </span>
+        </div>
+      </div>
+
+      {loading ? (
+        <p className="text-sm text-zinc-400">加载中…</p>
+      ) : (
+        <div className="outfit-image-setup-grid">
+          <div className="outfit-image-setup-config">
+            <h4>图片模型 IMAGE_*</h4>
+            <div className="config-fields outfit-image-fields">
+              {IMAGE_FIELD_KEYS.map((f) => {
+                const meta = configMeta[f.key];
+                const secretSet = Boolean(f.secret && meta?.set);
+                return (
+                  <label className="field" key={f.key}>
+                    <span>
+                      {f.label}
+                      {secretSet && (
+                        <em className="config-secret-set">
+                          已配置{meta?.preview ? ` · ${meta.preview}` : ''}
+                        </em>
+                      )}
+                    </span>
+                    <input
+                      className="input"
+                      type={f.secret ? 'password' : 'text'}
+                      autoComplete="off"
+                      placeholder={f.placeholder}
+                      value={values[f.key] ?? ''}
+                      onChange={(e) => setField(f.key, e.target.value)}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+            <div className="outfit-card-actions" style={{ marginTop: 12, display: 'flex', gap: 8, flexWrap: 'wrap' }}>
+              <button type="button" className="btn btn-primary" disabled={saving || !Object.keys(dirty).length} onClick={saveConfig}>
+                {saving ? <LoaderCircle size={14} className="animate-spin" /> : <Save size={14} />}
+                保存生图配置
+              </button>
+              <button type="button" className="btn" disabled={testing} onClick={testImage}>
+                {testing ? '测试中…' : '测试连接'}
+              </button>
+              <button type="button" className="btn" onClick={loadAll}>
+                <RefreshCw size={14} />
+                刷新
+              </button>
+            </div>
+            {testMsg && (
+              <div className={`config-test-msg ${testMsg.startsWith('✓') ? 'is-ok' : 'is-bad'}`} style={{ marginTop: 8 }}>
+                {testMsg}
+              </div>
+            )}
+          </div>
+
+          <div className="outfit-image-setup-refs">
+            <div className="mb-3 flex items-center justify-between gap-2 flex-wrap">
+              <div>
+                <h4>脸参考图</h4>
+                <p className="mt-1 text-xs text-zinc-400">
+                  上传正面清晰脸照；生成时优先头像 + 最多 3 张核心图锁脸。
+                </p>
+              </div>
+              <button
+                type="button"
+                className="btn btn-primary"
+                disabled={!scope.userId || uploading}
+                onClick={() => refInput.current?.click()}
+              >
+                {uploading ? <LoaderCircle size={14} className="animate-spin" /> : <Upload size={14} />}
+                {uploading ? '上传中…' : '上传参考图'}
+              </button>
+              <input
+                ref={refInput}
+                type="file"
+                accept="image/png,image/jpeg,image/webp"
+                multiple
+                hidden
+                onChange={onPickRefs}
+              />
+            </div>
+            {!scope.userId ? (
+              <p className="text-sm text-amber-700">请先在顶部选择用户和角色，才能上传脸参考。</p>
+            ) : refs.length ? (
+              <div className="photo-wall outfit-ref-wall">
+                {refs.map((item) => (
+                  <div className={`photo-tile ${item.isAvatar ? 'is-avatar' : ''}`} key={item.id}>
+                    <img src={item.url} alt={item.name || '脸参考'} />
+                    {item.isAvatar ? <b>当前头像</b> : (
+                      <em
+                        onClick={() => !busyRefId && setAvatar(item)}
+                        style={{ opacity: busyRefId === item.id ? 0.5 : 1 }}
+                      >
+                        设为头像
+                      </em>
+                    )}
+                    <em
+                      onClick={() => !busyRefId && deleteRef(item)}
+                      style={{ color: 'var(--sw-danger, #b91c1c)', opacity: busyRefId === item.id ? 0.5 : 1 }}
+                    >
+                      删除
+                    </em>
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="text-sm text-zinc-400">还没有脸参考。点「上传参考图」选 1～数张正面清晰照片。</p>
+            )}
+          </div>
+        </div>
+      )}
+    </section>
+  );
 }
 
 function OutfitFlipCard({
@@ -186,6 +501,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   const [wearingId, setWearingId] = useState('');
   const [dailyBusy, setDailyBusy] = useState('');
   const [toast, setToast] = useState('');
+  const [imageReadyState, setImageReadyState] = useState({ imageReady: false, refsReady: false, refCount: 0, model: '' });
 
   const load = async () => {
     setState((s) => ({ ...s, loading: true, error: '' }));
@@ -322,6 +638,13 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
       flash('请先选择用户');
       return;
     }
+    if (!imageReadyState.imageReady) {
+      flash('请先在下方配置 IMAGE 模型并保存');
+      return;
+    }
+    if (!imageReadyState.refsReady) {
+      flash('建议先上传脸参考图（下方），否则脸可能不稳定');
+    }
     setDailyBusy('photo');
     try {
       const result = await api('/api/outfit/daily/photo', json('POST', {
@@ -396,13 +719,20 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
             <button
               type="button"
               className="btn btn-primary"
-              disabled={!scope.userId || Boolean(dailyBusy)}
+              disabled={!scope.userId || Boolean(dailyBusy) || !imageReadyState.imageReady}
               onClick={() => onGenerateDailyPhoto(Boolean(daily?.hasPhoto))}
+              title={!imageReadyState.imageReady ? '请先配置下方 IMAGE 模型' : undefined}
             >
               {dailyBusy === 'photo' ? <LoaderCircle size={14} className="animate-spin" /> : <Sparkles size={14} />}
               {daily?.hasPhoto ? '重新生成今日照片' : '生成今日照片'}
             </button>
           </div>
+          {!imageReadyState.imageReady && (
+            <p className="mt-2 text-xs text-amber-700">生图未就绪：请在下方填写 IMAGE_MODEL / API Key 并保存。</p>
+          )}
+          {imageReadyState.imageReady && !imageReadyState.refsReady && (
+            <p className="mt-2 text-xs text-amber-700">还没有脸参考：请在下方上传正面清晰照片，锁脸更稳。</p>
+          )}
         </div>
         <div className="outfit-now-media">
           {daily?.photo?.url ? (
@@ -419,6 +749,15 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
           )}
         </div>
       </section>
+
+      <ImageGenAndFacePanel
+        scope={scope}
+        api={api}
+        qs={qs}
+        json={json}
+        flash={flash}
+        onReadyChange={setImageReadyState}
+      />
 
       {(d.style || d.beautyNotes) && (
         <section className="outfit-style-note panel">
@@ -487,10 +826,10 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
         <div>
           <h3>使用方式</h3>
           <ol>
-            <li>每天自动从衣橱造型 + 包/鞋等抽屉组合「今日穿搭」</li>
-            <li>点「生成今日照片」用已接入生图模型出人像成片（写入相册，聊天冷却内可分享）</li>
-            <li>单品卡：复制提示词出产品图后上传；整套造型可「上身」</li>
-            <li>对话里问「今天穿什么」会按今日组合回答</li>
+            <li>在「生图配置与脸参考」填 IMAGE 模型并上传脸照</li>
+            <li>每天自动从衣橱 + 包/鞋抽屉组合「今日穿搭」</li>
+            <li>点「生成今日照片」出人像成片（相册 + 冷却内可分享）</li>
+            <li>单品卡是产品图；整套可「上身」；对话问穿什么按今日组合答</li>
           </ol>
         </div>
       </section>

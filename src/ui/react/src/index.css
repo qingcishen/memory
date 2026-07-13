@@ -466,6 +466,45 @@ textarea.input { padding: 12px !important; resize: vertical; }
 }
 .outfit-now-stats b { display: block; font-size: 20px; letter-spacing: -.03em; }
 .outfit-now-stats span { display: block; margin-top: 4px; color: var(--sw-text-2); font-size: 10px; letter-spacing: .08em; }
+
+/* 生图配置 + 脸参考（今日穿搭旁） */
+.outfit-image-setup { margin-top: 14px; }
+.outfit-image-setup-head {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.outfit-image-setup-head h3 { margin: 4px 0 6px; font-size: 17px; letter-spacing: -.02em; }
+.outfit-image-setup-head p { margin: 0; color: var(--sw-text-2); font-size: 12px; line-height: 1.55; max-width: 52ch; }
+.outfit-image-setup-badges { display: flex; flex-wrap: wrap; gap: 8px; }
+.outfit-image-setup-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 20px;
+  align-items: start;
+}
+.outfit-image-setup-config h4,
+.outfit-image-setup-refs h4 {
+  margin: 0 0 10px;
+  font-size: 13px;
+  letter-spacing: .02em;
+}
+.outfit-image-fields {
+  display: grid;
+  gap: 10px;
+}
+.outfit-ref-wall {
+  grid-template-columns: repeat(auto-fill, minmax(96px, 1fr));
+  gap: 10px;
+}
+.outfit-ref-wall .photo-tile { cursor: default; }
+.outfit-ref-wall .photo-tile > em { cursor: pointer; }
+@media (max-width: 900px) {
+  .outfit-image-setup-grid { grid-template-columns: 1fr; }
+}
 .outfit-style-note { margin-bottom: 16px; padding: 16px 18px; }
 .outfit-style-note p { margin: 0 0 8px; color: var(--sw-text-2); font-size: 12px; line-height: 1.65; }
 .outfit-style-note p:last-child { margin-bottom: 0; }

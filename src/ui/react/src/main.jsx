@@ -4,7 +4,7 @@ import {
   Activity, Bell, BookHeart, Bot, Brain, ChevronRight, CircleGauge, Clock, Database, Heart,
   Image, LoaderCircle, Menu, MessageCircle, Moon,
   Network, Plus, Plug, RefreshCw, Save, Search, Settings2, ShieldAlert, ShieldCheck, Shirt, SlidersHorizontal, Sparkles,
-  SquareTerminal, Sun, UserRound, WandSparkles, X, Zap,
+  SquareTerminal, Sun, Upload, UserRound, WandSparkles, X, Zap,
 } from 'lucide-react';
 import OutfitPage from './OutfitPage.jsx';
 import AlbumPage from './AlbumPage.jsx';
@@ -442,15 +442,55 @@ function Gallery({ scope }) {
   const [generated, reloadGenerated] = useEndpoint(`/api/gallery?${qs(scope)}`, [scope.userId, scope.companionId]);
   const [referenceState, reloadReferences] = useEndpoint(`/api/image-references?${qs(scope)}`, [scope.userId, scope.companionId]);
   const [prompt, setPrompt] = useState(''); const [busy, setBusy] = useState(false); const [selected, setSelected] = useState(null); const [generateError, setGenerateError] = useState('');
+  const [uploadingRef, setUploadingRef] = useState(false);
+  const refInput = useRef(null);
   const references = referenceState.data?.items || []; const assets = generated.data?.assets || [];
   const reload = () => { reloadGenerated(); reloadReferences(); };
   const generate = async () => { if (!prompt) return; setBusy(true); setGenerateError(''); try { const result = await api('/api/images/generate', json('POST', { scope, prompt, size: '1024x1536', quality: 'high', inputFidelity: 'high' })); if (!result.ok) throw new Error(result.message || '图片生成失败'); reloadGenerated(); } catch (error) { setGenerateError(error.message || '图片生成失败'); } finally { setBusy(false); } };
   const setAvatar = async (event, item) => { event.stopPropagation(); await api(`/api/image-references/${item.id}/avatar`, json('PATCH', { scope })); reloadReferences(); };
   const deleteAsset = async (event, item) => { event.stopPropagation(); if (!confirm('确定永久删除这张生成照片吗？')) return; await api(`/api/gallery/${item.id}?${qs(scope)}`, { method: 'DELETE' }); reloadGenerated(); };
+  const deleteRef = async (event, item) => {
+    event.stopPropagation();
+    if (!confirm('删除这张脸参考图？')) return;
+    await api(`/api/image-references/${item.id}?${qs(scope)}`, { method: 'DELETE' });
+    reloadReferences();
+  };
+  const onPickRefs = async (event) => {
+    const files = Array.from(event.target.files || []);
+    event.target.value = '';
+    if (!files.length || !scope.userId) return;
+    setUploadingRef(true);
+    try {
+      let n = 0;
+      for (const file of files) {
+        if (!/^image\/(png|jpeg|webp)$/i.test(file.type)) continue;
+        const data = await new Promise((resolve, reject) => {
+          const reader = new FileReader();
+          reader.onload = () => {
+            const result = String(reader.result || '');
+            resolve(result.includes(',') ? result.split(',')[1] : result);
+          };
+          reader.onerror = () => reject(new Error('读取失败'));
+          reader.readAsDataURL(file);
+        });
+        const result = await api('/api/image-references', json('POST', {
+          scope, mime: file.type, name: file.name, data,
+          isAvatar: references.length === 0 && n === 0,
+        }));
+        if (!result.ok) throw new Error(result.message || '上传失败');
+        n += 1;
+      }
+      reloadReferences();
+    } catch (error) {
+      setGenerateError(error.message || '上传参考图失败');
+    } finally {
+      setUploadingRef(false);
+    }
+  };
   return <>
     <Header title="清词照片墙" text={`${references.length} 张角色参考照 · 生成自拍和生活照片时自动保持她的脸与外貌。`} action={<button className="btn" onClick={reload}><RefreshCw size={15}/>刷新</button>}/>
-    <section className="panel mb-5"><div className="mb-4 flex items-center justify-between"><div><h3 className="font-bold">角色参考照片</h3><p className="mt-1 text-xs text-zinc-400">点击照片放大；标记为头像的照片会显示在左侧角色卡片。</p></div><span className="badge badge-ok">生成时自动引用</span></div>
-      {referenceState.loading ? <Loading/> : references.length ? <div className="photo-wall">{references.map((item, index) => <button className={`photo-tile ${item.isAvatar ? 'is-avatar' : ''}`} key={item.id} onClick={() => setSelected(item)} aria-label={`查看清词照片 ${index + 1}`}><img src={item.url} alt="清词参考照片"/>{item.isAvatar ? <b>当前头像</b> : <em onClick={event => setAvatar(event, item)}>设为头像</em>}</button>)}</div> : <Empty>还没有导入角色照片</Empty>}
+    <section className="panel mb-5"><div className="mb-4 flex items-center justify-between gap-3 flex-wrap"><div><h3 className="font-bold">角色参考照片</h3><p className="mt-1 text-xs text-zinc-400">可自由上传脸照；标记为头像的照片会显示在左侧角色卡片，生图时自动锁脸。</p></div><div className="flex items-center gap-2"><span className="badge badge-ok">生成时自动引用</span><button type="button" className="btn btn-primary" disabled={!scope.userId || uploadingRef} onClick={() => refInput.current?.click()}><Upload size={14}/>{uploadingRef ? '上传中…' : '上传参考图'}</button><input ref={refInput} type="file" accept="image/png,image/jpeg,image/webp" multiple hidden onChange={onPickRefs}/></div></div>
+      {referenceState.loading ? <Loading/> : references.length ? <div className="photo-wall">{references.map((item, index) => <button className={`photo-tile ${item.isAvatar ? 'is-avatar' : ''}`} key={item.id} onClick={() => setSelected(item)} aria-label={`查看清词照片 ${index + 1}`}><img src={item.url} alt="清词参考照片"/>{item.isAvatar ? <b>当前头像</b> : <em onClick={event => setAvatar(event, item)}>设为头像</em>}<em onClick={event => deleteRef(event, item)} style={{ color: '#b91c1c' }}>删除</em></button>)}</div> : <Empty>还没有导入角色照片 · 点「上传参考图」</Empty>}
     </section>
     <section className="panel mb-5"><div className="mb-4"><h3 className="font-bold">生成新照片</h3><p className="mt-1 text-xs text-zinc-400">会自动使用头像与 3 张核心参考图，并以高一致性模式生成。</p></div><div className="flex gap-3"><textarea rows="3" className="input" value={prompt} onChange={event => setPrompt(event.target.value)} placeholder="描述画面、服装、光线和镜头感…"/><button className="btn btn-primary w-28 shrink-0" onClick={generate} disabled={busy}><WandSparkles size={16}/>{busy ? '生成中' : '生成'}</button></div>{generateError && <div className="mt-3 rounded-xl bg-red-50 px-4 py-3 text-sm text-red-700">{generateError}</div>}</section>
     <section><div className="mb-4 flex items-end justify-between"><div><h3 className="text-lg font-bold">生成记录</h3><p className="mt-1 text-xs text-zinc-400">自拍与生活场景会留在这里。</p></div><span className="badge">{assets.length} 张</span></div>{generated.loading ? <Loading/> : <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-3">{assets.length ? assets.map(asset => <div className="panel relative overflow-hidden p-2 text-left" key={asset.id}><button className="block w-full text-left" onClick={() => setSelected({ ...asset, name: asset.prompt || '生成照片' })}><div className="aspect-[4/5] overflow-hidden rounded-xl bg-zinc-100">{asset.url && <img className="h-full w-full object-cover" src={asset.url} alt="生成照片"/>}</div><p className="line-clamp-2 px-2 pb-1 pt-3 text-sm text-zinc-600">{asset.prompt || '角色照片'}</p></button><button className="absolute right-4 top-4 grid size-8 place-items-center rounded-full bg-black/55 text-white backdrop-blur hover:bg-black/75" aria-label="删除这张生成照片" title="删除这张生成照片" onClick={event => deleteAsset(event, asset)}><X size={15}/></button></div>) : <div className="sm:col-span-2 xl:col-span-3"><Empty>还没有生成照片</Empty></div>}</div>}</section>
