@@ -58,8 +58,8 @@ export function composeTickPrompt(line, cast = [], facts = []) {
   return [
     `故事线：${line.title}\n阶段：${line.stage}\n上一拍：${line.last_beat || '(刚开始)'}\n下一拍提示：${line.next_beat_hint || '(自然推进)'}`,
     `不可更改的卡司事实：\n${castFacts}`,
-    `相关知识图谱事实：\n${facts.join('\n') || '(无额外事实)'}`,
-    '生成今天发生的一小拍，必须延续上一拍且不改变人物姓名、身份和关系。不要涉及用户与她之间未发生的共同经历。',
+    `相关固定事实与边界：\n${facts.join('\n') || '(无额外事实)'}`,
+    '生成今天发生的一小拍，必须延续上一拍且不改变人物姓名、身份、关系和项目硬事实。没有事实支持的金额、合同、客户真名、人员任免或重大结果一律不要编造。不要涉及用户与她之间未发生的共同经历。',
   ].join('\n\n');
 }
 
@@ -134,10 +134,15 @@ export class StoryEngine {
     return true;
   }
 
-  async tick({ now = Date.now(), state = null } = {}) {
+  async tick({ now = Date.now(), state = null, storylineIds = null } = {}) {
     if (!this.userId) return null;
     const snapshot = await this.current(now).catch(() => ({ lines: [] }));
-    const active = snapshot.lines.filter((line) => line.stage !== 'closed').slice(0, PARAMS.story.maxActiveLines);
+    const allowed = Array.isArray(storylineIds) && storylineIds.length
+      ? new Set(storylineIds.map(String))
+      : null;
+    const active = snapshot.lines
+      .filter((line) => line.stage !== 'closed' && (!allowed || allowed.has(line.id)))
+      .slice(0, PARAMS.story.maxActiveLines);
     if (!active.length) return null;
     const day = new Date(now).toISOString().slice(0, 10);
     const line = active.find((item) => item.beats_day !== day || item.beats_today < PARAMS.story.beatsPerDay);

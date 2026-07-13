@@ -24,6 +24,7 @@ async function run(req) {
   const userId = String(req.userId || '').trim();
   const companionId = String(req.companionId || 'default').trim() || 'default';
   if (!userId) throw new Error('缺少 userId');
+  if (!/^[\w-]{1,64}$/.test(companionId) || companionId.startsWith('.')) throw new Error('角色 ID 不合法');
   const memory = new Memory({ userId, companionId, subjectName: req.subjectName || '对方', companionName: req.companionName || '她' });
 
   switch (req.action) {
@@ -48,6 +49,23 @@ async function run(req) {
       return memory.forgettable(Number(req.threshold) || 0.05, { purge: Boolean(req.purge) });
     case 'forget':
       return memory.forget(String(req.query || '').trim(), { includeLocked: Boolean(req.includeLocked) });
+    case 'company-tick': {
+      const persona = loadPersonaConfig(`companions/${companionId}.json`);
+      const orchestrator = new Orchestrator({
+        userId,
+        companionId,
+        config: persona?.config ?? null,
+        options: persona?.options ?? {},
+        activityFn: persona?.life ? makeScheduleActivityFn(persona.life) : null,
+        lifeConfig: persona?.life ?? null,
+      });
+      await orchestrator.init();
+      if (!orchestrator.story) throw new Error('这个角色还没有配置公司故事线');
+      const state = await orchestrator.stateLayer.snapshot().catch(() => null);
+      const storylineIds = (persona?.config?.company?.projects || []).map((project) => project.id).filter(Boolean);
+      if (!storylineIds.length) throw new Error('公司档案里还没有登记经营项目');
+      return orchestrator.story.tick({ now: Date.now(), state, storylineIds });
+    }
     case 'nightly':
     case 'train': {
       const persona = loadPersonaConfig(`companions/${companionId}.json`);

@@ -35,8 +35,91 @@ const DEFAULT_RETRY_MS = 3000;
 const MAX_RETRY_MS = 60000;
 const DEFAULT_IDLE_LOG_MS = 60000;
 const DEFAULT_REPLY_TIMEOUT_MS = 90000;
+const DEFAULT_REPLY_RETRY_COUNT = 1;
+const DEFAULT_REPLY_RETRY_DELAY_MS = 1200;
 const MAX_TELEGRAM_MESSAGE_LENGTH = 3900;
 const DEFAULT_LOCK_FILE = '.telegram-bot.lock';
+const DEFAULT_PENDING_TURNS_FILE = 'logs/telegram-pending-turns.json';
+
+/**
+ * Telegram 待续回合：在生成前先落盘，成功投递后才删除。
+ * 网络超时、进程崩溃或重启都不会把用户刚发的完整场景吃掉。
+ */
+export class PendingTurnStore {
+  constructor({ file = process.env.TELEGRAM_PENDING_TURNS_FILE || DEFAULT_PENDING_TURNS_FILE } = {}) {
+    this.file = path.resolve(file);
+  }
+
+  read() {
+    try {
+      const parsed = JSON.parse(fs.readFileSync(this.file, 'utf8'));
+      return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {};
+    } catch {
+      return {};
+    }
+  }
+
+  async get(chatId) {
+    return this.read()[String(chatId)] ?? null;
+  }
+
+  async list() {
+    return Object.entries(this.read()).map(([chatId, turn]) => ({ chatId, ...turn }));
+  }
+
+  async set(chatId, turn = {}) {
+    const all = this.read();
+    all[String(chatId)] = {
+      text: String(turn.text || '').trim(),
+      eventId: String(turn.eventId || ''),
+      createdAt: turn.createdAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
+      attempts: Math.max(0, Number(turn.attempts) || 0),
+      lastError: String(turn.lastError || '').slice(0, 500),
+    };
+    this.write(all);
+    return all[String(chatId)];
+  }
+
+  async clear(chatId) {
+    const all = this.read();
+    const existed = Object.hasOwn(all, String(chatId));
+    delete all[String(chatId)];
+    this.write(all);
+    return existed;
+  }
+
+  write(value) {
+    fs.mkdirSync(path.dirname(this.file), { recursive: true });
+    const temp = `${this.file}.tmp-${process.pid}`;
+    fs.writeFileSync(temp, `${JSON.stringify(value, null, 2)}\n`, { mode: 0o600 });
+    fs.renameSync(temp, this.file);
+  }
+}
+
+export function isRetryableReplyError(error) {
+  const message = [error?.name, error?.message, error?.cause?.code, error?.cause?.message].filter(Boolean).join(' ');
+  return /(timed out|timeout|abort|fetch failed|econn|socket|503|502|504|429|network)/i.test(message);
+}
+
+export function buildPendingResumeInput(pendingText, newText = '') {
+  const previous = String(pendingText || '').trim();
+  const current = String(newText || '').trim();
+  if (!previous) return current;
+  return [
+    '【待续回合·硬规则】上一条完整消息因网络超时还没有得到你的回复。你必须先沿着它的动作、地点和情绪直接接下去，不要要求对方复述，也不要说你忘了。',
+    `【上一条未完成消息】${previous}`,
+    current ? `【对方刚补充】${current}` : '',
+  ].filter(Boolean).join('\n');
+}
+
+function appendPendingText(previous, current) {
+  const before = String(previous || '').trim();
+  const next = String(current || '').trim();
+  if (!before) return next;
+  if (!next || before === next) return before;
+  return `${before}\n\n[后来补充] ${next}`;
+}
 
 export function parseAllowedChatIds(value) {
   if (!value) return new Set();
@@ -303,16 +386,22 @@ export class TelegramMemoryBot {
     pollTimeoutSeconds = Number(process.env.TELEGRAM_POLL_TIMEOUT_SECONDS || DEFAULT_POLL_TIMEOUT_SECONDS),
     idleLogMs = Number(process.env.TELEGRAM_IDLE_LOG_MS || DEFAULT_IDLE_LOG_MS),
     replyTimeoutMs = Number(process.env.TELEGRAM_REPLY_TIMEOUT_MS || DEFAULT_REPLY_TIMEOUT_MS),
+    replyRetryCount = Number(process.env.TELEGRAM_REPLY_RETRY_COUNT ?? DEFAULT_REPLY_RETRY_COUNT),
+    replyRetryDelayMs = Number(process.env.TELEGRAM_REPLY_RETRY_DELAY_MS || DEFAULT_REPLY_RETRY_DELAY_MS),
+    pendingAutoRetryMs = Number(process.env.TELEGRAM_PENDING_AUTO_RETRY_MS || 30000),
+    autoResumePending = true,
     // 富人设文件 (性格/说话风格/外貌/背景), 经 loadPersonaConfig 映射成 CompanionConfig 注入 Orchestrator。
     // 默认 companions/<companionId>.json; 缺失则只用名字 (退化为通用人设)。
     personaFile = process.env.TELEGRAM_PERSONA_FILE || `companions/${companionId}.json`,
     api = new TelegramApi(token),
     behaviorStore = new BehaviorStateStore(),
+    pendingStore = new PendingTurnStore(),
     sleepFn = sleep,
     rng = Math.random,
   } = {}) {
     this.api = api;
     this.behaviorStore = behaviorStore;
+    this.pendingStore = pendingStore;
     this.sleepFn = sleepFn;
     this.rng = rng;
     this.allowedChatIds = allowedChatIds;
@@ -336,6 +425,11 @@ export class TelegramMemoryBot {
     this.pollTimeoutSeconds = pollTimeoutSeconds;
     this.idleLogMs = idleLogMs;
     this.replyTimeoutMs = replyTimeoutMs;
+    this.replyRetryCount = Math.max(0, Math.min(3, Math.floor(replyRetryCount) || 0));
+    this.replyRetryDelayMs = Math.max(0, replyRetryDelayMs || 0);
+    this.pendingAutoRetryMs = Math.max(1000, pendingAutoRetryMs || 30000);
+    this.autoResumePending = autoResumePending !== false;
+    this.pendingRetryTimers = new Map();
     this.lastIdleLogAt = 0;
     this.offset = 0;
     this.bots = new Map();
@@ -511,6 +605,8 @@ export class TelegramMemoryBot {
     );
     console.log('[telegram] waiting for messages...');
     this.startStatusReporter();
+    // 不等用户再发“继续”：启动即把崩溃/超时前落盘的完整回合放进每个 chat 的串行队列。
+    await this.resumePendingTurns();
     let pollErrorStreak = 0;
     while (!this.stopped) {
       await this.pollOnce()
@@ -533,6 +629,8 @@ export class TelegramMemoryBot {
     this.stopped = true;
     this.worker.stop();
     for (const rt of this.runtimes.values()) rt.stop();
+    for (const timer of this.pendingRetryTimers.values()) clearTimeout(timer);
+    this.pendingRetryTimers.clear();
     if (this.statusTimer) clearInterval(this.statusTimer);
     this.statusTimer = null;
     this.writeStatus().catch(() => {});
@@ -596,6 +694,138 @@ export class TelegramMemoryBot {
       .catch((error) => console.error('[telegram] update error:', formatError(error)));
     this.chatQueues.set(key, next);
     await next;
+  }
+
+  async resumePendingTurns() {
+    if (!this.autoResumePending) return 0;
+    const turns = await this.pendingStore.list().catch(() => []);
+    let queued = 0;
+    for (const pending of turns) {
+      if (!pending?.text || !isAllowedChat(pending.chatId, this.allowedChatIds)) continue;
+      this.enqueuePendingResume(pending.chatId, pending, { quietFailure: true });
+      queued++;
+    }
+    if (queued) console.log(`[telegram] auto-resume queued pending=${queued}`);
+    return queued;
+  }
+
+  enqueuePendingResume(chatId, pending, { quietFailure = true } = {}) {
+    const key = String(chatId);
+    const previous = this.chatQueues.get(key) || Promise.resolve();
+    const next = previous
+      .catch(() => {})
+      .then(async () => {
+        const latest = await this.pendingStore.get(chatId).catch(() => pending);
+        if (!latest?.text) return null;
+        const userId = telegramUserId(chatId);
+        const gate = gateIncomingMessage({
+          text: latest.text,
+          userId,
+          companionId: this.companionId,
+          channel: 'telegram',
+        });
+        if (!gate.allow) return null;
+        console.log(`[telegram] auto-resume pending chat=${chatId} chars=${latest.text.length}`);
+        return this.completePendingReply({
+          chatId,
+          message: {},
+          bot: this.botForChat(chatId),
+          userId,
+          gate,
+          replyInput: buildPendingResumeInput(latest.text),
+          pendingText: latest.text,
+          eventId: latest.eventId || `telegram:pending:${latest.createdAt || Date.now()}`,
+          existingPending: latest,
+          quietFailure,
+        });
+      })
+      .catch((error) => console.error(`[telegram] auto-resume failed chat=${chatId}:`, formatError(error)));
+    this.chatQueues.set(key, next);
+    return next;
+  }
+
+  schedulePendingResume(chatId) {
+    if (!this.autoResumePending) return;
+    const key = String(chatId);
+    if (this.pendingRetryTimers.has(key)) return;
+    const timer = setTimeout(async () => {
+      this.pendingRetryTimers.delete(key);
+      const pending = await this.pendingStore.get(chatId).catch(() => null);
+      if (pending?.text && !this.stopped) this.enqueuePendingResume(chatId, pending, { quietFailure: true });
+    }, this.pendingAutoRetryMs);
+    timer.unref?.();
+    this.pendingRetryTimers.set(key, timer);
+  }
+
+  async completePendingReply({
+    chatId, message = {}, bot, userId, gate, replyInput, pendingText, eventId,
+    existingPending = null, quietFailure = false,
+  }) {
+    await this.pendingStore.set(chatId, {
+      text: pendingText,
+      eventId,
+      createdAt: existingPending?.createdAt,
+      attempts: existingPending?.attempts || 0,
+    }).catch((error) => console.error(`[telegram] pending turn save failed chat=${chatId}:`, formatError(error)));
+    console.log(`[telegram] replying chat=${chatId} timeoutMs=${this.replyTimeoutMs}${existingPending ? ' resume=pending' : ''}`);
+    try {
+      const behaviorState = await this.behaviorStore.load({ userId, companionId: this.companionId }).catch(() => ({}));
+      let result;
+      let lastError = null;
+      const maxAttempts = 1 + this.replyRetryCount;
+      for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+        const stopTyping = startTypingHeartbeat(this.api, chatId);
+        try {
+          result = await withTimeout((signal) => bot.reply(replyInput, {
+            executeStonewall: false,
+            behaviorState: { ...behaviorState, stonewallUsedToday: behaviorState.stonewallAt?.length ?? 0 },
+            eventId,
+            historyUserMessage: pendingText,
+            stopIntimate: gate.stopIntimate,
+            intimacyAllowed: gate.intimacyAllowed,
+            signal,
+          }), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
+          break;
+        } catch (error) {
+          lastError = error;
+          await this.pendingStore.set(chatId, {
+            text: pendingText,
+            eventId,
+            createdAt: existingPending?.createdAt,
+            attempts: (existingPending?.attempts || 0) + attempt,
+            lastError: error?.message || String(error),
+          }).catch(() => {});
+          const canRetry = attempt < maxAttempts && isRetryableReplyError(error);
+          if (!canRetry) throw error;
+          console.warn(`[telegram] reply retry chat=${chatId} attempt=${attempt + 1}/${maxAttempts}:`, formatError(error));
+          if (!quietFailure) {
+            await this.api.sendMessage(chatId, '刚才网络卡了一下。你这句话我记着，正在自动接着回，不用重发。').catch(() => {});
+          }
+          await this.sleepFn(this.replyRetryDelayMs);
+        } finally {
+          stopTyping();
+        }
+      }
+      if (!result) throw lastError || new Error('回复生成失败');
+      const { text: reply, parts, behaviorPolicy: policy } = result;
+      const deliverableParts = ensureReplyParts(reply, parts);
+      const sent = await this.deliverReply(chatId, deliverableParts, { incomingVoice: Boolean(message.voice || message.audio), policy, behaviorState, bot });
+      await this.pendingStore.clear(chatId).catch((error) => console.error(`[telegram] pending turn clear failed chat=${chatId}:`, formatError(error)));
+      const retryTimer = this.pendingRetryTimers.get(String(chatId));
+      if (retryTimer) clearTimeout(retryTimer);
+      this.pendingRetryTimers.delete(String(chatId));
+      console.log(`[telegram] replied chat=${chatId} chars=${reply.length} parts=${sent.length}`);
+      return result;
+    } catch (error) {
+      console.error(`[telegram] reply failed chat=${chatId}:`, formatError(error));
+      if (!quietFailure) {
+        await this.api
+          .sendMessage(chatId, '我这边又卡住了，但刚才那段已经完整保存。网络恢复后我会自己接着回复，你不用再发任何东西。')
+          .catch((sendError) => console.error(`[telegram] fallback send failed chat=${chatId}:`, formatError(sendError)));
+      }
+      this.schedulePendingResume(chatId);
+      return null;
+    }
   }
 
   async handleUpdate(update) {
@@ -694,34 +924,17 @@ export class TelegramMemoryBot {
       console.log(`[telegram] gated chat=${chatId} reasons=${(gate.reasons || []).join(',')}`);
       return;
     }
-    console.log(`[telegram] replying chat=${chatId} timeoutMs=${this.replyTimeoutMs}`);
-    try {
-      const behaviorState = await this.behaviorStore.load({ userId, companionId: this.companionId }).catch(() => ({}));
-      const stopTyping = startTypingHeartbeat(this.api, chatId);
-      let result;
-      try {
-        result = await withTimeout((signal) => bot.reply(text, {
-          executeStonewall: false,
-          behaviorState: { ...behaviorState, stonewallUsedToday: behaviorState.stonewallAt?.length ?? 0 },
-          eventId: `telegram:${update.update_id}`,
-          stopIntimate: gate.stopIntimate,
-          intimacyAllowed: gate.intimacyAllowed,
-          signal,
-        }), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
-      } finally {
-        stopTyping();
-      }
-      const { text: reply, parts, behaviorPolicy: policy } = result;
-      // 少数模型会返回可用 text，但结构化 parts 解析为空。发送层只消费 parts，若不兜底会整轮静默。
-      const deliverableParts = ensureReplyParts(reply, parts);
-      const sent = await this.deliverReply(chatId, deliverableParts, { incomingVoice: Boolean(message.voice || message.audio), policy, behaviorState, bot });
-      console.log(`[telegram] replied chat=${chatId} chars=${reply.length} parts=${sent.length}`);
-    } catch (error) {
-      console.error(`[telegram] reply failed chat=${chatId}:`, formatError(error));
-      await this.api
-        .sendMessage(chatId, '我这边刚才卡了一下，等我缓一口气。你再说一遍，我接着听。')
-        .catch((sendError) => console.error(`[telegram] fallback send failed chat=${chatId}:`, formatError(sendError)));
-    }
+    const existingPending = await this.pendingStore.get(chatId).catch(() => null);
+    const eventId = `telegram:${update.update_id}`;
+    const pendingText = existingPending && existingPending.eventId !== eventId
+      ? appendPendingText(existingPending.text, text)
+      : text;
+    const replyInput = existingPending && existingPending.eventId !== eventId
+      ? buildPendingResumeInput(existingPending.text, text)
+      : text;
+    return this.completePendingReply({
+      chatId, message, bot, userId, gate, replyInput, pendingText, eventId, existingPending,
+    });
   }
 }
 

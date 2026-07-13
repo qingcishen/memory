@@ -47,6 +47,7 @@ import { normalizeWardrobe } from '../state/outfit.js';
 import { detectSceneLocks, sceneCoherenceToPrompt, extractUnfinishedHooks, nonSequiturRepairHint } from '../companion/sceneCoherence.js';
 import { inferRelationshipStage, relationshipStageToPrompt, applyStageToBehavior } from '../companion/relationshipStage.js';
 import { buildEpisodeHeuristic, episodesToPrompt, synthesizeEpisodeChain } from '../companion/episode.js';
+import { companyCast, companyStoryFacts, companyToPrompt } from '../company/index.js';
 import { buildProactiveContentPack, PROACTIVE_STYLE_GUIDE } from '../companion/proactiveContent.js';
 import { inferBodySituation, bodyStateToPrompt, applyBodyToBehavior, bodyIntimacyGate } from '../companion/bodyState.js';
 import {
@@ -92,7 +93,7 @@ export class Orchestrator {
    * @param companionName 显示名/称呼; 不显式传时由 companions 表里的 CompanionConfig.name 覆盖。
    * @param config 可选: 预加载好的 CompanionConfig; 不传则 init() 时按 (userId, companionId) 从 companions 表拉。
    * @param deps 可注入 { memory, stateLayer, relationship, persona, llm, historyStore }, 默认用真实适配器。
-   * @param options { useMonologue=true, historyTurns=6 }
+   * @param options { useMonologue=true, historyTurns=6, timeZone='Asia/Shanghai', place='武汉' }
    */
   constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', config = null, activityFn = null, lifeConfig = null, deps = {}, options = {} }) {
     if (!userId) throw new Error('Orchestrator 需要 userId');
@@ -106,8 +107,13 @@ export class Orchestrator {
       useMonologue: true,
       historyTurns: DEFAULT_HISTORY_TURNS,
       personaRefreshMs: PARAMS.orchestrator.personaRefreshMs,
+      timeZone: 'Asia/Shanghai',
+      place: '武汉',
       ...options,
     };
+    // 单一现实钟：回复时间、生活状态、跨会话间隔全部从同一个 now() 读取。
+    // 测试可注入固定时刻；生产默认与用户所在现实世界等速前进。
+    this.now = typeof deps.now === 'function' ? deps.now : () => Date.now();
 
     // 先建状态层, 再把它内部的 LifeDimension / IntimacyDimension 注入记忆适配器 ——
     // 让 memory.observe 与状态层共用同一实例 (L4 身心耦合 + I 线亲密演变, 避免双写)。
@@ -116,6 +122,7 @@ export class Orchestrator {
       new StateLayerAdapter(userId, companionId, null, {
         activityFn,
         lifeConfig,
+        now: this.now,
         intimacyBaseline: config?.intimacyBaseline ?? null,
         intimacyHardBoundaries: config?.intimacyHardBoundaries ?? null,
         intimacyConfig: {
@@ -170,7 +177,7 @@ export class Orchestrator {
     this._episodeBuffer = [];
     this._lastStructured = null;
     this._lastTurnPlan = null;
-    this._sessionThread = emptySessionThread();
+    this._sessionThread = emptySessionThread(this.now());
     this._emotionResidue = emptyEmotionResidue();
     this._emotionJournal = emptyEmotionJournal();
   }
@@ -181,7 +188,7 @@ export class Orchestrator {
    * (如 ProactiveScheduler 反复复用同一个 Orchestrator) 能感知到 self 记忆的更新。
    */
   async init() {
-    const now = Date.now();
+    const now = this.now();
     // 多角色: 首次 init 时加载 CompanionConfig (名字/外貌/说话风格/性格)。
     // 没显式传 companionName 时用 config.name 作称呼; 外貌等补充随 persona 段注入 (方案 A)。
     if (!this._configLoaded) {
@@ -230,11 +237,13 @@ export class Orchestrator {
         if (outfitDim && this._config?.outfitWardrobe) {
           outfitDim.wardrobe = normalizeWardrobe(this._config.outfitWardrobe);
         }
-        if (!this._storyProvided && (this._config.storyCast?.length || this._config.storylines?.length)) {
+        if (!this._storyProvided && (this._config.storyCast?.length || this._config.storylines?.length || this._config.company)) {
+          const fixedCast = mergeStoryCast(this._config.storyCast, companyCast(this._config.company));
           this.story = new StoryEngine({
             userId: this.userId, companionId: this.companionId, companionName: this.companionName,
-            cast: this._config.storyCast, lines: this._config.storylines, memory: this.memory,
+            cast: fixedCast, lines: this._config.storylines, memory: this.memory,
             desire: this.stateLayer?.stateLayer?.desire ?? null,
+            factProvider: (line) => companyStoryFacts(this._config.company, line),
             onStoryBeat: (beat) => this.applyStoryBeatToEmotion(beat),
           });
         }
@@ -272,7 +281,7 @@ export class Orchestrator {
       this._userProfilePrompt = '';
       return this;
     }
-    const now = Date.now();
+    const now = this.now();
     const ttl = this.options.personaRefreshMs ?? PARAMS.orchestrator?.personaRefreshMs ?? 30 * 60 * 1000;
     if (!force && this._residentSlotsLoadedAt && now - this._residentSlotsLoadedAt < ttl) return this;
 
@@ -349,7 +358,7 @@ export class Orchestrator {
         intensity: next.intensity,
         cause: userMessage || next.cause,
         source,
-        at: Date.now(),
+        at: this.now(),
       });
     }
     this._emotionResidue = next;
@@ -367,7 +376,7 @@ export class Orchestrator {
   /** 故事 beat 软种子 residual（maintain/story 回调） */
   applyStoryBeatToEmotion(beat) {
     const prev = this._emotionResidue;
-    const { residual, changed, event } = seedResidueFromStoryBeat(prev, beat, Date.now());
+    const { residual, changed, event } = seedResidueFromStoryBeat(prev, beat, this.now());
     if (changed && event) {
       this.applyEmotionSideEffects(prev, residual, { userMessage: event.cause, source: 'story' });
       this.persistEmotionResidue();
@@ -381,7 +390,7 @@ export class Orchestrator {
    */
   async loadSessionThread() {
     if (PARAMS.orchestrator?.sessionThread === false) {
-      this._sessionThread = emptySessionThread();
+      this._sessionThread = emptySessionThread(this.now());
       return this._sessionThread;
     }
     let raw = null;
@@ -390,16 +399,17 @@ export class Orchestrator {
         .loadSessionThread({ userId: this.userId, companionId: this.companionId })
         .catch(() => null);
     }
-    let thread = raw ? normalizeSessionThread(raw) : null;
+    const now = this.now();
+    let thread = raw ? normalizeSessionThread(raw, now) : null;
     if (!thread || !thread.turnCount) {
       // 冷启动：从已 load 的 history 重建
       if (this.history?.length) {
-        thread = rebuildSessionThreadFromHistory(this.history);
+        thread = rebuildSessionThreadFromHistory(this.history, { now });
       } else {
-        thread = emptySessionThread();
+        thread = emptySessionThread(now);
       }
     }
-    if (shouldResetSession(thread)) thread = emptySessionThread();
+    if (shouldResetSession(thread, now)) thread = emptySessionThread(now);
     this._sessionThread = thread;
     return this._sessionThread;
   }
@@ -446,24 +456,35 @@ export class Orchestrator {
    */
   async reply(userMessage, opts = {}) {
     await this.init();
-    // 长时间沉默后清历史: 若距上次用户发言超过 4 小时, 旧消息时间背景与当前严重错位,
-    // 清掉旧历史让 LLM 按系统提示的当前时间重新建立上下文, 防止它被几小时前的对话带偏。
-    const idleHours = this._lastUserMessageAt ? (Date.now() - this._lastUserMessageAt) / 3600000 : 0;
-    if (idleHours >= 4 && this.history.length > 0) {
+    const historyUserMessage = String(opts.historyUserMessage ?? userMessage);
+    const nowMs = this.now();
+    // 先读持久历史的真实时间，再做任何情绪/场景判断。过去只看进程内时间，重启后会把
+    // 几小时前加载回来的旧饭局当成“刚刚”，造成角色时间冻结。
+    const storedLastUserMessageAt =
+      this.historyStore && typeof this.historyStore.lastUserMessageAt === 'function'
+        ? await this.historyStore
+            .lastUserMessageAt({ userId: this.userId, companionId: this.companionId })
+            .catch(() => null)
+        : null;
+    const memoryIdleHours = this._lastUserMessageAt ? Math.max(0, (nowMs - this._lastUserMessageAt) / 3600000) : null;
+    const storedGapHours = storedLastUserMessageAt != null ? hoursSince(storedLastUserMessageAt, nowMs) : null;
+    const gapHours = maxKnown(memoryIdleHours, storedGapHours);
+    // 长时间沉默后清历史: 旧消息的事实仍可由长期记忆召回，但旧物理现场必须结束。
+    if (gapHours != null && gapHours >= 4 && this.history.length > 0) {
       this.history = [];
       this._lastSceneType = null; // 隔了这么久, 场景连续性提示也该重新开始判断, 不该沿用几小时前的场景
       this._sessionThread = emptySessionThread(); // 新会话线
       this.persistSessionThread();
     }
     // 会话线超时重置（即使 history 已空）
-    if (PARAMS.orchestrator?.sessionThread !== false && shouldResetSession(this._sessionThread)) {
-      this._sessionThread = emptySessionThread();
+    if (PARAMS.orchestrator?.sessionThread !== false && shouldResetSession(this._sessionThread, nowMs)) {
+      this._sessionThread = emptySessionThread(nowMs);
       this.persistSessionThread();
     }
-    this._lastUserMessageAt = Date.now();
+    this._lastUserMessageAt = nowMs;
 
     // 先并行拉状态/场景；记忆召回用 turnPlan 增强 query，故分两段（状态极快，不显著增延迟）
-    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot, dueItems, sceneType, lastUserMessageAt] = await Promise.all([
+    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot, dueItems, sceneType] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
@@ -471,11 +492,7 @@ export class Orchestrator {
       this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
       typeof this.memory.checkProspective === 'function' ? this.memory.checkProspective({ query: userMessage }).catch(() => []) : Promise.resolve([]),
       this.narration ? this.narration.classify({ userMessage, history: this.history, previousScene: this._lastSceneType, signal: opts.signal }).catch(() => 'daily') : Promise.resolve('daily'),
-      this.historyStore && typeof this.historyStore.lastUserMessageAt === 'function'
-        ? this.historyStore.lastUserMessageAt({ userId: this.userId, companionId: this.companionId }).catch(() => null)
-        : Promise.resolve(null),
     ]);
-    const gapHours = lastUserMessageAt != null ? hoursSince(lastUserMessageAt) : null;
     const recoverBias =
       emotionDecayOverridesFromConfig(this._config)?.recoverBias ??
       this.stateLayer?.stateLayer?.emotionDecayOverrides?.recoverBias;
@@ -488,7 +505,7 @@ export class Orchestrator {
         userMessage,
         recoverBias,
         withResidual: true,
-        now: Date.now(),
+        now: nowMs,
       },
     );
     const emotionLabel = typeof emotionInferred === 'string' ? emotionInferred : emotionInferred.label;
@@ -515,7 +532,7 @@ export class Orchestrator {
     const stateForPrompt = stateSnapshot ? { ...stateSnapshot, intimacy: intimacyLive ?? stateSnapshot.intimacy } : stateSnapshot;
     const rel = relState?.relationship ?? relState ?? {};
     const relStage = inferRelationshipStage(rel);
-    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual);
+    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual, nowMs);
     let behavior = behaviorPolicy(emotionLabel, { relationship: rel, ...(opts.behaviorState ?? {}) });
     behavior = applyStageToBehavior(behavior, relStage);
     behavior = applyBodyToBehavior(behavior, bodySit);
@@ -529,7 +546,7 @@ export class Orchestrator {
         : updateSessionThread(this._sessionThread, {
             userMessage,
             sceneLocks,
-            now: Date.now(),
+            now: nowMs,
           });
     const unfinished = [
       ...extractUnfinishedHooks(this.history),
@@ -637,16 +654,28 @@ export class Orchestrator {
 
     // B3: Telegram 明确要求执行 stonewall 时，不生成一条永远不会送达的假回复，也不把它写进历史。
     if (opts.executeStonewall && behavior.stonewall) {
-      this.recordHistory([{ role: 'user', content: userMessage }], { eventId: opts.eventId });
-      this._lastAfterReply = this.afterReply(userMessage, '');
+      this.recordHistory([{ role: 'user', content: historyUserMessage }], { eventId: opts.eventId });
+      this._lastAfterReply = this.afterReply(historyUserMessage, '');
       return { text: '', parts: [], emotionLabel, behaviorPolicy: behavior };
     }
 
     const askAboutDay = /(今天|最近|最近在忙|怎么样|过得|忙什么)/.test(userMessage);
     // 先拼「无记忆」上下文，独白与召回并行（降延迟突破）
     const promptBase = {
-      timePrompt: buildTimePrompt(new Date(), { weather, gapHours }),
+      timePrompt: buildTimePrompt(new Date(nowMs), {
+        timeZone: this.options.timeZone,
+        place: this.options.place,
+        weather,
+        gapHours,
+        userMessage,
+      }),
       personaPrompt: this.persona.toPrompt() ?? '',
+      companyPrompt: companyToPrompt(this._config?.company, {
+        storySnapshot,
+        currentActivity: stateSnapshot?.life?.current_activity,
+        userMessage,
+        now: nowMs,
+      }),
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
       storyPrompt: this.story
         ? this.story.toPrompt(storySnapshot, { forceToday: Boolean(storyBeat) || askAboutDay })
@@ -657,6 +686,9 @@ export class Orchestrator {
       coherencePrompt: sceneCoherenceToPrompt(sceneLocks, {
         intimacyPhase: intimacyLive?.scene_phase,
         topGoalText: goals[0]?.text,
+        gapHours,
+        currentActivity: stateSnapshot?.life?.current_activity,
+        userMessage,
       }),
       turnBriefPrompt: turn.turnBrief || '',
       structuredPlanPrompt: structuredPlanToPrompt(structured),
@@ -797,6 +829,9 @@ export class Orchestrator {
         promptParts,
         monologue,
         intimacyLive,
+        gapHours,
+        nowMs,
+        historyUserMessage,
       });
     }
 
@@ -806,7 +841,12 @@ export class Orchestrator {
 
     // 一致性检改：默认开启（params.orchestrator.coherenceRetry）
     const allowRetry = opts.skipCoherenceRetry !== true && PARAMS.orchestrator?.coherenceRetry !== false;
-    const repair = nonSequiturRepairHint(reply, sceneLocks);
+    const temporalCoherence = {
+      gapHours,
+      userMessage,
+      currentActivity: stateSnapshot?.life?.current_activity,
+    };
+    const repair = nonSequiturRepairHint(reply, sceneLocks, temporalCoherence);
     if (repair.needsRetry && allowRetry) {
       try {
         const retryMessages = [
@@ -817,7 +857,7 @@ export class Orchestrator {
         const retried = normalizeReplyResult(
           await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
         );
-        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks).needsRetry) {
+        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks, temporalCoherence).needsRetry) {
           reply = retried.text;
           parts = retried.parts;
         }
@@ -831,21 +871,21 @@ export class Orchestrator {
     // 会话线落盘：用户句 + 她的回复（含她的承诺）→ 持久化
     if (PARAMS.orchestrator?.sessionThread !== false) {
       this._sessionThread = updateSessionThread(this._sessionThread, {
-        userMessage,
+        userMessage: historyUserMessage,
         reply,
         sceneLocks,
-        now: Date.now(),
+        now: nowMs,
       });
       this.persistSessionThread();
     }
     this.persistEmotionResidue();
 
     this.recordHistory([
-      { role: 'user', content: userMessage },
+      { role: 'user', content: historyUserMessage },
       { role: 'assistant', content: reply },
     ], { eventId: opts.eventId });
 
-    this._lastAfterReply = this.afterReply(userMessage, reply, {
+    this._lastAfterReply = this.afterReply(historyUserMessage, reply, {
       history: this.history,
       sceneLocks,
       relationshipStage: relStage,
@@ -855,8 +895,8 @@ export class Orchestrator {
     this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
 
     // 动作计划：对方要看 / structured 决策 wantPhoto
-    if (PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto) {
-      this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto });
+    if (PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto) {
+      this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto });
     }
 
     const sessionDrift = detectSessionDrift(reply, this._sessionThread);
@@ -929,7 +969,8 @@ export class Orchestrator {
   async *_replyStreaming(ctx) {
     const {
       userMessage, opts, messages, samplingHints, turn, structured, sceneLocks, stateSnapshot,
-      emotionLabel, behavior, goals, intimacyLive, relStage, bodySit, recallExplain,
+      emotionLabel, behavior, goals, intimacyLive, relStage, bodySit, recallExplain, gapHours, nowMs,
+      historyUserMessage = userMessage,
     } = ctx;
     let lastPreview = '';
     let finalParts = [];
@@ -963,7 +1004,12 @@ export class Orchestrator {
 
     // 流式完成后一致性检改（默认同非流式）
     const allowRetry = opts.skipCoherenceRetry !== true && PARAMS.orchestrator?.coherenceRetry !== false;
-    repair = nonSequiturRepairHint(reply, sceneLocks);
+    const temporalCoherence = {
+      gapHours,
+      userMessage,
+      currentActivity: stateSnapshot?.life?.current_activity,
+    };
+    repair = nonSequiturRepairHint(reply, sceneLocks, temporalCoherence);
     if (repair.needsRetry && allowRetry) {
       try {
         const retryMessages = [
@@ -974,7 +1020,7 @@ export class Orchestrator {
         const retried = normalizeReplyResult(
           await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
         );
-        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks).needsRetry) {
+        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks, temporalCoherence).needsRetry) {
           reply = retried.text;
           parts = retried.parts;
           yield { event: 'preview', text: reply };
@@ -988,10 +1034,10 @@ export class Orchestrator {
 
     if (PARAMS.orchestrator?.sessionThread !== false) {
       this._sessionThread = updateSessionThread(this._sessionThread, {
-        userMessage,
+        userMessage: historyUserMessage,
         reply,
         sceneLocks,
-        now: Date.now(),
+        now: nowMs,
       });
       this.persistSessionThread();
     }
@@ -999,20 +1045,20 @@ export class Orchestrator {
 
     this.recordHistory(
       [
-        { role: 'user', content: userMessage },
+        { role: 'user', content: historyUserMessage },
         { role: 'assistant', content: reply },
       ],
       { eventId: opts.eventId },
     );
-    this._lastAfterReply = this.afterReply(userMessage, reply, {
+    this._lastAfterReply = this.afterReply(historyUserMessage, reply, {
       history: this.history,
       sceneLocks,
       relationshipStage: relStage,
     });
     this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
-    if (PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto) {
+    if (PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto) {
       this._lastPhoto = this.maybePhoto(stateSnapshot, {
-        requested: PHOTO_REQUEST_RE.test(userMessage) || structured?.wantPhoto,
+        requested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
       });
     }
 
@@ -1134,6 +1180,7 @@ export class Orchestrator {
    */
   async proactiveTick(ctx = {}) {
     await this.init();
+    const nowMs = this.now();
 
     const shouldSend =
       typeof ctx.shouldSend === 'function'
@@ -1176,7 +1223,7 @@ export class Orchestrator {
 
     const rel = relState?.relationship ?? relState ?? {};
     const relStage = inferRelationshipStage(rel);
-    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual);
+    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual, nowMs);
     const emotionLabel = inferEmotionLabel(
       { ...(stateSnapshot ?? {}), relationship: rel },
       stateSnapshot?.desires,
@@ -1207,8 +1254,18 @@ export class Orchestrator {
     const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
 
     const promptParts = {
-      timePrompt: buildTimePrompt(new Date(), { weather }),
+      timePrompt: buildTimePrompt(new Date(nowMs), {
+        timeZone: this.options.timeZone,
+        place: this.options.place,
+        weather,
+      }),
       personaPrompt: this.persona.toPrompt() ?? '',
+      companyPrompt: companyToPrompt(this._config?.company, {
+        storySnapshot,
+        currentActivity: stateSnapshot?.life?.current_activity,
+        userMessage: pseudoUser,
+        now: nowMs,
+      }),
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
       storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
@@ -1343,7 +1400,7 @@ export class Orchestrator {
     if (!share.ok) return result;
 
     const rateState = await this.photo.rateState().catch(() => ({ sentAt: [] }));
-    const cool = canSendSelfie(rateState, Date.now(), PARAMS.appearance?.selfie);
+    const cool = canSendSelfie(rateState, this.now(), PARAMS.appearance?.selfie);
     if (!cool.ok) return result;
 
     const url = share.url || result?.url;
@@ -1510,7 +1567,7 @@ export class Orchestrator {
    * 从最近对话抽篇章；每 N 轮最多落一条，避免刷屏。
    */
   async maybeRecordEpisode(history = [], extraTurns = []) {
-    const now = Date.now();
+    const now = this.now();
     const last = this._lastEpisodeAt || 0;
     // 至少间隔 8 分钟，且历史至少 4 条消息
     if (now - last < 8 * 60 * 1000) return null;
@@ -1586,6 +1643,24 @@ function normalizeHistory(turns = []) {
   return (turns ?? [])
     .filter((t) => t && (t.role === 'user' || t.role === 'assistant') && t.content != null)
     .map((t) => ({ role: t.role, content: String(t.content) }));
+}
+
+function mergeStoryCast(...groups) {
+  const out = [];
+  const seen = new Set();
+  for (const member of groups.flat()) {
+    const name = String(member?.name || '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(member);
+  }
+  return out;
+}
+
+/** 取已知间隔中的较大值：进程内时钟与持久历史任一发现跨时段，都必须结束旧物理场景。 */
+function maxKnown(...values) {
+  const known = values.map(Number).filter(Number.isFinite).filter((n) => n >= 0);
+  return known.length ? Math.max(...known) : null;
 }
 
 function buildProactiveInstruction(ctx = {}) {

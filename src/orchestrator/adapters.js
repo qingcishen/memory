@@ -139,7 +139,7 @@ export class StateLayerAdapter {
     userId,
     companionId = 'default',
     stateLayer = null,
-    { activityFn, lifeConfig, intimacyBaseline, intimacyHardBoundaries, intimacyConfig, intimacyKnowledge, outfitWardrobe } = {}
+    { activityFn, lifeConfig, intimacyBaseline, intimacyHardBoundaries, intimacyConfig, intimacyKnowledge, outfitWardrobe, now } = {}
   ) {
     // 角色专属作息 activityFn / 身体参数 lifeConfig 经此注入到内部 StateLayer→LifeDimension (没传则用通用默认)。
     this.stateLayer =
@@ -147,6 +147,7 @@ export class StateLayerAdapter {
       new StateLayer({
         userId,
         companionId,
+        ...(typeof now === 'function' ? { now } : {}),
         activityFn,
         lifeConfig,
         intimacyBaseline,

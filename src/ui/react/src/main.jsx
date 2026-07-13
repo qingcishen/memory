@@ -1,7 +1,7 @@
 import React, { useEffect, useMemo, useRef, useState } from 'react';
 import { createRoot } from 'react-dom/client';
 import {
-  Activity, Bell, BookHeart, Bot, Brain, ChevronRight, CircleGauge, Clock, Database, Heart,
+  Activity, Bell, BookHeart, Bot, Brain, Building2, ChevronRight, CircleGauge, Clock, Database, Heart,
   Image, LoaderCircle, Menu, MessageCircle, Moon,
   Network, Plus, Plug, RefreshCw, Save, Search, Settings2, ShieldAlert, ShieldCheck, Shirt, SlidersHorizontal, Sparkles,
   SquareTerminal, Sun, Upload, UserRound, WandSparkles, X, Zap,
@@ -10,6 +10,7 @@ import OutfitPage from './OutfitPage.jsx';
 import AlbumPage from './AlbumPage.jsx';
 import McpPage from './McpPage.jsx';
 import LifePage from './LifePage.jsx';
+import CompanyPage from './CompanyPage.jsx';
 import SafetyPage from './SafetyPage.jsx';
 // Self-hosted (no runtime dependency on an internet connection, matches the
 // console's local-first posture): Archivo covers Latin/numerals, Noto Sans SC
@@ -41,6 +42,7 @@ const pct = (value) => `${Math.round(Number(value || 0) * 100)}%`;
 
 const nav = [
   ['life', '一起过日子', BookHeart],
+  ['company', '公司系统', Building2],
   ['overview', '运行总览', CircleGauge], ['companion-v2', '伴侣升级', Sparkles], ['state', '情绪与身体', Heart],
   ['outfit', '穿搭系统', Shirt], ['album', '穿搭相册', Image],
   ['personas', '角色人设', UserRound], ['world', '世界状态', Zap], ['gallery', '图片工作室', Image],
@@ -53,6 +55,7 @@ const nav = [
 
 const navDescriptions = {
   life: '时间线 · 关系 · 今日生活 · 相册（用户端）',
+  company: '公司档案 · 组织 · 成员 · 经营项目线',
   overview: '关系与系统状态总览', 'companion-v2': '需求、亲密、故事与多模态', state: '情绪、需求、亲密与身体',
   outfit: '衣橱、包、妆台、内衣卡片与上身',
   album: '上身效果成片 · 正面图背面提示词',
@@ -66,7 +69,7 @@ const navDescriptions = {
 };
 
 const navGroups = [
-  { id: 'live', label: '生活', kana: '生', icon: BookHeart, items: ['life', 'chat', 'album'] },
+  { id: 'live', label: '生活', kana: '生', icon: BookHeart, items: ['life', 'company', 'chat', 'album'] },
   { id: 'inner', label: '内在', kana: '心', icon: Heart, items: ['overview', 'companion-v2', 'state', 'outfit'] },
   { id: 'identity', label: '角色', kana: '人', icon: UserRound, items: ['personas', 'world', 'gallery'] },
   { id: 'memory', label: '记忆', kana: '忆', icon: Brain, items: ['memories', 'history', 'prospective', 'graph'] },
@@ -1095,6 +1098,7 @@ function App() {
   };
   const view = useMemo(() => ({
     life: <LifePage scope={scope} api={api} qs={qs} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty} onGoChat={() => go('chat')} onGoAlbum={() => go('album')}/>,
+    company: <CompanyPage scope={scope} api={api} qs={qs} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty} onGoChat={() => go('chat')}/>,
     overview: <Overview scope={scope}/>, 'companion-v2': <CompanionV2 scope={scope}/>, state: <StateView scope={scope}/>,
     outfit: <OutfitPage scope={scope} api={api} qs={qs} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty}/>,
     album: <AlbumPage scope={scope} api={api} qs={qs} json={json} Header={Header} Loading={Loading} ErrorBox={ErrorBox} Empty={Empty} onQuoteToChat={quoteAlbumToChat}/>,
@@ -1124,7 +1128,7 @@ function App() {
           <span className="badge badge-ok"><span className="size-1.5 bg-emerald-500"/>Local</span>
         </div>
       </header>
-      <div className="app-content mx-auto max-w-7xl p-4 sm:p-7 lg:p-9"><div className="page-folio">{String(nav.findIndex(item => item[0] === active) + 1).padStart(2, '0')}</div>{scopesLoading ? <Loading/> : !scope.userId && !['config', 'personas', 'params', 'outfit', 'album', 'mcp', 'safety'].includes(active) ? <Empty>先选择一个用户与角色，才能读取她此刻的状态。</Empty> : view}</div>
+      <div className="app-content mx-auto max-w-7xl p-4 sm:p-7 lg:p-9"><div className="page-folio">{String(nav.findIndex(item => item[0] === active) + 1).padStart(2, '0')}</div>{scopesLoading ? <Loading/> : !scope.userId && !['config', 'personas', 'params', 'outfit', 'album', 'company', 'mcp', 'safety'].includes(active) ? <Empty>先选择一个用户与角色，才能读取她此刻的状态。</Empty> : view}</div>
     </main>
     {mobile && <button className="fixed inset-0 z-30 bg-black/20 lg:hidden" onClick={() => setMobile(false)}/>}
   </div>;

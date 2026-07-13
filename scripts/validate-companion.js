@@ -22,6 +22,7 @@ function summarize(config) {
     `identityConstraints: ${config.identityConstraints.length} 条`,
     `seedFacts: ${config.seedFacts.length} 条, knowledgeBank: ${config.knowledgeBank.length} 条`,
     `storyCast: ${config.storyCast.length} 人, storylines: ${config.storylines.length} 条`,
+    `company: ${config.company?.name || '(未配置)'}${config.company ? `, ${config.company.people.length} 位核心成员, ${config.company.projects.length} 条项目线` : ''}`,
     `intimacyEnabled: ${config.intimacyEnabled}`,
   ];
 }

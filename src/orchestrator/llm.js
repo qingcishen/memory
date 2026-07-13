@@ -3,7 +3,7 @@
 // generateReply 用"好模型"(REPLY_MODEL), think 用便宜模型(LLM_MODEL) —— 见编排器设计方案 §7.3。
 // 缺凭证时 import 不报错 (config.js 已有占位默认值), 真正调用才需要真实凭证。
 
-import { llm, replyLlm, narrationLlm, LLM_MODEL, REPLY_MODEL, NARRATION_MODEL } from '../config.js';
+import { llm, replyLlm, narrationLlm, LLM_MODEL, REPLY_MODEL, REPLY_REASONING_EFFORT, NARRATION_MODEL } from '../config.js';
 import { recordLlmCall } from '../metrics.js';
 
 const REPLY_PART_TYPES = ['dialogue', 'narration'];
@@ -226,10 +226,12 @@ export class DefaultLLM {
 function buildReplyPayload(messages, opts = {}) {
   const format = opts.format === 'plain' ? 'plain' : 'json';
   const instruction = format === 'plain' ? REPLY_PLAIN_INSTRUCTION : REPLY_JSON_INSTRUCTION;
+  const reasoningEffort = opts.reasoningEffort ?? REPLY_REASONING_EFFORT;
   return {
     model: opts.model ?? REPLY_MODEL,
     temperature: opts.temperature ?? 0.8,
     ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
+    ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     messages: [...messages, { role: 'system', content: instruction }],
   };
 }

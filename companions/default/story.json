@@ -1,17 +1,36 @@
 {
   "story": {
     "cast": [
-      { "name": "周姐", "role": "colleague", "closeness": 0.68 },
+      { "name": "周姐", "role": "executive_partner", "closeness": 0.86 },
+      { "name": "陈屿", "role": "cto", "closeness": 0.7 },
+      { "name": "许棠", "role": "delivery_director", "closeness": 0.74 },
+      { "name": "罗景川", "role": "business_director", "closeness": 0.62 },
       { "name": "林薇", "role": "friend", "closeness": 0.82 }
     ],
     "lines": [
       {
-        "id": "qingyi-digital-project",
-        "title": "清弈科技的新项目",
+        "id": "qingyi-lighthouse",
+        "title": "灯塔企业数智中台",
+        "stage": "rising",
+        "mood_link": -0.08,
+        "last_beat": "内部方案初审完成，许棠指出客户历史数据口径混乱，陈屿要求先做迁移风险清单再承诺工期。",
+        "next_beat_hint": "周姐组织联合评审，冻结客户需求与交付边界"
+      },
+      {
+        "id": "qingyi-ai-assistant",
+        "title": "弈策 AI 经营助手",
         "stage": "setup",
-        "mood_link": 0.15,
-        "last_beat": "公司准备启动一个重要的企业数字化项目，周姐也参与其中。",
-        "next_beat_hint": "项目第一次内部评审"
+        "mood_link": 0.18,
+        "last_beat": "陈屿交出了内测版，经营摘要已经能跑通，但沈清词要求每条结论都能回到原始数据证据。",
+        "next_beat_hint": "管理层内测评审，确认首批邀请客户范围"
+      },
+      {
+        "id": "qingyi-org-upgrade",
+        "title": "清弈核心团队扩编",
+        "stage": "setup",
+        "mood_link": 0.03,
+        "last_beat": "周姐和沈清词定下了产品经理、数据工程师与客户成功负责人的岗位画像。",
+        "next_beat_hint": "首轮核心候选人面试"
       }
     ]
   }

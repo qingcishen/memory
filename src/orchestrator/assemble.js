@@ -9,6 +9,7 @@ import { PARAMS } from '../params.js';
 export function buildSystemPrompt({
   timePrompt = '',
   personaPrompt = '',
+  companyPrompt = '',
   worldPrompt = '',
   storyPrompt = '',
   goalsPrompt = '',
@@ -32,6 +33,7 @@ export function buildSystemPrompt({
   const sections = [
     timePrompt,
     personaPrompt,
+    companyPrompt,
     worldPrompt,
     storyPrompt,
     relationshipPrompt,
@@ -75,8 +77,12 @@ export function buildSystemPrompt({
 
 /** 当前真实时间段。默认按中国/武汉时区注入, 让角色能回答"现在几点"并有作息感。
  *  opts.weather: 一句天气描述 (由 WeatherProvider 异步取好后传入), 让她也知道外面下没下雨/冷不冷。
- *  opts.gapHours: 距对方上次说话过了多久 (小时); 间隔够大时追加一句"时间跳跃感"软提示, 见 buildGapHint。 */
-export function buildTimePrompt(now = new Date(), { timeZone = 'Asia/Shanghai', place = '武汉', weather = '', gapHours = null } = {}) {
+ *  opts.gapHours: 距对方上次说话过了多久 (小时); 间隔够大时追加一句"时间跳跃感"提示, 见 buildGapHint。
+ *  opts.userMessage: 本轮原话；久别后若对方主动表达想念/亲密，应先接住而不是自动责怪。 */
+export function buildTimePrompt(
+  now = new Date(),
+  { timeZone = 'Asia/Shanghai', place = '武汉', weather = '', gapHours = null, userMessage = '' } = {},
+) {
   const parts = new Intl.DateTimeFormat('zh-CN', {
     timeZone,
     year: 'numeric',
@@ -93,14 +99,15 @@ export function buildTimePrompt(now = new Date(), { timeZone = 'Asia/Shanghai', 
   const weekday = get('weekday');
   const lines = [
     `【现在${place}时间 ${date} ${time}，${weekday}，时区 ${timeZone}】`,
-    `如果对方问现在几点, 就回答"${time}"左右, 绝对不能偏差超过10分钟。时间可影响语气(困/饿/精神), 但不要每句都提作息, 更不要在亲密话题里突然用「明天上课」当收尾。`,
+    `【统一现实时间·硬规则】你的时间与对方同步：现实经过1分钟，你这里也经过1分钟；时间不得冻结、倒退或凭空跳跃。对方问现在几点时回答"${time}"左右，偏差不得超过10分钟。`,
+    `时间可影响语气(困/饿/精神), 但不要每句都报时或提作息, 更不要在亲密话题里突然用「明天上课」当收尾。记忆里曾经的地点、动作、饭局和道具都是过去记录，不能自动当成此刻仍在发生。`,
   ];
   // 天气 (可选): 让她对"外面下没下雨/冷不冷"有真实感, 别瞎编。
   if (weather && weather.trim()) {
     lines.push(`${weather.trim()} 如果对方问天气/冷不冷/要不要加衣, 按这个说; 也可自然带入关心。`);
   }
   // 时间跳跃感 (可选): 距上次说话隔了一段时间, 让她对"过了多久"有感知。
-  const gapHint = buildGapHint(gapHours);
+  const gapHint = buildGapHint(gapHours, PARAMS.proactive.silenceTiers, { userMessage });
   if (gapHint) lines.push(gapHint);
   return lines.join('\n');
 }
@@ -112,19 +119,23 @@ export function buildTimePrompt(now = new Date(), { timeZone = 'Asia/Shanghai', 
  * 与"她主动找你"的分级主动性 (见 orchestrator/scheduler.js pickSilenceTier) 同一套情绪刻度。
  * @param gapHours 距上次对话的小时数; null/<=0 (没有上次记录, 或刚聊过) → 不提
  */
-export function buildGapHint(gapHours, tiers = PARAMS.proactive.silenceTiers) {
+export function buildGapHint(gapHours, tiers = PARAMS.proactive.silenceTiers, { userMessage = '' } = {}) {
   if (gapHours == null || !(gapHours >= tiers.excuseFromHours)) return '';
+  const affectionate = /(想你|想她|亲|吻|抱|老婆|老公|宝贝|爱你|回来陪)/.test(String(userMessage));
+  const priority = affectionate
+    ? '对方这次正在表达想念/亲密，先接住当下的爱意；除非已有明确且未解决的冲突，不要把沉默时长自动解释成晚归、冷落或失约。'
+    : '沉默时长只是时间事实，不等于晚归、冷落或失约；是否有情绪必须由明确的关系事件决定，不能仅凭空档责怪对方。';
   if (gapHours >= 24) {
     const days = Math.max(1, Math.round(gapHours / 24));
-    return `对方隔了 ${days} 天才再来找你, 这次回复可以自然带一点"好久没理我了/有点想你"的感觉, 别报数字、别小题大做。`;
+    return `【时间已推进】距上次对话约 ${days} 天，旧物理场景已经结束。可以自然表现久别和想念，但别报精确数字、别小题大做。${priority}`;
   }
   if (gapHours >= tiers.missFromHours) {
-    return `对方已经 ${gapHours.toFixed(1)} 小时没说话, 现在才回来, 心里有点小情绪/失落, 这次回复可以自然带出来, 别报数字。`;
+    return `【时间已推进】已经过去约 ${gapHours.toFixed(1)} 小时，旧活动、地点、姿势、餐食和手中道具全部失效；按当前时刻重新建立场景，别报精确数字。${priority}`;
   }
   if (gapHours >= tiers.directFromHours) {
-    return `对方已经 ${gapHours.toFixed(1)} 小时没说话, 现在才回来, 有点惦记他, 这次回复可以自然问问他刚才在干嘛, 别报数字。`;
+    return `【时间已推进】已经过去约 ${gapHours.toFixed(1)} 小时，旧活动与道具不再默认延续；可以自然表现惦记，但别报精确数字。${priority}`;
   }
-  return `对方过了 ${gapHours.toFixed(1)} 小时才回, 可以很轻地接上这段空档, 不必特别在意, 别报数字。`;
+  return `现实中已过去约 ${gapHours.toFixed(1)} 小时，可以很轻地意识到这段空档，不必特别强调，也别报精确数字。${priority}`;
 }
 
 /**

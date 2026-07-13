@@ -60,6 +60,44 @@ export function normalizeCompanionProfile(input = {}) {
   return CompanionProfileSchema.parse(input);
 }
 
+const CompanyItemSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().optional(),
+}).passthrough();
+
+export const CompanionCompanySchema = z.object({
+  id: z.string().min(1).default('company'),
+  name: z.string().min(1),
+  legalName: z.string().default(''),
+  shortName: z.string().default(''),
+  industry: z.string().default(''),
+  foundedYear: z.number().int().min(1800).max(2200).nullable().optional(),
+  headquarters: z.string().default(''),
+  ownership: z.string().default(''),
+  scale: z.string().default(''),
+  stage: z.string().default(''),
+  mission: z.string().default(''),
+  description: z.string().default(''),
+  leader: z.object({
+    name: z.string().default(''),
+    title: z.string().default(''),
+    responsibilities: z.array(z.string()).default([]),
+    managementStyle: z.string().default(''),
+  }).default({}),
+  officeHours: z.object({
+    timezone: z.string().default('Asia/Shanghai'),
+    weekdays: z.array(z.string()).default(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']),
+    start: z.string().default('09:30'),
+    end: z.string().default('18:00'),
+  }).default({}),
+  businessLines: z.array(CompanyItemSchema).default([]),
+  departments: z.array(CompanyItemSchema).default([]),
+  people: z.array(CompanyItemSchema).default([]),
+  projects: z.array(CompanyItemSchema).default([]),
+  locations: z.array(CompanyItemSchema).default([]),
+  rules: z.array(z.string()).default([]),
+}).passthrough();
+
 export const CompanionConfigSchema = z.object({
   companionId: z.string().min(1).default('default'), // 隔离键, 默认 'default'
   name: z.string().min(1),                            // 她的名字 / 称呼 (= orchestrator companionName)
@@ -93,6 +131,7 @@ export const CompanionConfigSchema = z.object({
   narrationDirectives: z.record(z.string(), z.string()).nullable().default(null),
   storyCast: z.array(z.object({ name: z.string().min(1), role: z.string().min(1), closeness: z.number().min(0).max(1).default(0.5) })).default([]),
   storylines: z.array(z.object({ id: z.string().min(1), title: z.string().min(1), stage: z.enum(['setup','rising','climax','cooldown','closed']).default('setup'), mood_link: z.number().min(-1).max(1).default(0), last_beat: z.string().default(''), next_beat_hint: z.string().default('') })).default([]),
+  company: CompanionCompanySchema.nullable().default(null),
   profile: CompanionProfileSchema.default({}),
   // I 线人设: companions/<id>/intimacy.json
   intimacyEnabled: z.boolean().nullable().default(null),
@@ -224,6 +263,7 @@ export function personaJsonToConfig(json = {}) {
         : null,
     storyCast: Array.isArray(json.story?.cast) ? json.story.cast : [],
     storylines: Array.isArray(json.story?.lines) ? json.story.lines : [],
+    company: json.company && typeof json.company === 'object' ? json.company : null,
     profile: json.profile ?? {},
     intimacyEnabled: typeof json.intimacy?.enabled === 'boolean' ? json.intimacy.enabled : null,
     intimacyBaseline: json.intimacy?.baseline && typeof json.intimacy.baseline === 'object' ? json.intimacy.baseline : null,
@@ -363,6 +403,7 @@ export function configToRow(userId, config) {
       narrationDirectives: c.narrationDirectives,
       storyCast: c.storyCast,
       storylines: c.storylines,
+      company: c.company,
       profile: c.profile,
       intimacyEnabled: c.intimacyEnabled,
       intimacyBaseline: c.intimacyBaseline,
@@ -413,5 +454,4 @@ export async function listCompanions(userId) {
   if (error) throw error;
   return (data ?? []).map(rowToConfig);
 }
-
 

@@ -8,6 +8,9 @@
 /** 库存万能结尾：任何场景都不该当「糊弄收尾」用 */
 export const STOCK_ENDINGS = /(明天上课|记得吃早饭|写作业|考试加油|好好休息哦$|早点睡哈$|我先睡了哈|拜啦$|88+$|加油哦(?!.*折腾))/;
 
+/** 长时间间隔后最容易被模型从旧历史里误续的物理场景。 */
+export const STALE_SCENE_PROPS = /(勺子|碗沿|碗里|餐桌|饭还没吃完|继续吃饭|陪我吃|锅里|筷子|吃饭|做饭|早饭|早餐|午饭|午餐|晚饭|晚餐)/;
+
 export const SCENE_LOCKS = {
   intimate: {
     id: 'intimate',
@@ -81,8 +84,11 @@ export function detectSceneLocks(userMessage = '', history = [], intimacyPhase =
  * @param locks
  * @param opts {{ intimacyPhase?, topGoalText? }}
  */
-export function sceneCoherenceToPrompt(locks = [], { intimacyPhase = null, topGoalText = null } = {}) {
-  if (!locks.length && !intimacyPhase && !topGoalText) return '';
+export function sceneCoherenceToPrompt(
+  locks = [],
+  { intimacyPhase = null, topGoalText = null, gapHours = null, currentActivity = '', userMessage = '' } = {},
+) {
+  if (!locks.length && !intimacyPhase && !topGoalText && !(gapHours != null && gapHours >= 4)) return '';
   const lines = ['【连贯性·硬规则·本轮最高优先级】'];
   for (const lock of locks) {
     lines.push(lock.continuity);
@@ -92,6 +98,14 @@ export function sceneCoherenceToPrompt(locks = [], { intimacyPhase = null, topGo
     '若场景不方便做完某事，就明确说场景限制并提议之后/换地方，不要跳到完全无关的生活设定。',
     '【禁止库存结尾】不要用「明天上课 / 记得吃早饭 / 好好休息哦 / 我先睡了哈 / 加油哦」这类万能收尾糊弄；收尾必须接住本轮正在说的事。',
   );
+  if (gapHours != null && gapHours >= 4) {
+    lines.push(
+      `【跨时段场景重置】现实已过去约 ${Number(gapHours).toFixed(1)} 小时。旧对话中的地点、姿势、正在吃的饭、碗筷等道具都已经过期；除非对方本轮重新提到，或当前活动明确支持，否则禁止续写。`,
+      currentActivity
+        ? `此刻活动以「${String(currentActivity).slice(0, 60)}」为准；它只提供背景，不得盖过对方本轮原话「${String(userMessage).slice(0, 60)}」。`
+        : '此刻没有可靠活动信息，就保持地点和道具留白，禁止从旧记忆补写。',
+    );
+  }
   if (topGoalText) {
     lines.push(`【结尾服务意图】若本轮心里有一件事（${topGoalText.slice(0, 48)}），只能在话题自然落点轻点一下，禁止硬拐、禁止任务腔。`);
   }
@@ -101,10 +115,15 @@ export function sceneCoherenceToPrompt(locks = [], { intimacyPhase = null, topGo
 /**
  * 粗检 assistant 回复是否与当前锁冲突（启发式，给测试与可选后处理）
  */
-export function detectNonSequitur(replyText = '', locks = []) {
+export function detectNonSequitur(replyText = '', locks = [], { gapHours = null, userMessage = '', currentActivity = '' } = {}) {
   const text = String(replyText || '');
   if (!text.trim()) return { bad: false, reasons: [] };
   const reasons = [];
+
+  if (gapHours != null && gapHours >= 4 && STALE_SCENE_PROPS.test(text)) {
+    const currentEvidence = `${userMessage}\n${currentActivity}`;
+    if (!STALE_SCENE_PROPS.test(currentEvidence)) reasons.push('time: 长间隔后续写了已过期的饭局/道具');
+  }
 
   // 库存结尾：亲密/车/冲突必查；其它场景也软查「纯万能收尾」
   if (STOCK_ENDINGS.test(text)) {
@@ -146,13 +165,13 @@ export function detectNonSequitur(replyText = '', locks = []) {
  * 后处理建议：坏回复时给调用方一句「软修复」提示（不自动改写 LLM 输出，避免乱改）。
  * 返回 { needsRetry, hint }；编排器可选用。
  */
-export function nonSequiturRepairHint(replyText = '', locks = []) {
-  const check = detectNonSequitur(replyText, locks);
+export function nonSequiturRepairHint(replyText = '', locks = [], temporal = {}) {
+  const check = detectNonSequitur(replyText, locks, temporal);
   if (!check.bad) return { needsRetry: false, hint: '', reasons: [] };
   return {
     needsRetry: true,
     reasons: check.reasons,
-    hint: '上一稿疑似跳戏或库存结尾。请只顺着对方最后一句和当前场景重写，删掉无关日程/校园/万能收尾，第一句必须接住对方。',
+    hint: '上一稿疑似跳戏、沿用了已经过期的旧场景或使用库存结尾。请按当前真实时间重新建立场景，只顺着对方最后一句重写；删掉本轮未提及的旧地点、饭局、碗筷和无关日程，第一句必须接住对方。',
   };
 }
 

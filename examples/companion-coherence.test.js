@@ -55,6 +55,24 @@ console.log('sceneCoherence');
   ok('库存结尾正则', STOCK_ENDINGS.test('记得吃早饭啊'));
   const repair = nonSequiturRepairHint('好舒服明天上课', locks);
   ok('跳戏给出 retry hint', repair.needsRetry && repair.hint.includes('跳戏'));
+  const staleMeal = detectNonSequitur(
+    '她把勺子放回碗里，说饭还没吃完。',
+    locks,
+    { gapHours: 6.5, userMessage: '亲吻她的嘴唇，今天太想她了', currentActivity: '和朋友聊了会儿天' },
+  );
+  ok('跨时段后旧饭桌道具被检出', staleMeal.bad && staleMeal.reasons.some((r) => r.startsWith('time:')));
+  const currentMeal = detectNonSequitur(
+    '她把勺子放回碗里，继续吃饭。',
+    locks,
+    { gapHours: 6.5, userMessage: '陪我吃晚饭', currentActivity: '在做饭/吃晚饭' },
+  );
+  ok('本轮重新建立饭局时允许碗筷', currentMeal.reasons.every((r) => !r.startsWith('time:')));
+  const resetPrompt = sceneCoherenceToPrompt(locks, {
+    gapHours: 6.5,
+    currentActivity: '和朋友聊了会儿天',
+    userMessage: '亲吻她的嘴唇',
+  });
+  ok('跨时段连贯 prompt 明确旧饭局失效', resetPrompt.includes('跨时段场景重置') && resetPrompt.includes('碗筷等道具都已经过期'));
   const car = detectSceneLocks('在车里弄我', [], null);
   ok('车内场景锁定', car.some((l) => l.id === 'car'));
   const travel = detectSceneLocks('我在杭州出差', [], null);

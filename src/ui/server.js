@@ -17,7 +17,8 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseEnvText, applyEnvUpdates, maskValue } from './envfile.js';
 import { DEFAULT_PARAMS } from '../params.js';
-import { normalizeCompanionProfile } from '../companion.js';
+import { loadPersonaConfig, normalizeCompanionProfile } from '../companion.js';
+import { buildCompanySnapshot } from '../company/index.js';
 import { OpenAIImageProvider } from '../appearance/provider.js';
 import { listReferenceImages, saveReferenceImage, deleteReferenceImage, referenceFilePath, readReferenceById, setReferenceAvatar } from '../appearance/references.js';
 import {
@@ -1052,6 +1053,42 @@ async function getCompanionUpgrade(env, scope) {
   };
 }
 
+async function getCompanyDashboard(env, scope) {
+  const companionId = safeCompanionId(scope.companionId || 'default');
+  if (!companionId) return { ok: false, message: '角色 ID 不合法' };
+  const persona = loadPersonaConfig(path.join(ROOT, 'companions', `${companionId}.json`));
+  const company = persona?.config?.company ?? null;
+  if (!company) return { ok: false, message: '这个角色还没有配置公司系统' };
+
+  let story = { ok: true, data: [] };
+  let state = null;
+  if (scope.userId) {
+    [story, state] = await Promise.all([
+      supabaseRest(env, scopedPath('story_lines', {
+        select: 'storyline_key,title,stage,mood_link,last_beat,next_beat_hint,last_beat_at,beats_day,beats_today,beat_shared_at,last_beat_sharing,updated_at',
+        order: 'updated_at.desc',
+        limit: '30',
+      }, scope)).catch((error) => ({ ok: false, message: error?.message })),
+      getStateBundle(env, scope).catch((error) => ({ ok: false, message: error?.message })),
+    ]);
+  }
+
+  const snapshot = buildCompanySnapshot(company, story.ok ? story.data : [], {
+    now: Date.now(),
+    currentActivity: state?.life?.current_activity || '',
+  });
+  return {
+    ok: true,
+    scope: { userId: scope.userId || '', companionId },
+    company: snapshot,
+    storyConnected: Boolean(scope.userId && story.ok),
+    issues: [story, state]
+      .filter((result) => result && !result.ok)
+      .map((result) => result.missingTable ? '缺少 story_lines 数据表，请重新执行 sql/schema.sql' : result.message)
+      .filter(Boolean),
+  };
+}
+
 function behaviorSummary(row) {
   const stonewallAt = Array.isArray(row?.state?.stonewallAt) ? row.state.stonewallAt : [];
   const last = stonewallAt.at(-1) ?? null;
@@ -1626,7 +1663,7 @@ function listCompanions() {
 // 带 meta/emotion_baseline 等额外顶层键的形态 —— 通用接口直接读写整份文件内容, 不narrow到单个 key,
 // 这样不用对 persona/relationship 的多顶层键做特殊处理。profile 有专门的结构化表单 (见下方
 // readCompanionProfile/saveCompanionProfile), 不走这条通用路径。
-const COMPANION_SECTIONS = ['persona', 'appearance', 'life', 'relationship', 'runtime', 'knowledge', 'story', 'narration', 'intimacy'];
+const COMPANION_SECTIONS = ['persona', 'appearance', 'life', 'relationship', 'runtime', 'knowledge', 'story', 'company', 'narration', 'intimacy'];
 
 function companionSectionFilePath(id, section) {
   return path.join(companionDirPath(id), `${section}.json`);
@@ -2899,6 +2936,10 @@ async function handle(req, res) {
   }
   if (route === 'GET /api/companion-v2') {
     try { return json(res, 200, await getCompanionUpgrade(readEnvValues(), Object.fromEntries(url.searchParams))); }
+    catch (error) { return json(res, 200, { ok: false, message: describeNetworkError(error) }); }
+  }
+  if (route === 'GET /api/company') {
+    try { return json(res, 200, await getCompanyDashboard(readEnvValues(), Object.fromEntries(url.searchParams))); }
     catch (error) { return json(res, 200, { ok: false, message: describeNetworkError(error) }); }
   }
   if (route === 'GET /api/state') {
