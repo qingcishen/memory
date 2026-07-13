@@ -111,7 +111,10 @@ console.log('待续回合 (超时自动重试 + 持久化续接)');
   let attempts = 0;
   const telegram = new TelegramMemoryBot({
     api, behaviorStore, pendingStore: pending, allowedChatIds: new Set(), personaFile: '/not-found.json',
-    replyTimeoutMs: 50, replyRetryCount: 1, replyRetryDelayMs: 0, sleepFn: async () => {},
+    // withTimeout() 内部用真实 setTimeout 和 mock 的 microtask-resolve 赛跑；50ms 在 CI/共享机器负载高时
+    // 会被系统调度抖动吃掉，导致真实超时抢在 mock 的 reject 前触发而误判——这里只需要"远大于 mock 的
+    // 近瞬时 resolve"，不测超时路径本身 (那部分由 isRetryableReplyError 的专门用例覆盖)，调大即可消除竞态。
+    replyTimeoutMs: 3000, replyRetryCount: 1, replyRetryDelayMs: 0, sleepFn: async () => {},
   });
   telegram.botForChat = () => ({
     async reply() {
