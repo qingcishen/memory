@@ -76,21 +76,31 @@ const navGroups = [
   { id: 'system', label: '系统', kana: '控', icon: SquareTerminal, items: ['operations', 'safety', 'mcp', 'params', 'config'] },
 ];
 
-function Sidebar({ active, go, scope, bot, startBot, mobile, closeMobile }) {
+function Sidebar({ active, go, scope, bot, startBot, mobile, closeMobile, onSwitchCompanion }) {
   const companionId = scope.companionId;
   const [photos] = useEndpoint(`/api/image-references?${qs(scope)}`, [scope.userId, scope.companionId]);
   const [companionState] = useEndpoint('/api/companions', []);
   const references = photos.data?.items || [];
   const avatar = references.find(item => item.isAvatar) || references[0];
-  const companion = (companionState.data?.companions || []).find(item => item.companionId === companionId);
+  const companions = companionState.data?.companions || [];
+  const companion = companions.find(item => item.companionId === companionId);
   const companionName = companion?.name || (companionId === 'default' ? '沈清词' : companionId);
   const activeGroup = navGroups.find(group => group.items.includes(active)) || navGroups[0];
   const [panelGroup, setPanelGroup] = useState(activeGroup.id);
   const [panelOpen, setPanelOpen] = useState(false);
+  const [switcherOpen, setSwitcherOpen] = useState(false);
+  const switcherRef = useRef(null);
   useEffect(() => setPanelGroup(activeGroup.id), [activeGroup.id]);
+  useEffect(() => {
+    if (!switcherOpen) return;
+    const onDocClick = (event) => { if (switcherRef.current && !switcherRef.current.contains(event.target)) setSwitcherOpen(false); };
+    document.addEventListener('mousedown', onDocClick);
+    return () => document.removeEventListener('mousedown', onDocClick);
+  }, [switcherOpen]);
   const group = navGroups.find(item => item.id === panelGroup) || activeGroup;
   const items = group.items.map(id => nav.find(item => item[0] === id));
   const openGroup = id => { setPanelGroup(id); setPanelOpen(true); };
+  const pickCompanion = (id) => { setSwitcherOpen(false); if (id !== companionId) onSwitchCompanion?.(id); };
   return <aside className={`sidebar-shell ${panelOpen || mobile ? 'panel-open' : ''} ${mobile ? 'mobile-open' : ''}`} onMouseLeave={() => !mobile && setPanelOpen(false)}>
     <div className="sidebar-rail">
       <div className="rail-logo">Lumen</div>
@@ -104,10 +114,21 @@ function Sidebar({ active, go, scope, bot, startBot, mobile, closeMobile }) {
     <div className="sidebar-panel">
       <div className="sidebar-panel-inner">
         <div className="panel-topline"><span>{group.label}</span><button className="panel-close" onClick={() => { setPanelOpen(false); closeMobile(); }} aria-label="收起侧边栏"><X size={16}/></button></div>
-        <button className="companion-card" onClick={() => { go('gallery'); if (mobile) closeMobile(); }} aria-label="打开清词照片墙">
-          <div className="companion-avatar">{avatar ? <img src={avatar.url} alt="清词"/> : (companionId || 'D').slice(0,1).toUpperCase()}</div>
-          <div><strong>{companionName}</strong><small>{references.length ? `${references.length} 张照片 · 查看照片墙` : '探索 · 记录 · 陪伴'}</small></div>
-        </button>
+        <div className="companion-card" ref={switcherRef}>
+          <button type="button" className="companion-avatar-btn" onClick={() => setSwitcherOpen(o => !o)} aria-label="切换角色" aria-expanded={switcherOpen}>
+            <div className="companion-avatar">{avatar ? <img src={avatar.url} alt={companionName}/> : (companionId || 'D').slice(0,1).toUpperCase()}</div>
+          </button>
+          <button type="button" className="companion-card-info" onClick={() => { go('gallery'); if (mobile) closeMobile(); }} aria-label={`打开${companionName}照片墙`}>
+            <strong>{companionName}</strong><small>{references.length ? `${references.length} 张照片 · 查看照片墙` : '探索 · 记录 · 陪伴'}</small>
+          </button>
+          {switcherOpen && <div className="companion-switcher" role="menu" aria-label="切换角色">
+            {companions.length ? companions.map(c => <button type="button" key={c.companionId} role="menuitem" className={`companion-switcher-item ${c.companionId === companionId ? 'is-active' : ''}`} onClick={() => pickCompanion(c.companionId)}>
+              <span className="companion-switcher-avatar">{(c.name || c.companionId).slice(0, 1)}</span>
+              <span><b>{c.name || c.companionId}</b><small>{c.companionId}</small></span>
+            </button>) : <div className="companion-switcher-empty">还没有其他角色</div>}
+            <button type="button" className="companion-switcher-manage" onClick={() => { setSwitcherOpen(false); go('personas'); if (mobile) closeMobile(); }}><Plus size={13}/>新建 / 管理角色</button>
+          </div>}
+        </div>
         <nav className="panel-links" aria-label={`${group.label}导航`}>
           {items.map(([id, label, Icon]) => <button key={id} className={`panel-link ${active === id ? 'is-active' : ''}`} onClick={() => { go(id); if (mobile) closeMobile(); }}><span className="panel-link-icon"><Icon size={17}/></span><span className="panel-link-copy"><strong>{label}</strong><small>{navDescriptions[id]}</small></span></button>)}
         </nav>
@@ -1113,7 +1134,7 @@ function App() {
 
   return <div className="lumen-console min-h-screen">
     <div className="pointer-events-none fixed inset-0 dot-grid"/>
-    <Sidebar active={active} go={go} scope={scope} bot={bot} startBot={startBot} mobile={mobile} closeMobile={() => setMobile(false)}/>
+    <Sidebar active={active} go={go} scope={scope} bot={bot} startBot={startBot} mobile={mobile} closeMobile={() => setMobile(false)} onSwitchCompanion={companionId => setScope(value => ({ ...value, companionId }))}/>
     <main className="app-main relative">
       <header className="app-header sticky top-0 z-30 flex h-20 items-center gap-3 px-4 sm:px-7">
         <button className="btn px-3 lg:hidden" onClick={() => setMobile(true)}><Menu size={18}/></button>
