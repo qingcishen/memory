@@ -52,6 +52,13 @@ ok('counts 对齐', cat.counts.looks === cat.looks.length && cat.counts.bags ===
 ok('taxonomy 有大类', Array.isArray(cat.taxonomy) && cat.taxonomy.length >= 8);
 ok('鞋有小类', cat.shoes.every((s) => s.category === 'shoes' && s.subcategory));
 
+for (const section of [
+  'dresses', 'tops', 'bottoms', 'outerwear', 'hair', 'shoes',
+  'bags', 'lingerie', 'jewelry', 'watches', 'accessories', 'travel',
+]) {
+  ok(`${section} 库存至少 30 项`, cat[section].length >= 30);
+}
+
 const look = cat.looks.find((x) => x.lookId === 'work_board') || cat.looks[0];
 ok('造型可上身', look.wearable === true && Boolean(look.lookId));
 ok('默认提示词含 luxury', /luxury|Luxury|editorial/i.test(look.defaultPrompt));

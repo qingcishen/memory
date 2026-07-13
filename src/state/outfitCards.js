@@ -13,6 +13,21 @@ import {
   OUTFIT_SECTION_IDS,
   stampCardCategory,
 } from './outfitTaxonomy.js';
+import {
+  STOCK_ACCESSORIES,
+  STOCK_BAGS,
+  STOCK_BOTTOMS,
+  STOCK_DRESSES,
+  STOCK_HAIR,
+  STOCK_JEWELRY,
+  STOCK_LINGERIE,
+  STOCK_OUTERWEAR,
+  STOCK_SHOES,
+  STOCK_TOPS,
+  STOCK_TRAVEL,
+  STOCK_WATCHES,
+  padWithStock,
+} from './outfitCatalogStock.js';
 
 const ALLOWED = new Map([
   ['image/png', 'png'],
@@ -209,6 +224,34 @@ function drawerToCards(list, kind, subtitleDefault) {
   }));
 }
 
+function stockPieceToCard(item, kind, pieceKey, subtitle) {
+  return {
+    id: cardId(kind, item.id || item.label),
+    kind,
+    title: item.label,
+    subtitle: [item.brand, item.kind].filter(Boolean).join(' · ') || subtitle,
+    summary: item.notes || item.label,
+    brand: item.brand || '',
+    itemKind: item.kind || '',
+    pieceKey,
+    pieceKeyLabel: PIECE_LABELS[pieceKey] || subtitle,
+    heel: item.heel || null,
+    material: item.material || null,
+    color: item.color || null,
+    contexts: item.contexts || [],
+    fromLooks: [],
+    wearable: false,
+    tags: [item.brand, item.kind, item.heel, ...(item.contexts || [])].filter(Boolean),
+  };
+}
+
+function padCards(existing, stockCards, minCount = 30) {
+  return padWithStock(existing, stockCards, {
+    minCount,
+    keyFn: (card) => card?.title || card?.id,
+  });
+}
+
 /**
  * 从规范化衣橱构建全部 UI 卡片（无图片状态）。
  * @param rawWardrobe 角色 outfit.json
@@ -337,7 +380,8 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
     }
   }
 
-  const bags = (cat.bags || []).map((label, i) => ({
+  const bagInventory = padWithStock(cat.bags, STOCK_BAGS);
+  const bags = bagInventory.map((label, i) => ({
     id: cardId('bag', label || i),
     kind: 'bag',
     title: String(label),
@@ -367,7 +411,8 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
     }
   }
 
-  const lingerie = (cat.lingerie || []).map((item) => ({
+  const lingerieInventory = padWithStock(cat.lingerie, STOCK_LINGERIE);
+  const lingerie = lingerieInventory.map((item) => ({
     id: cardId('lingerie', item.id || item.label),
     kind: 'lingerie',
     title: item.label,
@@ -390,11 +435,12 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
     if (!outerwearMerged.some((x) => x.title === card.title)) outerwearMerged.push(card);
   }
 
-  const shoes = drawerToCards(cat.shoes, 'shoe', '鞋履');
-  const jewelry = drawerToCards(cat.jewelry, 'jewelry', '珠宝');
-  const watches = drawerToCards(cat.watches, 'watch', '腕表');
-  const accessories = drawerToCards(cat.accessories, 'accessory', '配饰');
-  const travel = drawerToCards(cat.travel, 'travel', '旅行');
+  const outerwear = padCards(outerwearMerged, drawerToCards(STOCK_OUTERWEAR, 'outerwear', '外套'));
+  const shoes = drawerToCards(padWithStock(cat.shoes, STOCK_SHOES), 'shoe', '鞋履');
+  const jewelry = drawerToCards(padWithStock(cat.jewelry, STOCK_JEWELRY), 'jewelry', '珠宝');
+  const watches = drawerToCards(padWithStock(cat.watches, STOCK_WATCHES), 'watch', '腕表');
+  const accessories = drawerToCards(padWithStock(cat.accessories, STOCK_ACCESSORIES), 'accessory', '配饰');
+  const travel = drawerToCards(padWithStock(cat.travel, STOCK_TRAVEL), 'travel', '旅行');
 
   const finalize = (sectionId, list) =>
     (list || []).map((card) => {
@@ -405,10 +451,22 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
       };
     });
 
-  const tops = finalize('tops', [...topsMap.values()]);
-  const bottoms = finalize('bottoms', [...bottomsMap.values()]);
-  const dresses = finalize('dresses', [...dressesMap.values()]);
-  const hair = finalize('hair', [...hairMap.values()]);
+  const tops = finalize('tops', padCards(
+    [...topsMap.values()],
+    STOCK_TOPS.map((item) => stockPieceToCard(item, 'top', 'top', '上装')),
+  ));
+  const bottoms = finalize('bottoms', padCards(
+    [...bottomsMap.values()],
+    STOCK_BOTTOMS.map((item) => stockPieceToCard(item, 'bottom', 'bottom', '下装')),
+  ));
+  const dresses = finalize('dresses', padCards(
+    [...dressesMap.values()],
+    STOCK_DRESSES.map((item) => stockPieceToCard(item, 'dress', 'dress', '裙装')),
+  ));
+  const hair = finalize('hair', padCards(
+    [...hairMap.values()],
+    STOCK_HAIR.map((item) => stockPieceToCard(item, 'hair', 'hair', '发型')),
+  ));
   // 兼容旧「单品」视图：衣片合计（不含发型）
   const pieces = [...tops, ...bottoms, ...dresses];
 
@@ -417,7 +475,7 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
     dresses,
     tops,
     bottoms,
-    outerwear: finalize('outerwear', outerwearMerged),
+    outerwear: finalize('outerwear', outerwear),
     hair,
     shoes: finalize('shoes', shoes),
     bags: finalize('bags', bags),
