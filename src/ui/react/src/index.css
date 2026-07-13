@@ -514,6 +514,46 @@ textarea.input { padding: 12px !important; resize: vertical; }
   background: color-mix(in srgb, var(--sw-accent) 10%, transparent);
 }
 
+/* 小类条 */
+.outfit-subtabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin: 0 0 14px;
+  padding: 2px 0 4px;
+}
+.outfit-subtab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  border: 1px solid var(--sw-border);
+  background: var(--sw-surface);
+  color: var(--sw-text-2);
+  border-radius: 999px;
+  padding: 5px 12px;
+  font-size: 12px;
+  cursor: pointer;
+  transition: border-color .12s ease, color .12s ease, background .12s ease;
+}
+.outfit-subtab em {
+  font-style: normal;
+  font-size: 10px;
+  opacity: .75;
+  min-width: 1.2em;
+  text-align: center;
+}
+.outfit-subtab:hover {
+  border-color: color-mix(in srgb, var(--sw-accent) 45%, var(--sw-border));
+  color: var(--sw-text);
+}
+.outfit-subtab.is-active {
+  border-color: var(--sw-accent);
+  color: var(--sw-accent);
+  background: color-mix(in srgb, var(--sw-accent) 12%, transparent);
+  font-weight: 600;
+}
+.outfit-subtab.is-active em { opacity: 1; }
+
 /* 点击标题 / 单品名复制 */
 .copyable-name {
   cursor: copy;

@@ -8,6 +8,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { normalizeWardrobe, PIECE_KEYS } from './outfit.js';
 import { applyPromptKit, applyProductPromptKit, isPersonOutfitCard, assemblePersonImagePrompt } from '../appearance/promptKit.js';
+import {
+  OUTFIT_SECTIONS,
+  OUTFIT_SECTION_IDS,
+  stampCardCategory,
+} from './outfitTaxonomy.js';
 
 const ALLOWED = new Map([
   ['image/png', 'png'],
@@ -244,6 +249,34 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
   });
   const allLooks = [...customSorted, ...(cat.wardrobe || [])];
 
+  // 衣橱拆类：裙 / 上 / 下 / 发 / 外（不再混进一个「单品」堆）
+  const topsMap = new Map();
+  const bottomsMap = new Map();
+  const dressesMap = new Map();
+  const hairMap = new Map();
+  const outerFromLooks = new Map();
+
+  const putPiece = (map, key, text, lookId, kind, subtitle) => {
+    const id = cardId(kind === 'piece' ? 'piece' : kind, key, text);
+    if (map.has(id)) {
+      const prev = map.get(id);
+      if (lookId && !prev.fromLooks.includes(lookId)) prev.fromLooks.push(lookId);
+      return;
+    }
+    map.set(id, {
+      id,
+      kind,
+      title: text,
+      subtitle,
+      pieceKey: key,
+      pieceKeyLabel: PIECE_LABELS[key] || key,
+      summary: text,
+      fromLooks: lookId ? [lookId] : [],
+      wearable: false,
+      tags: [subtitle],
+    });
+  };
+
   for (const look of allLooks) {
     const seasonLabel = { spring: '春', summer: '夏', autumn: '秋', winter: '冬' }[look.season] || null;
     const isCustom = look.source === 'custom' || String(look.id || '').startsWith('custom_');
@@ -269,7 +302,6 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
       seriesIndex: look.seriesIndex ?? null,
       seriesTitle: look.seriesTitle || null,
       gallery: look.gallery || [],
-      // 创建时写入的初始提示词（enrich 时若无 asset 则用它）
       seedPrompt: look.prompt || '',
       tags: [
         isCustom ? '自定义' : null,
@@ -288,26 +320,19 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
       for (const item of values) {
         const text = String(item).trim();
         if (!text || text === '无' || text === '不出门') continue;
-        // 专柜已独立展示的品类，单品区不再重复堆
-        if (['bag', 'makeup', 'skincare', 'lips', 'eyes', 'nails', 'perfume', 'shoes', 'jewelry', 'watch', 'accessories'].includes(key)) continue;
-        const id = cardId('piece', key, text);
-        if (pieceMap.has(id)) {
-          const prev = pieceMap.get(id);
-          if (!prev.fromLooks.includes(look.id)) prev.fromLooks.push(look.id);
+        // 已有专柜的不再塞进衣片
+        if (['bag', 'makeup', 'skincare', 'lips', 'eyes', 'nails', 'perfume', 'shoes', 'jewelry', 'watch', 'accessories', 'bra', 'panties', 'hosiery', 'lingerie'].includes(key)) {
           continue;
         }
-        pieceMap.set(id, {
-          id,
-          kind: 'piece',
-          title: text,
-          subtitle: PIECE_LABELS[key] || key,
-          pieceKey: key,
-          pieceKeyLabel: PIECE_LABELS[key] || key,
-          summary: text,
-          fromLooks: [look.id],
-          wearable: false,
-          tags: [PIECE_LABELS[key] || key],
-        });
+        if (key === 'dress') putPiece(dressesMap, key, text, look.id, 'dress', '裙装');
+        else if (key === 'top') putPiece(topsMap, key, text, look.id, 'top', '上装');
+        else if (key === 'bottom') putPiece(bottomsMap, key, text, look.id, 'bottom', '下装');
+        else if (key === 'hair') putPiece(hairMap, key, text, look.id, 'hair', '发型');
+        else if (key === 'outer') putPiece(outerFromLooks, key, text, look.id, 'outerwear', '外套');
+        else {
+          // 兜底进上装池，避免丢失
+          putPiece(topsMap, key, text, look.id, 'piece', PIECE_LABELS[key] || key);
+        }
       }
     }
   }
@@ -316,7 +341,7 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
     id: cardId('bag', label || i),
     kind: 'bag',
     title: String(label),
-    subtitle: '包柜',
+    subtitle: '包袋',
     summary: String(label),
     wearable: false,
     tags: ['包'],
@@ -349,6 +374,7 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
     subtitle: [item.brand, item.kind].filter(Boolean).join(' · ') || '内衣',
     summary: item.notes || item.label,
     brand: item.brand || '',
+    itemKind: item.kind || '',
     bra: item.bra || null,
     panties: item.panties || null,
     color: item.color || null,
@@ -357,48 +383,68 @@ export function buildOutfitCatalog(rawWardrobe = null, customLooks = []) {
     tags: [item.brand, item.kind, ...(item.contexts || [])].filter(Boolean),
   }));
 
+  // 外套柜 + look 里的 outer 合并（按 id 去重）
+  const outerwearDrawer = drawerToCards(cat.outerwear, 'outerwear', '外套');
+  const outerwearMerged = [...outerwearDrawer];
+  for (const card of outerFromLooks.values()) {
+    if (!outerwearMerged.some((x) => x.title === card.title)) outerwearMerged.push(card);
+  }
+
   const shoes = drawerToCards(cat.shoes, 'shoe', '鞋履');
   const jewelry = drawerToCards(cat.jewelry, 'jewelry', '珠宝');
   const watches = drawerToCards(cat.watches, 'watch', '腕表');
   const accessories = drawerToCards(cat.accessories, 'accessory', '配饰');
-  const outerwear = drawerToCards(cat.outerwear, 'outerwear', '外套');
   const travel = drawerToCards(cat.travel, 'travel', '旅行');
 
-  const withPrompts = (list) =>
-    list.map((card) => ({
-      ...card,
-      defaultPrompt: (card.seedPrompt && String(card.seedPrompt).trim()) || defaultPromptForCard(card),
-    }));
+  const finalize = (sectionId, list) =>
+    (list || []).map((card) => {
+      const stamped = stampCardCategory(sectionId, card);
+      return {
+        ...stamped,
+        defaultPrompt: (card.seedPrompt && String(card.seedPrompt).trim()) || defaultPromptForCard(card),
+      };
+    });
+
+  const tops = finalize('tops', [...topsMap.values()]);
+  const bottoms = finalize('bottoms', [...bottomsMap.values()]);
+  const dresses = finalize('dresses', [...dressesMap.values()]);
+  const hair = finalize('hair', [...hairMap.values()]);
+  // 兼容旧「单品」视图：衣片合计（不含发型）
+  const pieces = [...tops, ...bottoms, ...dresses];
+
+  const sectioned = {
+    looks: finalize('looks', looks),
+    dresses,
+    tops,
+    bottoms,
+    outerwear: finalize('outerwear', outerwearMerged),
+    hair,
+    shoes: finalize('shoes', shoes),
+    bags: finalize('bags', bags),
+    lingerie: finalize('lingerie', lingerie),
+    jewelry: finalize('jewelry', jewelry),
+    watches: finalize('watches', watches),
+    accessories: finalize('accessories', accessories),
+    beauty: finalize('beauty', beauty),
+    travel: finalize('travel', travel),
+    // 兼容
+    pieces,
+  };
+
+  const counts = {};
+  for (const id of OUTFIT_SECTION_IDS) {
+    counts[id] = Array.isArray(sectioned[id]) ? sectioned[id].length : 0;
+  }
+  counts.pieces = pieces.length;
 
   return {
     style: cat.style || '',
     beautyNotes: vanity.notes || '',
     defaults: cat.defaults || {},
     seasonal: cat.seasonal || {},
-    counts: {
-      looks: looks.length,
-      pieces: pieceMap.size,
-      bags: bags.length,
-      beauty: beauty.length,
-      lingerie: lingerie.length,
-      shoes: shoes.length,
-      jewelry: jewelry.length,
-      watches: watches.length,
-      accessories: accessories.length,
-      outerwear: outerwear.length,
-      travel: travel.length,
-    },
-    looks: withPrompts(looks),
-    pieces: withPrompts([...pieceMap.values()]),
-    bags: withPrompts(bags),
-    beauty: withPrompts(beauty),
-    lingerie: withPrompts(lingerie),
-    shoes: withPrompts(shoes),
-    jewelry: withPrompts(jewelry),
-    watches: withPrompts(watches),
-    accessories: withPrompts(accessories),
-    outerwear: withPrompts(outerwear),
-    travel: withPrompts(travel),
+    taxonomy: OUTFIT_SECTIONS,
+    counts,
+    ...sectioned,
   };
 }
 

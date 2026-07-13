@@ -1694,7 +1694,11 @@ async function loadCardAssetMap(env, companionId, collection) {
 }
 
 function attachOutfitCatalogAssets(catalog, assetMap, companionId) {
-  const keys = ['looks', 'pieces', 'bags', 'beauty', 'lingerie', 'shoes', 'jewelry', 'watches', 'accessories', 'outerwear', 'travel'];
+  const keys = [
+    'looks', 'dresses', 'tops', 'bottoms', 'outerwear', 'hair',
+    'shoes', 'bags', 'lingerie', 'jewelry', 'watches', 'accessories',
+    'beauty', 'travel', 'pieces',
+  ];
   const out = { ...catalog, counts: { ...catalog.counts } };
   for (const key of keys) {
     if (!Array.isArray(catalog[key])) continue;

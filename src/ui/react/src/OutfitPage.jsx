@@ -12,19 +12,77 @@ const IMAGE_FIELD_KEYS = [
   { key: 'IMAGE_QUALITY', label: '画质', placeholder: 'high', secret: false },
 ];
 
-const KIND_META = {
-  looks: { label: '整套造型', hint: '可一键上身 · 完整 look', empty: '还没有造型' },
-  pieces: { label: '单品衣物', hint: '上衣 / 下装 / 裙 · 鞋表珠宝走专柜', empty: '还没有单品' },
-  shoes: { label: '鞋履柜', hint: '高跟鞋 · 乐福 · 靴 · 平底', empty: '鞋柜是空的' },
-  bags: { label: '包柜', hint: 'Birkin · Kelly · Chanel…', empty: '包柜是空的' },
-  jewelry: { label: '珠宝盒', hint: 'Cartier · VCA · 钻与珍珠', empty: '珠宝盒是空的' },
-  watches: { label: '表盘', hint: 'Tank · Rolex · 运动表', empty: '表盘是空的' },
-  accessories: { label: '配饰', hint: '丝巾 · 墨镜 · 腰带 · 度假', empty: '配饰是空的' },
-  outerwear: { label: '外套柜', hint: '大衣 · 西装 · 羊绒', empty: '外套柜是空的' },
-  travel: { label: '旅行箱', hint: 'Rimowa · 登机箱 · 护肤 mini', empty: '旅行箱是空的' },
-  beauty: { label: '妆台', hint: '护肤 · 底妆 · 眼唇 · 香氛 · 旅行 mini', empty: '妆台是空的' },
-  lingerie: { label: '内衣抽屉', hint: 'La Perla · AP · Eres · Wolford', empty: '抽屉是空的' },
-};
+/** 大类（与后端 taxonomy 对齐；若 API 带回 taxonomy 则优先用 API） */
+const DEFAULT_SECTIONS = [
+  { id: 'looks', label: '整套造型', hint: '完整 look · 可上身 · 系列', empty: '还没有造型' },
+  { id: 'dresses', label: '裙装', hint: '连衣裙 · 裹身 · 旗袍 · 西装裙', empty: '还没有裙装',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'knit', label: '针织裙' }, { id: 'wrap', label: '裹身裙' },
+      { id: 'qipao', label: '旗袍/改良' }, { id: 'suit', label: '西装裙' }, { id: 'satin', label: '缎面/丝质' },
+      { id: 'evening', label: '晚装裙' }, { id: 'skirt', label: '半身裙' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'tops', label: '上装', hint: '衬衫 · 针织 · 上衣', empty: '还没有上装',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'shirt', label: '衬衫' }, { id: 'knit', label: '针织/羊绒' },
+      { id: 'blouse', label: '真丝/轻薄' }, { id: 'tee', label: '休闲' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'bottoms', label: '下装', hint: '西裤 · 休闲裤', empty: '还没有下装',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'trousers', label: '西裤/长裤' }, { id: 'casual', label: '休闲裤' },
+      { id: 'skirt', label: '半身裙' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'outerwear', label: '外套', hint: '大衣 · 西装 · 开衫 · 披肩', empty: '外套柜是空的',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'coat', label: '大衣' }, { id: 'blazer', label: '西装/外套' },
+      { id: 'knit', label: '开衫/披肩' }, { id: 'leather', label: '皮衣' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'hair', label: '发型', hint: '盘发 · 马尾 · 波浪 · 披发', empty: '还没有发型',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'updo', label: '盘发/发髻' }, { id: 'ponytail', label: '马尾' },
+      { id: 'waves', label: '波浪/卷发' }, { id: 'down', label: '披发/直发' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'shoes', label: '鞋履', hint: '高跟 · 乐福 · 靴 · 平底', empty: '鞋柜是空的',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'heel', label: '高跟鞋' }, { id: 'mule', label: '穆勒' },
+      { id: 'loafer', label: '乐福' }, { id: 'flat', label: '平底' }, { id: 'boot', label: '靴' },
+      { id: 'sandal', label: '凉鞋' }, { id: 'sneaker', label: '球鞋' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'bags', label: '包袋', hint: 'Birkin · Kelly · Chanel…', empty: '包柜是空的',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'tophandle', label: '手提包' }, { id: 'tote', label: '托特' },
+      { id: 'flap', label: '翻盖' }, { id: 'mini', label: '迷你' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'lingerie', label: '内衣', hint: '套装 · 丝袜', empty: '抽屉是空的',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'set', label: '套装' }, { id: 'bra', label: '文胸' },
+      { id: 'hosiery', label: '丝袜' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'jewelry', label: '珠宝', hint: '耳饰 · 项链 · 手链', empty: '珠宝盒是空的',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'earring', label: '耳饰' }, { id: 'necklace', label: '项链' },
+      { id: 'bracelet', label: '手链' }, { id: 'ring', label: '戒指' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'watches', label: '腕表', hint: '正装表 · 运动表', empty: '表盘是空的',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'dress', label: '正装表' }, { id: 'sport', label: '运动表' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'accessories', label: '配饰', hint: '丝巾 · 墨镜 · 腰带 · 眼镜', empty: '配饰是空的',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'scarf', label: '丝巾/披肩' }, { id: 'sunglasses', label: '墨镜' },
+      { id: 'glasses', label: '近视框' }, { id: 'belt', label: '腰带' }, { id: 'hat', label: '帽子' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'beauty', label: '妆容护肤', hint: '护肤 · 底妆 · 眼唇 · 香', empty: '妆台是空的',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'skincare', label: '护肤' }, { id: 'base', label: '底妆' },
+      { id: 'eyes', label: '眼妆' }, { id: 'lips', label: '唇妆' }, { id: 'nails', label: '甲油' },
+      { id: 'fragrance', label: '香氛' }, { id: 'tools', label: '工具' }, { id: 'travel_mini', label: '旅行 mini' }, { id: 'other', label: '其他' },
+    ] },
+  { id: 'travel', label: '旅行', hint: '登机箱 · 托运 · 托特', empty: '旅行箱是空的',
+    subs: [
+      { id: 'all', label: '全部' }, { id: 'carryon', label: '登机箱' }, { id: 'luggage', label: '托运' },
+      { id: 'tote', label: '舱内托特' }, { id: 'other', label: '其他' },
+    ] },
+];
 
 const CONTEXT_LABEL = {
   home: '居家', work: '职场', date: '约会', outing: '外出',
@@ -515,6 +573,12 @@ function OutfitFlipCard({
                   系列{card.seriesIndex != null ? ` ${card.seriesIndex}` : ''}
                 </span>
               )}
+              {card.subcategory && card.subcategory !== 'all' && card.subcategory !== 'other' && (
+                <span className="outfit-chip">
+                  {(DEFAULT_SECTIONS.find((s) => s.id === (card.category || ''))?.subs || [])
+                    .find((s) => s.id === card.subcategory)?.label || card.subcategory}
+                </span>
+              )}
               {card.context && <span className="outfit-chip">{CONTEXT_LABEL[card.context] || card.context}</span>}
             </div>
             <h4>
@@ -639,6 +703,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   const [state, setState] = useState({ loading: true, data: null, error: '' });
   const [daily, setDaily] = useState(null);
   const [tab, setTab] = useState('looks');
+  const [subTab, setSubTab] = useState('all');
   const [query, setQuery] = useState('');
   const [busyIds, setBusyIds] = useState(() => new Set());
   const [wearingId, setWearingId] = useState('');
@@ -693,6 +758,9 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
 
   useEffect(() => { load(); }, [scope.userId, companionId]);
 
+  // 切换大类时重置小类
+  useEffect(() => { setSubTab('all'); }, [tab]);
+
   const flash = (message) => {
     setToast(message);
     setTimeout(() => setToast(''), 2200);
@@ -705,6 +773,17 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
 
   const current = state.data?.current;
   const currentLookId = current?.current?.id || null;
+
+  const sections = useMemo(() => {
+    const fromApi = state.data?.taxonomy;
+    if (Array.isArray(fromApi) && fromApi.length) return fromApi;
+    return DEFAULT_SECTIONS;
+  }, [state.data]);
+
+  const activeSection = useMemo(
+    () => sections.find((s) => s.id === tab) || sections[0] || DEFAULT_SECTIONS[0],
+    [sections, tab],
+  );
 
   const seriesOptions = useMemo(() => {
     const looks = state.data?.looks || [];
@@ -719,18 +798,34 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
     return [...map.values()];
   }, [state.data]);
 
+  const subCounts = useMemo(() => {
+    const list = state.data?.[tab] || [];
+    const map = { all: list.length };
+    for (const c of list) {
+      const sub = c.subcategory || 'other';
+      map[sub] = (map[sub] || 0) + 1;
+    }
+    return map;
+  }, [state.data, tab]);
+
   const cards = useMemo(() => {
     let list = state.data?.[tab] || [];
     if (tab === 'looks' && seriesFilter) {
       list = list.filter((c) => c.seriesId === seriesFilter);
     }
+    if (tab !== 'looks' && subTab && subTab !== 'all') {
+      list = list.filter((c) => (c.subcategory || 'other') === subTab);
+    }
     const q = query.trim().toLowerCase();
     if (!q) return list;
     return list.filter((card) => {
-      const blob = [card.title, card.subtitle, card.summary, card.prompt, ...(card.tags || [])].join(' ').toLowerCase();
+      const blob = [
+        card.title, card.subtitle, card.summary, card.prompt,
+        card.subcategory, card.category, ...(card.tags || []),
+      ].join(' ').toLowerCase();
       return blob.includes(q);
     });
-  }, [state.data, tab, query, seriesFilter]);
+  }, [state.data, tab, query, seriesFilter, subTab]);
 
   const counts = state.data?.counts || {};
 
@@ -1036,7 +1131,7 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
   if (state.error) return <ErrorBox error={state.error} />;
 
   const d = state.data || {};
-  const meta = KIND_META[tab];
+  const meta = activeSection || DEFAULT_SECTIONS[0];
   const dailyPieces = daily?.pieces || daily?.outfit?.current?.pieces || {};
   const dailyChips = [
     dailyPieces.dress || [dailyPieces.top, dailyPieces.bottom].filter(Boolean).join(' + '),
@@ -1118,11 +1213,11 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
           ) : (
             <div className="outfit-now-stats">
               <div><b>{counts.looks || 0}</b><span>造型</span></div>
+              <div><b>{counts.dresses || 0}</b><span>裙</span></div>
+              <div><b>{counts.tops || 0}</b><span>上装</span></div>
+              <div><b>{counts.hair || 0}</b><span>发型</span></div>
               <div><b>{counts.shoes || 0}</b><span>鞋</span></div>
               <div><b>{counts.bags || 0}</b><span>包</span></div>
-              <div><b>{counts.jewelry || 0}</b><span>珠宝</span></div>
-              <div><b>{counts.beauty || 0}</b><span>美妆</span></div>
-              <div><b>{counts.lingerie || 0}</b><span>内衣</span></div>
             </div>
           )}
         </div>
@@ -1145,18 +1240,18 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
       )}
 
       <div className="outfit-toolbar">
-        <div className="outfit-tabs" role="tablist">
-          {Object.entries(KIND_META).map(([id, item]) => (
+        <div className="outfit-tabs" role="tablist" aria-label="穿搭大类">
+          {sections.map((item) => (
             <button
-              key={id}
+              key={item.id}
               type="button"
               role="tab"
-              aria-selected={tab === id}
-              className={`outfit-tab ${tab === id ? 'is-active' : ''}`}
-              onClick={() => setTab(id)}
+              aria-selected={tab === item.id}
+              className={`outfit-tab ${tab === item.id ? 'is-active' : ''}`}
+              onClick={() => setTab(item.id)}
             >
               <strong>{item.label}</strong>
-              <small>{counts[id] ?? 0}</small>
+              <small>{counts[item.id] ?? 0}</small>
             </button>
           ))}
         </div>
@@ -1171,12 +1266,42 @@ export default function OutfitPage({ scope, api, qs, json, Header, Loading, Erro
         </label>
       </div>
 
+      {/* 小类 */}
+      {Array.isArray(meta.subs) && meta.subs.length > 0 && tab !== 'looks' && (
+        <div className="outfit-subtabs" role="tablist" aria-label={`${meta.label}小类`}>
+          {meta.subs.map((sub) => {
+            const n = subCounts[sub.id] ?? (sub.id === 'all' ? (state.data?.[tab] || []).length : 0);
+            if (sub.id !== 'all' && n === 0) return null;
+            return (
+              <button
+                key={sub.id}
+                type="button"
+                role="tab"
+                aria-selected={subTab === sub.id}
+                className={`outfit-subtab ${subTab === sub.id ? 'is-active' : ''}`}
+                onClick={() => setSubTab(sub.id)}
+              >
+                {sub.label}
+                <em>{n}</em>
+              </button>
+            );
+          })}
+        </div>
+      )}
+
       <div className="outfit-section-head">
         <div>
-          <h3>{meta.label}</h3>
+          <h3>
+            {meta.label}
+            {tab !== 'looks' && subTab !== 'all' && meta.subs?.find((s) => s.id === subTab)
+              ? ` · ${meta.subs.find((s) => s.id === subTab).label}`
+              : ''}
+          </h3>
           <p>
             {meta.hint}
-            {tab === 'looks' ? ' · 可新建自定义造型 · 点卡片翻转存提示词/上传图 · 可上身' : ' · 点卡片翻转看提示词 · 生成后上传挂正面'}
+            {tab === 'looks'
+              ? ' · 可新建/导入系列 · 点标题复制 · 点图翻转提示词 · 可上身'
+              : ' · 大类已分开（裙/上装/发型互不混杂）· 点小类筛选 · 点名称复制'}
           </p>
         </div>
         <div className="flex gap-2 items-center flex-wrap">

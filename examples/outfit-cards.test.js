@@ -44,8 +44,13 @@ ok('有旅行箱', cat.travel.length >= 5);
 ok('有四季主 look', cat.looks.filter((l) => l.season).length >= 4);
 ok('有近视框配饰', cat.accessories.some((a) => /glasses|近视|光学|Lindberg|Cartier 金丝/i.test(`${a.itemKind} ${a.title}`)));
 ok('有裸色或酒红晚装鞋', cat.shoes.some((s) => /裸|酒红|nude|wine/i.test(`${s.color || ''} ${s.title}`)));
-ok('有单品卡片', cat.pieces.length >= 5);
+ok('有上装分类', (cat.tops || []).length >= 1);
+ok('有发型分类', (cat.hair || []).length >= 1);
+ok('发型不在裙装里', !(cat.dresses || []).some((c) => /马尾|披肩发|盘发/.test(c.title) && !/裙/.test(c.title)));
+ok('有单品汇总（兼容）', (cat.pieces || []).length >= 3);
 ok('counts 对齐', cat.counts.looks === cat.looks.length && cat.counts.bags === cat.bags.length && cat.counts.shoes === cat.shoes.length);
+ok('taxonomy 有大类', Array.isArray(cat.taxonomy) && cat.taxonomy.length >= 8);
+ok('鞋有小类', cat.shoes.every((s) => s.category === 'shoes' && s.subcategory));
 
 const look = cat.looks.find((x) => x.lookId === 'work_board') || cat.looks[0];
 ok('造型可上身', look.wearable === true && Boolean(look.lookId));
