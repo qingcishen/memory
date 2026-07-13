@@ -4,6 +4,7 @@ import { MemoryChannel, mergedOutgoingTexts } from '../channels/memory-channel.j
 import { ChannelEventStore } from '../channels/idempotency.js';
 import { acquireProcessLock } from '../channels/process-lock.js';
 import { gateIncomingMessage } from '../product/gate.js';
+import { deliverHumanBubbles } from '../channels/humanSend.js';
 
 dotenv.config();
 
@@ -147,7 +148,10 @@ export class FeishuMemoryBot {
         stopIntimate: gate.stopIntimate,
         intimacyAllowed: gate.intimacyAllowed,
       });
-      for (const part of mergedOutgoingTexts(result.parts, 3800)) await this.send(message.chat_id, part);
+      // 像真人连发：旁白/多句台词分条 + 间隔（CHANNEL_MERGE_MESSAGES=1 可关）
+      await deliverHumanBubbles(result.parts, (bubble) => this.send(message.chat_id, bubble), {
+        chunkLimit: 3800,
+      });
     } catch (error) {
       console.error('[feishu] reply failed:', error);
       await this.send(message.chat_id, '我这边刚才卡了一下，你再说一遍，我接着听。').catch(() => {});

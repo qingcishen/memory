@@ -4,6 +4,7 @@ import { MemoryChannel, mergedOutgoingTexts } from '../channels/memory-channel.j
 import { ChannelEventStore } from '../channels/idempotency.js';
 import { acquireProcessLock } from '../channels/process-lock.js';
 import { gateIncomingMessage } from '../product/gate.js';
+import { deliverHumanBubbles } from '../channels/humanSend.js';
 
 dotenv.config();
 
@@ -68,9 +69,22 @@ export class DiscordMemoryBot {
         stopIntimate: gate.stopIntimate,
         intimacyAllowed: gate.intimacyAllowed,
       });
-      for (const part of mergedOutgoingTexts(result.parts, 1900)) {
-        await message.reply({ content: part, allowedMentions: { repliedUser: false } });
-      }
+      let first = true;
+      await deliverHumanBubbles(
+        result.parts,
+        async (bubble) => {
+          if (first) {
+            first = false;
+            await message.reply({ content: bubble, allowedMentions: { repliedUser: false } });
+          } else {
+            await message.channel.send({ content: bubble, allowedMentions: { repliedUser: false } });
+          }
+        },
+        {
+          chunkLimit: 1900,
+          onTyping: () => message.channel.sendTyping().catch(() => {}),
+        },
+      );
     } catch (error) {
       console.error('[discord] reply failed:', error);
       await message.reply({ content: '我这边刚才卡了一下，你再说一遍，我接着听。', allowedMentions: { repliedUser: false } }).catch(() => {});

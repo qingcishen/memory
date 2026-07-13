@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 import { pickReplyFormat } from '../src/orchestrator/llm.js';
-import { splitDialogueBubbles, buildHumanOutgoingMessages } from '../src/telegram/bot.js';
+import { splitDialogueBubbles, buildHumanOutgoingMessages, deliverHumanBubbles } from '../src/channels/humanSend.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -31,6 +31,17 @@ console.log('splitDialogueBubbles / human send');
   ok('旁白单独一条', msgs[0].type === 'narration');
   ok('台词至少一条', msgs.some((m) => m.type === 'dialogue'));
   ok('总数>=2', msgs.length >= 2);
+
+  const sent = [];
+  await deliverHumanBubbles(
+    [
+      { type: 'narration', text: '她笑了' },
+      { type: 'dialogue', text: '想你。早点睡。' },
+    ],
+    async (t) => sent.push(t),
+    { skipDelay: true, minSplitLen: 5 },
+  );
+  ok('deliverHumanBubbles 发出多条', sent.length >= 2);
 }
 
 console.log(`\nhuman-send 全部 ${passed} 条断言通过 ✅`);

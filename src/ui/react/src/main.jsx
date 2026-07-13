@@ -698,8 +698,11 @@ function DebugPanel({ debug }) {
   const hits = debug.memoryHits || [];
   const messages = debug.messages || [];
   const promptParts = debug.promptParts || {};
+  const recallExplain = debug.recallExplain || [];
+  const turnPlan = debug.turnPlan || null;
   const sections = [
     ['summary', '本轮概览'],
+    ['why', `为何想起 · ${recallExplain.length || hits.length}`],
     ['prompt', 'Prompt 分段'],
     ['memory', `记忆命中 · ${hits.length}`],
     ['state', '状态与关系'],
@@ -713,22 +716,51 @@ function DebugPanel({ debug }) {
         <DebugKV label="场景" value={debug.sceneType}/>
         <DebugKV label="亲密阶段" value={debug.intimacyPhase || debug.stateSnapshot?.intimacy?.scene_phase || '—'}/>
         <DebugKV label="情绪标签" value={debug.emotionLabel}/>
+        <DebugKV label="关系阶段" value={debug.relationshipStage?.id || debug.relationshipStage || '—'}/>
+        <DebugKV label="场景锁" value={(debug.sceneLocks || []).join('+') || '—'}/>
         <DebugKV label="修复台阶" value={debug.behaviorPolicy?.mustGiveRepairStep ? '需处理' : '稳定'}/>
         <DebugKV label="LLM 调用次数" value={debug.metrics?.calls ?? debug.metrics?.callCount}/>
         <DebugKV label="Token 用量" value={debug.metrics?.totalTokens ?? debug.metrics?.tokens}/>
         <DebugKV label="记忆命中数" value={hits.length}/>
+        <DebugKV label="历史轮数" value={turnPlan?.historyTurns ?? debug.historyTurns}/>
+        <DebugKV label="独白" value={turnPlan ? (turnPlan.useMonologue ? '开' : '跳过') : '—'}/>
+        <DebugKV label="parts 预算" value={turnPlan?.partsBudget ?? debug.behaviorPolicy?.partsBudget}/>
+        {turnPlan?.recallQuery && <div className="debug-kv debug-kv-wide"><span>召回 query</span><b>{turnPlan.recallQuery}</b></div>}
+        {turnPlan?.turnBrief && <div className="debug-kv debug-kv-wide"><span>本轮简报</span><b>{turnPlan.turnBrief}</b></div>}
         {debug.monologue && <div className="debug-kv debug-kv-wide"><span>内心独白</span><b>{typeof debug.monologue === 'string' ? debug.monologue : JSON.stringify(debug.monologue)}</b></div>}
       </div>}
+      {tab === 'why' && <div className="debug-stack">
+        {debug.recallExplainText && <p className="debug-empty" style={{ textAlign: 'left', whiteSpace: 'pre-wrap', color: 'inherit', opacity: 0.85 }}>{debug.recallExplainText}</p>}
+        {recallExplain.length ? recallExplain.map((row) => (
+          <div className="debug-memory-row" key={row.id || row.rank}>
+            <div className="debug-memory-row-top">
+              <b>#{row.rank} {row.type || 'memory'}{row.preference_tier ? ` · ${row.preference_tier}` : ''}</b>
+              <span>sim {row.similarity ?? '—'} · score {row.score ?? '—'}</span>
+            </div>
+            <p>{row.snippet}</p>
+            <small><b>为何想起：</b>{row.why}{row.lowConfidence ? ' · 低置信' : ''}{row.subject_kind === 'dyad' ? ' · dyad' : ''}</small>
+          </div>
+        )) : hits.length ? hits.map((hit) => (
+          <div className="debug-memory-row" key={hit.id}>
+            <div className="debug-memory-row-top"><b>{hit.type || 'memory'}</b><span>score {Number(hit.score ?? 0).toFixed(3)}</span></div>
+            <p>{hit.content || hit.fact_core}</p>
+            <small>相似度 {Number(hit.similarity ?? 0).toFixed(2)} · 激活 {Number(hit.activation ?? 0).toFixed(2)}</small>
+          </div>
+        )) : <p className="debug-empty">本轮没有召回解释（无命中或未开 debug）</p>}
+      </div>}
       {tab === 'prompt' && <div className="debug-stack">{Object.keys(promptParts).length ? Object.entries(promptParts).map(([key, value]) => <DebugBlock key={key} title={key} value={value}/>) : <p className="debug-empty">本轮没有 Prompt 分段记录</p>}</div>}
-      {tab === 'memory' && <div className="debug-stack">{hits.length ? hits.map(hit => <div className="debug-memory-row" key={hit.id}><div className="debug-memory-row-top"><b>{hit.type || 'memory'}</b><span>score {Number(hit.score ?? 0).toFixed(3)}</span></div><p>{hit.content}</p><small>相似度 {Number(hit.similarity ?? 0).toFixed(2)} · 激活 {Number(hit.activation ?? 0).toFixed(2)} · 重要性 {hit.importance ?? '—'}{hit.lowConfidence ? ' · 低置信' : ''}</small></div>) : <p className="debug-empty">本轮没有召回记忆</p>}</div>}
+      {tab === 'memory' && <div className="debug-stack">{hits.length ? hits.map(hit => <div className="debug-memory-row" key={hit.id}><div className="debug-memory-row-top"><b>{hit.type || 'memory'}</b><span>score {Number(hit.score ?? 0).toFixed(3)}</span></div><p>{hit.content || hit.fact_core}</p><small>相似度 {Number(hit.similarity ?? 0).toFixed(2)} · 激活 {Number(hit.activation ?? 0).toFixed(2)} · 重要性 {hit.importance ?? '—'}{hit.lowConfidence ? ' · 低置信' : ''}</small></div>) : <p className="debug-empty">本轮没有召回记忆</p>}</div>}
       {tab === 'state' && <div className="debug-stack">
         <DebugBlock title="身体 / 情绪 / 需求 / 亲密" value={debug.stateSnapshot}/>
         <DebugBlock title="亲密状态(快照)" value={debug.stateSnapshot?.intimacy || debug.intimacyPhase || null}/>
         <DebugBlock title="关系状态" value={debug.relationshipState}/>
+        <DebugBlock title="身体情境" value={debug.bodySituation}/>
         <DebugBlock title="世界状态" value={debug.worldSnapshot}/>
+        <DebugBlock title="故事拍" value={debug.storyBeat || debug.storySnapshot}/>
       </div>}
       {tab === 'sampling' && <div className="debug-stack">
         <DebugBlock title="采样参数" value={debug.samplingHints}/>
+        <DebugBlock title="本轮计划" value={turnPlan}/>
         <DebugBlock title="Token / 调用统计" value={debug.metrics}/>
       </div>}
       {tab === 'messages' && <div className="debug-stack">{messages.length ? messages.map((m, i) => <DebugBlock key={i} title={m.role} value={m.content}/>) : <p className="debug-empty">没有捕获到最终 messages</p>}</div>}

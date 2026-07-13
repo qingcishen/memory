@@ -17,6 +17,11 @@ import { pickSpeakableText, shouldReplyWithVoice, synthesizeSpeech } from '../mo
 import { TTS_CONFIGURED } from '../config.js';
 import { BehaviorStateStore, normalizeBehaviorState } from '../state/behavior.js';
 import { gateIncomingMessage } from '../product/gate.js';
+import {
+  typingDelayMs as sharedTypingDelayMs,
+  buildHumanOutgoingMessages as sharedBuildHumanOutgoing,
+  splitDialogueBubbles as sharedSplitDialogueBubbles,
+} from '../channels/humanSend.js';
 
 dotenv.config();
 
@@ -99,56 +104,30 @@ export function ensureReplyParts(reply, parts) {
 
 /** 按文字长度估一个"打字用了多久"的延迟, 让连续发消息不是瞬间刷屏。纯函数。 */
 export function typingDelayMs(text = '') {
-  return Math.min(1200, Math.max(600, String(text ?? '').length * 12));
+  return sharedTypingDelayMs(text, { min: 600, max: 1200, perChar: 12 });
 }
 
 /**
- * 把 parts 拆成「像真人连发」的多条气泡：旁白单独一条，长台词按句号拆 2～3 条。
- * TELEGRAM_MERGE_MESSAGES=1 时退回整段合并（旧行为）。
+ * 把 parts 拆成「像真人连发」的多条气泡。
+ * TELEGRAM_MERGE_MESSAGES / CHANNEL_MERGE_MESSAGES=1 时退回整段合并。
  */
-export function buildHumanOutgoingMessages(parts = [], { maxDialogueBubbles = 3, minSplitLen = 28 } = {}) {
-  if (process.env.TELEGRAM_MERGE_MESSAGES === '1' || process.env.TELEGRAM_MERGE_MESSAGES === 'true') {
-    return buildMergedOutgoingMessages(parts);
-  }
-  const out = [];
-  for (const p of parts || []) {
-    const text = String(p?.text || '').trim();
-    if (!text) continue;
-    if (p.type === 'narration') {
-      out.push({ type: 'narration', text });
-      continue;
-    }
-    const bubbles = splitDialogueBubbles(text, maxDialogueBubbles, minSplitLen);
-    for (const b of bubbles) out.push({ type: 'dialogue', text: b });
-  }
-  if (!out.length) return buildMergedOutgoingMessages(parts);
-  // 超长仍按 Telegram 限制切块
-  return out.flatMap((msg) =>
-    chunkMessage(msg.text)
-      .filter(Boolean)
-      .map((text) => ({ type: msg.type, text })),
-  );
+export function buildHumanOutgoingMessages(parts = [], opts = {}) {
+  const merge =
+    process.env.TELEGRAM_MERGE_MESSAGES === '1' ||
+    process.env.TELEGRAM_MERGE_MESSAGES === 'true' ||
+    process.env.CHANNEL_MERGE_MESSAGES === '1' ||
+    process.env.CHANNEL_MERGE_MESSAGES === 'true';
+  if (merge) return buildMergedOutgoingMessages(parts);
+  return sharedBuildHumanOutgoing(parts, {
+    maxDialogueBubbles: opts.maxDialogueBubbles ?? 3,
+    minSplitLen: opts.minSplitLen ?? 28,
+    chunkLimit: MAX_TELEGRAM_MESSAGE_LENGTH,
+    merge: false,
+  });
 }
 
-/** 按中文/英文句号等拆成最多 max 条，短句不拆。 */
 export function splitDialogueBubbles(text = '', max = 3, minSplitLen = 28) {
-  const s = String(text || '').trim();
-  if (!s) return [];
-  if (s.length < minSplitLen || max <= 1) return [s];
-  // 先按换行，再按句末标点
-  let pieces = s.split(/\n+/).map((x) => x.trim()).filter(Boolean);
-  if (pieces.length === 1) {
-    pieces = s.split(/(?<=[。！？!?…])\s*/).map((x) => x.trim()).filter(Boolean);
-  }
-  if (pieces.length <= 1) return [s];
-  if (pieces.length <= max) return pieces;
-  // 合并到 max 条
-  const out = [];
-  const bucket = Math.ceil(pieces.length / max);
-  for (let i = 0; i < pieces.length; i += bucket) {
-    out.push(pieces.slice(i, i + bucket).join(''));
-  }
-  return out.slice(0, max);
+  return sharedSplitDialogueBubbles(text, max, minSplitLen);
 }
 
 export function pickPolicyDelay(policy = {}, rng = Math.random) {
