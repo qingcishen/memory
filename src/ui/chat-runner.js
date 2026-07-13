@@ -262,7 +262,8 @@ async function main() {
     process.exit(0);
   }
 
-  const { text, parts, emotionLabel, behaviorPolicy: behavior, intimacyPhase, debug: replyDebug, recallExplain } = await bot.reply(String(req.message ?? ''), replyOpts);
+  const result = await bot.reply(String(req.message ?? ''), replyOpts);
+  const { text, parts, emotionLabel, behaviorPolicy: behavior, intimacyPhase, debug: replyDebug, recallExplain, emotionResidue, sessionThread } = result;
   // Orchestrator 在消息渠道中会后台发图；runner 是短命进程，必须等这一张图
   // 生成并收进 payload 后再退出，否则子进程结束时图片会一起丢失。
   await bot._lastPhoto?.catch(() => {});
@@ -276,6 +277,17 @@ async function main() {
     if (replyDebug?.intimacyPhase) trace.intimacyPhase = replyDebug.intimacyPhase;
     if (recallExplain) trace.recallExplain = recallExplain;
     if (replyDebug?.recallExplain) trace.recallExplain = replyDebug.recallExplain;
+    if (replyDebug?.emotionResidue) trace.emotionResidue = replyDebug.emotionResidue;
+    if (replyDebug?.emotionJournal) trace.emotionJournal = replyDebug.emotionJournal;
+    if (emotionResidue) trace.emotionResidue = emotionResidue;
+    if (bot._emotionJournal) trace.emotionJournal = bot._emotionJournal.slice(-5);
+    // system 情绪段是否注入
+    const sys = replyDebug?.messages?.find?.((m) => m.role === 'system')?.content || '';
+    trace.emotionPromptFlags = {
+      has表现: sys.includes('【情绪表现】'),
+      has余波: sys.includes('【情绪余波】'),
+      has本场: sys.includes('【本场在聊】'),
+    };
     trace.promptParts.narration = buildNarrationPrompt(
       trace.sceneType,
       persona?.config?.narrationDirectives,
@@ -294,11 +306,16 @@ async function main() {
     photos,
     persona: persona?.config?.name ?? null,
     recallExplain,
+    emotionLabel: emotionLabel ?? null,
+    emotionResidue: emotionResidue ?? bot._emotionResidue ?? null,
+    sessionThread: sessionThread ?? null,
     ...(debugMode ? { debug: trace } : {}),
   };
   process.stdout.write(`${JSON.stringify(payload)}\n`);
   await bot._lastAfterReply?.catch(() => {});
   await bot._lastHistoryPersist?.catch(() => {});
+  await bot._lastEmotionPersist?.catch(() => {});
+  await bot._lastSessionPersist?.catch(() => {});
   process.exit(0);
 }
 

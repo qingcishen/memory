@@ -55,6 +55,13 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   if (closeness >= 0.62 && /(别的|其他|那个|有个|一个|一位).{0,4}(女生|女孩|姑娘|小姐姐|女同事|女朋友)|前女友|她好漂亮|跟她约会|喜欢上她/u.test(userText)) {
     return '吃醋';
   }
+  // 被冷落/失联类口吻：不依赖 desire.attention 已攒高（新会话首轮也要能挂上委屈）
+  if (
+    /(不回我|不理我|把我忘|忘了我|冷落|都不回|不找我|是不是不想理|是不是把我忘|消失了|已读不回)/u.test(userText) ||
+    /(这几天|好久|很久|半天).{0,8}(不回|不理|不找|没回|消失)/u.test(userText)
+  ) {
+    return '委屈';
+  }
   if (attention >= 0.72 && userText) return '委屈';
   if (/(对不起|抱歉|我错了|原谅我|和好|别生气)/u.test(userText) && repairDebt > 0.2) return '委屈';
   if (/(我|最近|今天).{0,8}(难过|伤心|哭了|生病|不舒服|被欺负|很累|崩溃|失败|失眠)|被.{0,8}(骂|拒绝|裁员|开除)/u.test(userText) && closeness >= 0.5) {

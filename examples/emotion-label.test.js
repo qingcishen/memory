@@ -8,6 +8,7 @@ const user = (content) => [{ role: 'user', content }];
 console.log('inferEmotionLabel B1 场景表');
 ok('标签集合冻结为八种', EMOTION_LABELS.join(',') === '平静,开心,委屈,吃醋,生气,失落,撒娇,心疼');
 ok('被冷落三天后对方出现 → 委屈而非生气', inferEmotionLabel(state(), { attention: 0.9 }, user('我回来啦，最近太忙了')) === '委屈');
+ok('质问不回/把我忘了 → 委屈（不依赖 desire）', inferEmotionLabel(state(), {}, user('这几天都不回我，你是不是把我忘了？')) === '委屈');
 ok('高亲密时提到别的女生 → 吃醋', inferEmotionLabel(state(), {}, user('今天认识了一个很漂亮的女生')) === '吃醋');
 ok('低亲密时提到女生不越界吃醋', inferEmotionLabel(state({ relationship: { closeness: 0.3 } }), {}, user('今天认识了一个女生')) !== '吃醋');
 ok('称她是女朋友不会误判成吃醋', inferEmotionLabel(state(), {}, user('你就是我最喜欢的女朋友')) !== '吃醋');
