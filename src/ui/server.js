@@ -2838,7 +2838,10 @@ async function handle(req, res) {
   const route = `${req.method} ${url.pathname}`;
   if (!isAllowedHost(req.headers.host)) return json(res, 403, { ok: false, message: 'invalid host' });
   const adminToken = readEnvValues().UI_ADMIN_TOKEN || process.env.UI_ADMIN_TOKEN || '';
-  if (url.pathname.startsWith('/api/') && !isAuthorized(req.headers, adminToken)) {
+  // /api/health 是基础设施探活端点 (VPS 部署脚本重启后用它判断要不要回滚), 不带 token
+  // 请求;只吐 {ok, config 的布尔值, tables 的布尔值}，没有密钥原文，加鉴权没有收益，
+  // 反而会让每次自动部署都在健康检查这步失败 (曾经真的发生过，导致部署每分钟重试)。
+  if (url.pathname.startsWith('/api/') && url.pathname !== '/api/health' && !isAuthorized(req.headers, adminToken)) {
     return json(res, 401, { ok: false, message: '需要管理控制台 Token' });
   }
 
