@@ -66,6 +66,12 @@ export const EMOTION_NUANCE = {
  * 单纯因为"有点委屈"就被迫多写一条 narration part, 维持"不是每轮都需要"的原则。
  * intimacyPhase: I 线 scene_phase；在 romantic/intimate 或 phase≠none 时优先用阶段旁白。
  */
+// 低推进度场景 (相拥/安睡/事后余韵这类"没有新动作"的状态) 最容易出现旁白复读——
+// 历史里其实带着上几轮的原文, 但模型仍会顺着"贴脸/揪衣角/嗓子哑"这类安全意象
+// 一路抄下去。只在真的要出 narration part 时才追加这条, 不给纯日常台词加负担。
+export const NO_REPEAT_HINT =
+  '【别复读】看一眼上文最近几轮她自己写过的旁白——如果这一轮的场景没有新动作/新变化（比如还是同一个拥抱/安睡状态），要么直接不写 narration part，要么换一批完全不同的字眼、动作细节和切入角度，不能和最近几轮的旁白高度同质（相似的句式、相似的意象重新排列组合也算）。';
+
 export function buildNarrationPrompt(sceneType, overrides = null, emotionLabel = null, intimacyPhase = null) {
   const phase = intimacyPhase && PHASE_NARRATION_DIRECTIVES[intimacyPhase] !== undefined ? intimacyPhase : null;
   let base = '';
@@ -83,8 +89,10 @@ export function buildNarrationPrompt(sceneType, overrides = null, emotionLabel =
   }
   // peak 硬规则：若阶段是 peak 但 base 被设成空，回退 peak 指令
   if (phase === 'peak' && !base.trim()) base = PHASE_NARRATION_DIRECTIVES.peak;
-  const nuance = base && EMOTION_NUANCE[emotionLabel];
-  return nuance ? `${base}\n【情绪基调】${nuance}` : base;
+  if (!base) return base;
+  const nuance = EMOTION_NUANCE[emotionLabel];
+  const withNuance = nuance ? `${base}\n【情绪基调】${nuance}` : base;
+  return `${withNuance}\n${NO_REPEAT_HINT}`;
 }
 
 /** 把原始 LLM 分类输出规整成合法场景类型; 不认识的一律降级 'daily'。纯函数, 可单测。 */

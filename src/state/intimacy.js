@@ -29,7 +29,7 @@ export const INTIMACY_PHASES = ['none', 'flirting', 'foreplay', 'peak', 'afterca
 /** 阶段“亲密强度”排序，用于门控截断。aftercare/cooldown 单独处理。 */
 const PHASE_RANK = { none: 0, flirting: 1, foreplay: 2, peak: 3, aftercare: 2, cooldown: 0 };
 
-const DEFAULT_CONSENT = { active: false, pace: 'normal', stop_signal: false };
+const DEFAULT_CONSENT = { active: false, pace: 'normal', stop_signal: false, stop_at: null };
 
 // ============================================================
 //  纯逻辑
@@ -75,6 +75,7 @@ export function clampIntimacy(value = {}) {
   const c = { ...DEFAULT_CONSENT, ...(out.consent ?? {}) };
   c.active = Boolean(c.active);
   c.stop_signal = Boolean(c.stop_signal);
+  c.stop_at = c.stop_at ? String(c.stop_at) : null;
   c.pace = ['slow', 'normal', 'eager'].includes(c.pace) ? c.pace : 'normal';
   out.consent = c;
   // body_focus 后期；非法时置 null
@@ -130,6 +131,20 @@ export function evolveIntimacyOverTime(state = {}, hours = 0, config = PARAMS.in
   }
   if (elapsed >= 12 && ['aftercare', 'cooldown'].includes(next.scene_phase)) {
     next.scene_phase = 'none';
+  }
+  // stop_signal 是死循环陷阱：maxAllowedPhase 只要它是 true 就把 maxPhase 钉死在 'none'，
+  // 而 settleIntimacyFromTurns 里所有清它的分支又都要求 !gatedOut（即 maxPhase !== 'none'）——
+  // 一旦置 true 就再也没有信号路径能把它改回 false，「停」过一次之后哪怕只是亲一下也会被
+  // 永久按"温柔拒绝"的指令写。这里给一条不依赖那套判定的时间出口：从"停"那一刻算起(不是
+  // 从上次快照算起——活跃聊天时快照间隔常常只有几分钟，会让这个出口永远够不到)，安静够
+  // 久就当这次"停"已经翻篇，不再无限期把之后全新的、更克制的举动也当成要被拒绝的邀请。
+  if (next.consent?.stop_signal) {
+    const anchorMs = current.updated_at ? new Date(current.updated_at).getTime() : Date.now();
+    const nowMs = anchorMs + elapsed * HOUR;
+    const stopAtMs = next.consent.stop_at ? new Date(next.consent.stop_at).getTime() : anchorMs;
+    if ((nowMs - stopAtMs) / HOUR >= 12) {
+      next.consent = { ...next.consent, stop_signal: false };
+    }
   }
 
   return clampIntimacy(next);
@@ -248,7 +263,7 @@ export function settleIntimacyFromTurns(state = {}, turns = [], ctx = {}, config
 
   // stop 优先
   if (signals.stop) {
-    next.consent = { ...next.consent, active: false, stop_signal: true };
+    next.consent = { ...next.consent, active: false, stop_signal: true, stop_at: new Date(ctx.now ?? Date.now()).toISOString() };
     next.arousal = Math.max(0, next.arousal - 0.4);
     next.engagement = Math.max(0, next.engagement - 0.5);
     next.sexual_tension = clamp(next.sexual_tension + 0.05, 0, 1);

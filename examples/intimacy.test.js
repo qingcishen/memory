@@ -35,6 +35,15 @@ const afterDays = evolveIntimacyOverTime(seeded, 72);
 ok('有种子时张力随时间上升', afterDays.sexual_tension > seeded.sexual_tension);
 ok('唤起随时间回落', evolveIntimacyOverTime({ ...defaultIntimacy(), arousal: 0.9 }, 12).arousal < 0.5);
 
+// stop_signal 曾经是死锁：maxAllowedPhase 见 stop_signal=true 就把 maxPhase 钉死 'none'，
+// 而 settleIntimacyFromTurns 里所有清它的分支都要求 maxPhase !== 'none'——一旦置真，正常对话
+// 信号永远清不掉它，"停"过一次之后就算只是重新亲一下也会被永久按"温柔拒绝"的指令写。
+const stopped = clampIntimacy({ consent: { active: false, pace: 'normal', stop_signal: true } });
+ok('stop_signal 卡死 maxAllowedPhase 在 none（回归防护，确认死锁场景真实存在）', maxAllowedPhase({ intimacy: stopped, relationship: { closeness: 0.9, trust: 0.9 }, life: { energy: 0.9 } }) === 'none');
+ok('stop_signal 未满 12 小时不重置', evolveIntimacyOverTime(stopped, 8).consent.stop_signal === true);
+ok('stop_signal 满 12 小时后自动重置（此前无任何信号路径能清掉它）', evolveIntimacyOverTime(stopped, 12).consent.stop_signal === false);
+ok('重置后 maxAllowedPhase 不再被钉死 none', maxAllowedPhase({ intimacy: evolveIntimacyOverTime(stopped, 12), relationship: { closeness: 0.9, trust: 0.9 }, life: { energy: 0.9 } }) !== 'none');
+
 const lowClose = maxAllowedPhase({ relationship: { closeness: 0.2, trust: 0.5, tension: 0, repair_debt: 0 }, life: { energy: 0.8 } });
 ok('低亲密最多 flirting', lowClose === 'flirting');
 const fight = maxAllowedPhase({ relationship: { closeness: 0.9, trust: 0.8, tension: 0.85, repair_debt: 0.6 }, life: { energy: 0.8 } });

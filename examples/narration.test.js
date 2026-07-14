@@ -4,6 +4,7 @@ import {
   SCENE_TYPES,
   NARRATION_DIRECTIVES,
   EMOTION_NUANCE,
+  NO_REPEAT_HINT,
   buildNarrationPrompt,
   parseSceneLabel,
   composeClassifyInput,
@@ -31,10 +32,12 @@ console.log('buildNarrationPrompt / NARRATION_DIRECTIVES (纯逻辑)');
 
   // 角色人设覆盖 (companions/<id>/narration.json -> CompanionConfig.narrationDirectives)
   const overrides = { romantic: '角色专属的暧昧旁白写法', intimate: '   ' };
-  ok('人设覆盖优先于通用默认', buildNarrationPrompt('romantic', overrides) === '角色专属的暧昧旁白写法');
+  ok('人设覆盖优先于通用默认', buildNarrationPrompt('romantic', overrides).startsWith('角色专属的暧昧旁白写法'));
   ok('空白覆盖回退通用默认', buildNarrationPrompt('intimate', overrides).includes('【性爱/亲密场景·硬性规则】'));
   ok('未覆盖的场景走通用默认', buildNarrationPrompt('tense', overrides).includes('【旁白提示】'));
   ok('overrides 为 null 安全', buildNarrationPrompt('romantic', null).includes('【旁白提示】'));
+  ok('只要出 narration part 就带防复读提示', buildNarrationPrompt('romantic', overrides).includes(NO_REPEAT_HINT));
+  ok('daily (不出 narration) 不带防复读提示', !buildNarrationPrompt('daily').includes(NO_REPEAT_HINT));
 }
 
 console.log('buildNarrationPrompt: emotionLabel 情绪基调叠加 (接入 B 行为策略线)');
@@ -42,8 +45,8 @@ console.log('buildNarrationPrompt: emotionLabel 情绪基调叠加 (接入 B 行
   const withNuance = buildNarrationPrompt('tense', null, '委屈');
   ok('场景本有旁白 + 情绪标签有细节 -> 叠加基调段', withNuance.includes('【旁白提示】') && withNuance.includes('【情绪基调】') && withNuance.includes(EMOTION_NUANCE.委屈));
   ok('daily 场景即使情绪标签有细节也不强加旁白', buildNarrationPrompt('daily', null, '委屈') === '');
-  ok('情绪标签为空不叠加', buildNarrationPrompt('tense', null, null) === NARRATION_DIRECTIVES.tense);
-  ok('情绪标签不在细节表里 (如 平静/开心) 不叠加', buildNarrationPrompt('romantic', null, '开心') === NARRATION_DIRECTIVES.romantic);
+  ok('情绪标签为空不叠加', buildNarrationPrompt('tense', null, null) === `${NARRATION_DIRECTIVES.tense}\n${NO_REPEAT_HINT}`);
+  ok('情绪标签不在细节表里 (如 平静/开心) 不叠加', buildNarrationPrompt('romantic', null, '开心') === `${NARRATION_DIRECTIVES.romantic}\n${NO_REPEAT_HINT}`);
   ok('吃醋/撒娇/心疼都在细节表里', ['吃醋', '撒娇', '心疼'].every((k) => typeof EMOTION_NUANCE[k] === 'string' && EMOTION_NUANCE[k]));
   const overridden = buildNarrationPrompt('romantic', { romantic: '角色专属写法' }, '撒娇');
   ok('人设覆盖之上依然能叠加情绪基调', overridden.startsWith('角色专属写法') && overridden.includes(EMOTION_NUANCE.撒娇));

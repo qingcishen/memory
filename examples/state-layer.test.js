@@ -69,6 +69,16 @@ console.log('toLifePrompt / lifeSamplingHints');
   ok('低 health prompt 提醒身体不舒服', lowPrompt.includes('身体有点不舒服'));
   ok('高 satiety prompt 提醒刚吃饱', toLifePrompt({ energy: 0.6, satiety: 0.9, health: 1 }).includes('刚吃饱很满足'));
 
+  // 回归：sick_until 已过但仍在场——避免对话历史里"还病着"的叙事惯性一直续下去，
+  // 哪怕只是亲一下也被当成要被劝退的邀请（见 docs 里 stop_signal 那个真实案例）。
+  const justRecovered = { energy: 0.7, satiety: 0.5, health: 0.75, sick_until: '2020-01-01T00:00:00.000Z' };
+  const recoveredPrompt = toLifePrompt(justRecovered, Date.now());
+  ok('sick_until 已过 → 不再是硬性"生病"措辞', !recoveredPrompt.includes('你现在生病了'));
+  ok('sick_until 已过 → 显式纠正"还难受"的叙事惯性', recoveredPrompt.includes('不是还在生病'));
+  const stillSick = { energy: 0.7, satiety: 0.5, health: 0.75, sick_until: '2099-01-01T00:00:00.000Z' };
+  ok('sick_until 未到 → 仍是硬性"生病"措辞，不误伤', toLifePrompt(stillSick, Date.now()).includes('你现在生病了'));
+  ok('从没生病过 (sick_until 为空) → 不触发纠正', !toLifePrompt({ energy: 0.7, satiety: 0.5, health: 0.75 }, Date.now()).includes('不是还在生病'));
+
   const healthyHigh = lifeSamplingHints({ energy: 0.9, satiety: 0.6, health: 1 });
   const sickHigh = lifeSamplingHints({ energy: 0.9, satiety: 0.6, health: 0.4 });
   ok('高 energy 放宽 maxTokens', healthyHigh.maxTokens === 650);
