@@ -32,6 +32,9 @@ console.log('buildSystemPrompt (纯拼接, 跳过空段落; 结尾恒定追加�
   const bare = buildSystemPrompt({});
   ok('全部业务段为空时, 只剩恒定的事实/格式规则', bare.includes('【禁止编造事实】') && bare.includes('【输出格式】'));
   ok('没有场景旁白指令(narrationPrompt 未传)时不追加旁白段', !bare.includes('【旁白提示】') && !bare.includes('【性爱'));
+  // 回归: "抱紧点/别松手"这类收尾在亲密场景里每轮都被重复使用, 是全局问题
+  // (不止发生在 narration part)，防复读指令要在恒定的全局段落里，每次回复都带上。
+  ok('恒定段落带收尾防复读指令(每轮回复都有, 不止亲密场景)', bare.includes('【收尾防复读】'));
 
   const withParts = buildSystemPrompt({ personaPrompt: 'A', statePrompt: 'B' });
   ok('非空段落用空行分隔, 排在恒定规则前面', withParts.startsWith('A\n\nB\n\n【禁止编造事实】'));
