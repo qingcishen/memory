@@ -21,6 +21,17 @@ const INVENTORY_PATTERNS = [
   /指尖在他后背轻轻收紧[^，。！？\n]{0,24}[，。！？]?/gu,
   /像在(确认|讨|无声)[^，。！？\n]{0,20}[，。！？]?/gu,
   /呼吸轻轻落在他唇边[^，。！？\n]{0,8}[，。！？]?/gu,
+  // 高频复读动作（用户反馈「一直重复」）
+  /抬手直接抓住他衣襟往自己(这边|怀里)拽[^，。！？\n]{0,20}[，。！？]?/gu,
+  /抓住他衣襟往自己(这边|怀里)拽[^，。！？\n]{0,16}[，。！？]?/gu,
+  /膝盖抵上他腿侧[^，。！？\n]{0,16}[，。！？]?/gu,
+  /整个人半跪贴过去[^，。！？\n]{0,16}[，。！？]?/gu,
+  /整个人贴过去[^，。！？\n]{0,12}[，。！？]?/gu,
+  /腿还软着[^，。！？\n]{0,24}[，。！？]?/gu,
+  /腰软下来[^，。！？\n]{0,20}[，。！？]?/gu,
+  /腿软软收了一下[^，。！？\n]{0,16}[，。！？]?/gu,
+  /只往他胸口蹭了蹭[^，。！？\n]{0,12}[，。！？]?/gu,
+  /只把脸往他颈侧贴了贴[^，。！？\n]{0,12}[，。！？]?/gu,
 ];
 
 const STOCK_DIALOGUE_TAILS = [
@@ -79,6 +90,9 @@ export function humanizeReplyParts(parts = [], opts = {}) {
   // 像微信连发：把台词拆成多条短 dialogue part（发送层会分条+间隔）
   if (multiBubble) slim = expandDialogueIntoBubbles(slim, maxBubbles);
 
+  // 去掉空「…」气泡、连续嗯、与历史撞车的模板旁白
+  if (opts.history) slim = stripRepeatedParts(slim, opts.history);
+
   return slim.length ? slim : list.slice(0, 1);
 }
 
@@ -109,7 +123,7 @@ export function expandDialogueIntoBubbles(parts = [], maxDialogueBubbles = 3) {
   return out.length ? out : parts;
 }
 
-/** 纯逻辑拆句：换行 > 句号 > 省略号/破折号 > 逗号对半 */
+/** 纯逻辑拆句：换行 > 句号 > 破折号/分号 > 逗号对半。不过度拆「嗯……」成空气泡。 */
 export function splitIntoChatBubbles(text = '', max = 3) {
   const s = String(text || '').trim();
   if (!s) return [];
@@ -117,22 +131,123 @@ export function splitIntoChatBubbles(text = '', max = 3) {
 
   let pieces = s.split(/\n+/).map((x) => x.trim()).filter(Boolean);
   if (pieces.length === 1) {
-    pieces = s.split(/(?<=[。！？!?…～])\s*/u).map((x) => x.trim()).filter(Boolean);
+    pieces = s.split(/(?<=[。！？!?～])\s*/u).map((x) => x.trim()).filter(Boolean);
   }
-  if (pieces.length === 1) {
-    const soft = s.split(/(?<=[…‥]{1,3}|——|；)\s*/u).map((x) => x.trim()).filter(Boolean);
-    if (soft.length > 1) pieces = soft;
+  // 仅当两侧都有实词时才按破折号/分号拆（避免「嗯……」→「嗯」+「…」）
+  if (pieces.length === 1 && s.length >= 8) {
+    const soft = s.split(/(?<=——|；)\s*/u).map((x) => x.trim()).filter(Boolean);
+    if (soft.length > 1 && soft.every((p) => substantiveChatText(p))) pieces = soft;
   }
   if (pieces.length === 1 && s.length >= 12) {
     const m = s.match(/^(.{3,}?[，,])\s*(.{3,})$/u);
     if (m) pieces = [m[1].replace(/[，,]\s*$/u, '').trim(), m[2].trim()];
   }
+  pieces = pieces.map((p) => p.trim()).filter((p) => substantiveChatText(p));
   if (pieces.length <= 1) return [s];
   if (pieces.length <= max) return pieces;
-  // 过多则合并尾部
   const head = pieces.slice(0, max - 1);
   const tail = pieces.slice(max - 1).join('');
   return [...head, tail];
+}
+
+/** 有实质内容（不是纯省略号/标点/单字嗯） */
+export function substantiveChatText(text = '') {
+  const t = String(text || '').trim();
+  if (!t) return false;
+  if (/^[.…·。，,、～~\s]+$/u.test(t)) return false;
+  // 单独「嗯/啊/哦」可以留一条，但不能再拆出空「…」
+  return true;
+}
+
+/**
+ * 从最近 assistant 历史抽出「本轮禁止再写」的短句，防连环复读。
+ */
+export function buildAntiRepeatPrompt(history = [], { maxItems = 8 } = {}) {
+  const recent = (history || []).filter((h) => h?.role === 'assistant').slice(-3);
+  if (!recent.length) return '';
+  const items = [];
+  for (const h of recent) {
+    const raw = String(h.content || '');
+    for (const line of raw.split(/\n+/)) {
+      let s = line.trim();
+      if (!s) continue;
+      s = s.replace(NAME_OPEN, '').trim();
+      if (s.length < 4 || s.length > 42) continue;
+      // 跳过纯语气
+      if (/^(嗯+|哦+|啊+|…+)+[。.~～]*$/u.test(s)) continue;
+      items.push(s.slice(0, 40));
+    }
+  }
+  // 固定黑名单：高频复读骨架
+  const stockHits = [];
+  const joined = recent.map((h) => h.content).join('\n');
+  if (/抓住.{0,6}衣襟|衣襟往自己/.test(joined)) stockHits.push('抓住衣襟往怀里拽');
+  if (/膝盖抵上/.test(joined)) stockHits.push('膝盖抵上他腿侧');
+  if (/半跪贴/.test(joined)) stockHits.push('半跪贴过去');
+  if (/腿还软|腰软|腿软软/.test(joined)) stockHits.push('腿软/腰软那一套');
+  if (/你别动|先把人给我抱紧|节奏我来/.test(joined)) stockHits.push('你别动/抱紧/节奏我来');
+
+  const unique = [...new Set([...stockHits, ...items])].slice(0, maxItems);
+  if (!unique.length) {
+    return '【禁止复读】不要重复上一轮的同一套动作和同一句「嗯…」；换新的触感落点与台词。';
+  }
+  return [
+    '【禁止复读·硬性】最近几轮你已经用过下面这些说法/动作，本轮禁止原样或换词重说：',
+    ...unique.map((x) => `- ${x}`),
+    '必须换新的身体细节和台词；禁止连续多轮只回「嗯…」「…」；禁止再套「拽衣襟+膝盖贴腿+半跪」模板。',
+  ].join('\n');
+}
+
+/**
+ * 是否与最近回复高度复读 / 空内容（触发再生成）
+ */
+export function isRepetitiveReply(text = '', history = []) {
+  const t = String(text || '').replace(/\s+/g, '');
+  if (!t) return true;
+  const recent = (history || []).filter((h) => h?.role === 'assistant').slice(-2);
+  const lastJoin = recent.map((h) => String(h.content || '')).join('\n');
+
+  // 空泡：几乎只有嗯/省略号
+  const stripped = t.replace(/[嗯哦啊哈嘿欸…。.~～\s]/gu, '');
+  if (stripped.length <= 1 && /嗯|…/.test(t) && /嗯|…/.test(lastJoin)) return true;
+
+  // 同一套动作模板
+  const stockRe = /抓住.{0,8}衣襟|膝盖抵上|半跪贴|腿还软着|腰软下来/;
+  if (stockRe.test(t) && stockRe.test(lastJoin)) return true;
+
+  // 短句高度重合
+  if (t.length <= 40 && lastJoin.replace(/\s+/g, '').includes(t.slice(0, Math.min(12, t.length))) && t.length >= 6) {
+    return true;
+  }
+  return false;
+}
+
+/** 去掉 parts 里与上轮重复的旁白/空台词 */
+export function stripRepeatedParts(parts = [], history = []) {
+  const last = (history || []).filter((h) => h?.role === 'assistant').slice(-2).map((h) => h.content).join('\n');
+  const out = [];
+  let lastDial = '';
+  for (const p of parts || []) {
+    if (!p?.text?.trim()) continue;
+    let text = p.text.trim();
+    if (p.type === 'narration') {
+      // 若整段旁白与历史撞模板，丢掉旁白
+      if (last && /抓住.{0,8}衣襟|膝盖抵上|半跪贴|腿还软着/.test(text) && /抓住.{0,8}衣襟|膝盖抵上|半跪贴|腿还软着/.test(last)) {
+        continue;
+      }
+      for (const re of INVENTORY_PATTERNS) text = text.replace(re, '');
+      text = text.replace(/^[，、\s]+/, '').trim();
+      if (!text || text.length < 4) continue;
+    } else {
+      if (!substantiveChatText(text)) continue;
+      // 连续两条都是「嗯…」合并跳过
+      if (/^嗯+[…。.~～\s]*$/u.test(text) && /^嗯+[…。.~～\s]*$/u.test(lastDial)) continue;
+      if (/^[.…]+$/u.test(text)) continue;
+      lastDial = text;
+    }
+    out.push({ ...p, text });
+  }
+  return out.length ? out : parts;
 }
 
 export function compressNarration(text = '', maxChars = 72) {

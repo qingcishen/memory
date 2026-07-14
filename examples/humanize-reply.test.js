@@ -7,6 +7,9 @@ import {
   compressDialogue,
   compressAssistantHistory,
   sanitizeHistoryForPrompt,
+  buildAntiRepeatPrompt,
+  isRepetitiveReply,
+  stripRepeatedParts,
 } from '../src/orchestrator/humanizeReply.js';
 import { splitDialogueBubbles, buildHumanOutgoingMessages } from '../src/channels/humanSend.js';
 
@@ -110,6 +113,30 @@ console.log('multi-bubble / 连发');
 
   const split = splitDialogueBubbles('过来，今天你别动。', 3, 10);
   ok('逗号可拆成连发', split.length >= 2);
+}
+
+console.log('anti-repeat');
+{
+  const hist = [
+    {
+      role: 'assistant',
+      content: '抬手直接抓住他衣襟往自己这边拽，膝盖抵上他腿侧，整个人半跪贴过去。\n\n你别动，先把人给我抱紧。',
+    },
+    { role: 'assistant', content: '腿还软着，只往他胸口蹭了蹭。\n\n嗯…\n\n…' },
+  ];
+  const ban = buildAntiRepeatPrompt(hist);
+  ok('anti-repeat 含模板', /衣襟|膝盖|半跪|腿软/.test(ban));
+  ok('检测嗯复读', isRepetitiveReply('嗯…\n…', hist));
+  ok('检测动作复读', isRepetitiveReply('她抓住他衣襟往怀里拽，膝盖抵上他腿侧。', hist));
+  const stripped = stripRepeatedParts(
+    [
+      { type: 'narration', text: '腿还软着，只把脸往他颈侧贴了贴。' },
+      { type: 'dialogue', text: '嗯…' },
+      { type: 'dialogue', text: '…' },
+    ],
+    hist,
+  );
+  ok('strip 掉撞车旁白或空泡', !stripped.some((p) => p.text === '…'));
 }
 
 console.log(`\nhumanize-reply ${passed} 条断言通过`);

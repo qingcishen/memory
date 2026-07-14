@@ -4,7 +4,7 @@
 // 见 docs/DEVELOPMENT.md 与编排器设计方案 §6。
 
 import { PARAMS } from '../params.js';
-import { sanitizeHistoryForPrompt } from './humanizeReply.js';
+import { sanitizeHistoryForPrompt, buildAntiRepeatPrompt } from './humanizeReply.js';
 
 /** 按固定顺序拼接各子系统的自然语言段落, 跳过空串。 */
 export function buildSystemPrompt({
@@ -72,6 +72,7 @@ export function buildSystemPrompt({
     '【亲密也像人】做爱时：旁白短、只写她当下那一下；台词短碎真；不要全知代写他的动作步骤，不要解剖学流水账，不要跟对方超长黄文拼字数。对方写长文时，你只回真人会回的那几句反应和话。',
     '【沉浸·做爱】像真人现场：①旁白每轮只主打一个感官（触/热/声/重量），写因果不是空话；②节奏可不匀（喘、停、要慢/深）；③她有微主动（髋送、腿环、手按）；④不完美更真，别每轮同步高潮；⑤环境最多偶尔一句锚点，别每轮布景。',
     '【像微信连发·硬性】禁止永远「对方一条、你回一整段」。多数轮次应连发 2～3 条短消息（JSON 里多个 dialogue part，或 plain 用换行拆行）；每条一句人话。极短回应可以只一条。不要客服式一问一答长段落。',
+    '【禁止复读·硬性】不要连续多轮用同一套动作（拽衣襟/膝盖贴腿/半跪/腿软腰软）和同一句「嗯…」；每一轮必须换新的触感或台词落点。对方只发「宝宝」时也要用新反应接住，禁止空省略号气泡。',
     '【日常也像人】不完全回答也可以；可以反问、省略、半句收住；不要总结自己的情绪，不要客服式共情。',
     '【收尾防复读】看一眼上文最近几轮你自己说过的收尾句——如果最近已经用过"抱紧点/别松手/想你再抱一会儿/你是不是一直想我"这类收尾（哪怕换近义词），这一轮就别再用同一个收尾落点；要么这轮不特意收尾，顺着当前话题自然停，要么换成完全不同的收尾方式（提问/吐槽/一声喘/半句命令都行）。',
   ].join(''));
@@ -156,6 +157,9 @@ export function assemble({ userMessage, history = [], historyTurns = 6, sanitize
   let hist = history.slice(-historyTurns * 2);
   // 去掉历史里的网文腔旁白，避免模型 few-shot 自我污染
   if (sanitizeHistory !== false) hist = sanitizeHistoryForPrompt(hist);
+  // 禁止复读上几轮原句/模板动作（单独 system，权重靠后）
+  const antiRepeat = buildAntiRepeatPrompt(hist);
+  if (antiRepeat) messages.push({ role: 'system', content: antiRepeat });
   messages.push(...hist);
   messages.push({ role: 'user', content: userMessage });
   return messages;

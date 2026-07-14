@@ -31,6 +31,9 @@ export {
   compressAssistantHistory,
   compressNarration,
   compressDialogue,
+  buildAntiRepeatPrompt,
+  isRepetitiveReply,
+  stripRepeatedParts,
   INTIMATE_REPLY_STYLE_LOCK,
 } from './humanizeReply.js';
 export { explainRecallHits, formatRecallExplanation } from './explainRecall.js';

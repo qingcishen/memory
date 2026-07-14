@@ -23,13 +23,13 @@ export function splitDialogueBubbles(text = '', max = 3, minSplitLen = 12) {
       .filter(Boolean);
   }
 
-  // 仍是一条：用省略号/破折号/分号再拆（「嗯……再深一点」）
-  if (pieces.length === 1) {
+  // 仍是一条：仅破折号/分号拆（不按省略号拆，避免「嗯……」变成「嗯」+「…」空气泡）
+  if (pieces.length === 1 && s.length >= 8) {
     const soft = s
-      .split(/(?<=[…‥]{1,3}|——|；|;)\s*/u)
+      .split(/(?<=——|；|;)\s*/u)
       .map((x) => x.trim())
       .filter(Boolean);
-    if (soft.length > 1) pieces = soft;
+    if (soft.length > 1 && soft.every((p) => /[^\s.…·。]/.test(p))) pieces = soft;
   }
 
   // 仍是一条：在逗号处拆成两半（「过来，今天你别动」），短句也拆
@@ -74,9 +74,16 @@ export function buildHumanOutgoingMessages(
       continue;
     }
     if (dialogueBudget <= 0) continue;
-    const bubbles = splitDialogueBubbles(text, dialogueBudget, minSplitLen);
+    const bubbles = splitDialogueBubbles(text, dialogueBudget, minSplitLen)
+      .map((b) => b.trim())
+      .filter((b) => b && !/^[.…·。～~\s]+$/u.test(b));
     for (const b of bubbles) {
       if (dialogueBudget <= 0) break;
+      // 跳过连续纯「嗯」
+      const prev = out[out.length - 1];
+      if (prev?.type === 'dialogue' && /^嗯+[…。.~～\s]*$/u.test(prev.text) && /^嗯+[…。.~～\s]*$/u.test(b)) {
+        continue;
+      }
       out.push({ type: 'dialogue', text: b });
       dialogueBudget -= 1;
     }

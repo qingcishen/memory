@@ -56,7 +56,7 @@ import {
   enforcePartsBudget,
   stripStockEndingsFromParts,
 } from './turnPlan.js';
-import { humanizeReplyParts } from './humanizeReply.js';
+import { humanizeReplyParts, isRepetitiveReply, stripRepeatedParts } from './humanizeReply.js';
 import { explainRecallHits, formatRecallExplanation } from './explainRecall.js';
 import {
   planStructuredHeuristic,
@@ -895,6 +895,30 @@ export class Orchestrator {
       }
     }
 
+    // 复读/空嗯重试：连续「嗯…」或同一套拽衣襟模板时强制换新
+    if (allowRetry && isRepetitiveReply(reply, this.history)) {
+      try {
+        const retryMessages = [
+          ...messages,
+          { role: 'assistant', content: reply },
+          {
+            role: 'user',
+            content:
+              '（系统）你刚才在复读上一轮：同一套动作或只回「嗯…」。请完全换新的身体细节和台词，禁止拽衣襟/膝盖贴腿/半跪/腿软模板，禁止空省略号。像真人接住对方刚说的话。',
+          },
+        ];
+        const retried = normalizeReplyResult(
+          await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
+        );
+        if (retried?.text && !isRepetitiveReply(retried.text, this.history)) {
+          reply = retried.text;
+          parts = retried.parts;
+        }
+      } catch {
+        /* 保持原稿 */
+      }
+    }
+
     ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
     // 会话线落盘：用户句 + 她的回复（含她的承诺）→ 持久化
@@ -1137,16 +1161,24 @@ export class Orchestrator {
         r = joinReplyParts(p);
       }
     }
-    // 硬后处理：压网文腔、姓名开场、睡衣头发清单、复读收尾
+    // 硬后处理：压网文腔、姓名开场、睡衣头发清单、复读收尾、去空气泡
     if (PARAMS.orchestrator?.humanizeReply !== false) {
       const phase =
         turn?.intimacyPhase ||
         turn?._intimacyPhase ||
         this._lastIntimacyPhase ||
         null;
-      const humanized = humanizeReplyParts(p, { intimacyPhase: phase });
+      const humanized = humanizeReplyParts(p, {
+        intimacyPhase: phase,
+        history: this.history,
+      });
       if (humanized?.length) {
         p = humanized;
+        r = joinReplyParts(p);
+      }
+      const stripped = stripRepeatedParts(p, this.history);
+      if (stripped?.length) {
+        p = stripped;
         r = joinReplyParts(p);
       }
     }
