@@ -150,6 +150,9 @@ export function formatKnowledgePrompt(pick, phase = 'foreplay') {
     return '';
   }
   lines.push('换姿势用身体带过去；dialogue 里禁止报菜名式念「我们来做某某式」。');
+  lines.push(
+    '沉浸写法：旁白写感觉与因果（被碰到→身体变），不写器官流水账；每轮只主打一种触感；台词短碎，保留性格。',
+  );
   return lines.map((l) => `- ${l}`).join('\n');
 }
 

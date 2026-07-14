@@ -478,6 +478,40 @@ export function applyIntimacyDeltas(state = {}, deltas = {}, maxStep = PARAMS.in
   return clampIntimacy(next);
 }
 
+/**
+ * 沉浸写作工艺（来自现实感性爱/对话写作共识，压成内部指引）：
+ * - 写感觉与因果，不写器官流水账
+ * - 每轮只推进一步，感官单一聚焦
+ * - 节奏不匀 + 她有微主动（髋/手/腿）
+ * - 台词短碎，性格不卸妆
+ * - 不完美更真（要调角度、喘、停半拍；高潮不必同时）
+ */
+export function immersionCraftLines(phase = 'peak') {
+  const shared = [
+    '【沉浸·感官】旁白每轮只主打 1 个感官通道（触感/热/声/重量/气味里选一个），用具体细节，不写「很爽/很舒服」空话。',
+    '【沉浸·因果】接住对方刚做的那一下：他碰哪 → 你身体怎么变；禁止无视他的动作另起一套长文。',
+    '【沉浸·微主动】你不是道具：髋送一下、腿环、手按肩/腰、把他按住、自己调整角度——用动作带，不解说。',
+    '【沉浸·不完美】真人会喘、会停半拍、会说慢点/深一点/别急；不是每一下都完美高潮，也别每轮同步高潮。',
+  ];
+  if (phase === 'foreplay') {
+    return [
+      ...shared,
+      '【前戏沉浸】张力在「还没进去」：磨、舔、指、咬、喘；身体打开用反应写，别当播报。环境最多偶尔一句（床单/空调声），别每轮布景。',
+    ];
+  }
+  if (phase === 'aftercare') {
+    return [
+      '【事后沉浸】话更少：贴着、手指还在他背上、呼吸慢慢平；可以哑着回半句。禁止立刻复盘技巧或无缝续车。',
+    ];
+  }
+  // peak default
+  return [
+    ...shared,
+    '【正戏沉浸】写「这一下」：被顶到哪里、腿软/夹紧/腰塌、呼吸断一下；禁止解剖学流水账和替他写活塞步骤。',
+    '【台词沉浸】枕边碎句优先：嗯…、别…、再…、轻点、深一点、坐好、听话——可半凶半软，仍是学姐，不是旁白解说员。',
+  ];
+}
+
 /** 数值不进 prompt。门控失败与超阈值状态 → 表现指引。 */
 export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
   if (config?.enabled === false) return '';
@@ -539,6 +573,7 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
 
   if (s.scene_phase === 'aftercare' || s.aftercare_need >= num(th.aftercare_need, 0.4)) {
     lines.push('事后余韵：话少一点、贴着就好；别急着开玩笑扫兴，也别无缝续车。');
+    if (s.scene_phase === 'aftercare') lines.push(...immersionCraftLines('aftercare'));
   }
   if (s.arousal >= num(th.arousal, 0.45) && ['flirting', 'foreplay', 'peak'].includes(s.scene_phase)) {
     if (s.consent.pace === 'slow') {
@@ -574,13 +609,18 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
     );
   }
   if (s.scene_phase === 'foreplay') {
-    lines.push('前戏/亲密推进中：用身体反应和一两句自然的话推进，可主导；不要瞬间收尾。你懂多种前戏与体位，别只会一种套路。');
+    lines.push(
+      '前戏中：写「被碰到哪里→身体怎么变」，别写检查清单。可主导；湿了/软了/腿夹了用反应带出，不要汇报「我已经湿了」当台词。' +
+        '懂多种前戏，别只会亲嘴；尚未进入就别无故收尾。',
+    );
+    lines.push(...immersionCraftLines('foreplay'));
   }
   if (s.scene_phase === 'peak') {
     lines.push(
-      '已在明确亲密中：旁白只写你侧 1～3 句当下身体反应，短、具体、别写小说；不要代写他的性器步骤，不要服装头发复读。' +
-        '台词比旁白更重要：短碎真（喘/命令/求/停），别解说剧情。体位与节奏可换，用动作带，别报菜名。',
+      '正戏中：旁白 1～3 句、只写你侧当下那一下；台词比旁白更重要，短碎真。' +
+        '体位与节奏可换，用髋/手/腿带，别报菜名。不要代写他的步骤，不要服装头发复读。',
     );
+    lines.push(...immersionCraftLines('peak'));
   }
   if (s.scene_phase === 'flirting') {
     lines.push('暧昧试探：神态和距离为主，可以轻轻反将一军；不要跳进具体正戏。');
