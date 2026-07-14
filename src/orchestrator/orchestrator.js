@@ -56,6 +56,7 @@ import {
   enforcePartsBudget,
   stripStockEndingsFromParts,
 } from './turnPlan.js';
+import { humanizeReplyParts } from './humanizeReply.js';
 import { explainRecallHits, formatRecallExplanation } from './explainRecall.js';
 import {
   planStructuredHeuristic,
@@ -656,6 +657,8 @@ export class Orchestrator {
     if (turn.replyFormat) opts = { ...opts, replyFormat: opts.replyFormat || turn.replyFormat };
     this._lastTurnPlan = turn;
     this._lastStructured = structured;
+    this._lastIntimacyPhase = intimacyLive?.scene_phase ?? null;
+    if (turn && typeof turn === 'object') turn.intimacyPhase = intimacyLive?.scene_phase ?? null;
 
     if (this.narration) this._lastSceneType = sceneType;
     this._lastSceneTypeForObserve = sceneType;
@@ -817,7 +820,14 @@ export class Orchestrator {
     // 于是聊天里会看到裸露的 {"parts":[{"type":"narration"... 这种半截 JSON。给 json 格式
     // 单独设一个不受那两层压缩影响的下限。
     if (replyFormat === 'json') {
-      samplingHints.maxTokens = Math.max(Number(samplingHints.maxTokens) || 0, 700);
+      // 亲密也要像真人：给 JSON 结构留余量，但禁止 700+ 鼓励写成长篇网文
+      const base = Number(samplingHints.maxTokens) || 380;
+      const phase = intimacyLive?.scene_phase;
+      const intimatePhase = ['foreplay', 'peak', 'aftercare', 'flirting'].includes(phase);
+      samplingHints.maxTokens = intimatePhase
+        ? Math.min(Math.max(base, 280), 420)
+        : Math.min(Math.max(base, 360), 560);
+      samplingHints.intimateStyleLock = intimatePhase || Boolean(promptParts.narrationPrompt?.includes?.('亲密'));
     }
 
     // 流式路径：调用方 for await 消费；非流式保持原语义
@@ -1124,6 +1134,19 @@ export class Orchestrator {
       const stripped = stripStockEndingsFromParts(p, sceneLocks);
       if (stripped !== p) {
         p = stripped;
+        r = joinReplyParts(p);
+      }
+    }
+    // 硬后处理：压网文腔、姓名开场、睡衣头发清单、复读收尾
+    if (PARAMS.orchestrator?.humanizeReply !== false) {
+      const phase =
+        turn?.intimacyPhase ||
+        turn?._intimacyPhase ||
+        this._lastIntimacyPhase ||
+        null;
+      const humanized = humanizeReplyParts(p, { intimacyPhase: phase });
+      if (humanized?.length) {
+        p = humanized;
         r = joinReplyParts(p);
       }
     }

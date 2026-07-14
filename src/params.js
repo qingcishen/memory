@@ -376,6 +376,8 @@ export const DEFAULT_PARAMS = {
     enforcePartsBudget: true,
     // 跳戏重试失败后，仍尝试从 dialogue 里抠掉库存结尾
     stripStockEndings: true,
+    // 硬后处理：压网文腔旁白/姓名开场/复读收尾（humanizeReply.js）
+    humanizeReply: true,
     // 超短用户句时瘦身 world/story 段，减 prompt 体积
     compactShortTurns: true,
     // 结构化两阶段计划（启发式 + 可选便宜模型 enrich）

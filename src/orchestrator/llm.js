@@ -5,14 +5,19 @@
 
 import { llm, replyLlm, narrationLlm, LLM_MODEL, REPLY_MODEL, REPLY_REASONING_EFFORT, NARRATION_MODEL } from '../config.js';
 import { recordLlmCall } from '../metrics.js';
+import { INTIMATE_REPLY_STYLE_LOCK, humanizeReplyParts } from './humanizeReply.js';
 
 const REPLY_PART_TYPES = ['dialogue', 'narration'];
 
 const REPLY_JSON_INSTRUCTION = `【输出格式·JSON】必须只输出一个 JSON 对象，不要 markdown 代码块，不要 JSON 以外的任何文字。格式: {"parts": [{"type": "dialogue" 或 "narration", "text": "..."}]}。
-parts 至少有一个 dialogue part。dialogue 是她说/发出去的话本身；narration 是第三人称、短、只写她侧的动作/神态——两者不能混 part；动作绝不能写进 dialogue。
-narration 默认 1～3 句，通常不要长过 dialogue；禁止全名公式开场、禁止服装头发清单复读、禁止全知代写对方性器/步骤的黄文长段。
-她的话默认一个 dialogue part；偶尔像真人连发再拆 2-3 条短 dialogue，不要为了拆而拆。
-要不要加 narration、怎么写，按上面的场景旁白指令；日常通常不要 narration。`;
+parts 至少有一个 dialogue part。dialogue 是她说/发出去的话本身；narration 是第三人称、极短、只写她侧——两者不能混 part。
+【长度硬顶】narration ≤ 2 句且通常 ≤ 70 字；dialogue ≤ 2 句短碎人话。禁止旁白比台词长。
+【禁止】全名开场（沈清词听…）、睡衣头发清单、全知代写对方步骤、解剖学流水账、收尾「你真的一直想我吗/搂紧别松」。
+她的话默认一个 dialogue part；偶尔像真人连发再拆 2 条短 dialogue。
+要不要加 narration 按场景旁白指令；日常通常不要 narration。
+
+合格示例：
+{"parts":[{"type":"narration","text":"被顶到那一下，腿先夹紧。"},{"type":"dialogue","text":"嗯……慢点。再深一点。"}]}`;
 
 /** 日常 plain 模式：首 token 更快，适合流式打字机；亲密场景仍用 JSON。 */
 const REPLY_PLAIN_INSTRUCTION = `【输出格式·纯台词】直接输出她要发出去/说出口的话，像微信聊天。
@@ -88,33 +93,42 @@ export function normalizeReplyResult(result) {
   return { text: joinReplyParts(parts), parts };
 }
 
-/** 用独立模型只重写 narration part，dialogue 保持逐字不变。 */
+/** 用独立模型压短 narration（不是润色成更文学）；dialogue 保持逐字不变。 */
 export async function rewriteNarrationParts(parts, messages, { client = narrationLlm, model = NARRATION_MODEL, signal } = {}) {
   const source = normalizeParts(parts);
   const narrationIndexes = source.flatMap((part, index) => part.type === 'narration' ? [index] : []);
-  if (!model || narrationIndexes.length === 0) return source;
+  if (narrationIndexes.length === 0) return source;
+  if (!model) return humanizeReplyParts(source, { intimacyPhase: 'peak' });
   try {
     const res = await client.chat.completions.create({
       model,
-      temperature: 0.75,
+      temperature: 0.55,
+      max_tokens: 180,
       response_format: { type: 'json_object' },
       messages: [
-        ...(messages ?? []),
-        { role: 'system', content: '你是专门的旁白作者。根据上下文和场景旁白指令，只润色草稿中 narration 的文字；不改台词、不新增剧情事实、不解释。只输出 JSON: {"narrations":["..."]}，数量必须与草稿中 narration 数量一致。' },
-        { role: 'user', content: `请润色这份草稿的旁白：${JSON.stringify({ parts: source })}` },
+        {
+          role: 'system',
+          content:
+            '你是旁白压缩器，不是文学家。把每条 narration 压成 1～2 句、≤70 字的真人身体反应：只写她侧因果（被碰到→怎么变）。' +
+            '禁止：姓名开场、散着头发/丝质睡衣/半敞/往怀里嵌/耳尖微热、全知写对方、解剖学流水账、加长原文。' +
+            '若原文已短且合格可几乎原样。只输出 JSON: {"narrations":["..."]}，数量必须与草稿中 narration 数量一致。不改台词。',
+        },
+        { role: 'user', content: `压缩这些旁白：${JSON.stringify({ narrations: narrationIndexes.map((i) => source[i].text) })}` },
       ],
     }, { signal });
     recordLlmCall('narration', res.usage);
     const parsed = JSON.parse(res.choices?.[0]?.message?.content || '{}');
-    if (!Array.isArray(parsed.narrations) || parsed.narrations.length !== narrationIndexes.length) return source;
+    if (!Array.isArray(parsed.narrations) || parsed.narrations.length !== narrationIndexes.length) {
+      return humanizeReplyParts(source, { intimacyPhase: 'peak' });
+    }
     const rewritten = source.map((part) => ({ ...part }));
     narrationIndexes.forEach((index, i) => {
       const text = String(parsed.narrations[i] ?? '').trim();
       if (text) rewritten[index].text = text;
     });
-    return rewritten;
+    return humanizeReplyParts(rewritten, { intimacyPhase: 'peak' });
   } catch {
-    return source;
+    return humanizeReplyParts(source, { intimacyPhase: 'peak' });
   }
 }
 
@@ -145,6 +159,10 @@ export class DefaultLLM {
     let parts = format === 'plain' ? [dialoguePart(content)] : parseReplyParts(content);
     if (format === 'json') {
       parts = await rewriteNarrationParts(parts, messages, { signal: opts.signal });
+      // 再压一遍，防止旁白模型失败或未配置时仍放出网文腔
+      parts = humanizeReplyParts(parts, {
+        intimacyPhase: opts.intimateStyleLock ? 'peak' : null,
+      });
     }
     return { parts, format };
   }
@@ -228,12 +246,17 @@ function buildReplyPayload(messages, opts = {}) {
   const format = opts.format === 'plain' ? 'plain' : 'json';
   const instruction = format === 'plain' ? REPLY_PLAIN_INSTRUCTION : REPLY_JSON_INSTRUCTION;
   const reasoningEffort = opts.reasoningEffort ?? REPLY_REASONING_EFFORT;
+  const msgs = [...messages, { role: 'system', content: instruction }];
+  // 亲密场景追加 few-shot 硬锁（最后一条 system 权重更高）
+  if (format === 'json' && opts.intimateStyleLock !== false) {
+    msgs.push({ role: 'system', content: INTIMATE_REPLY_STYLE_LOCK });
+  }
   return {
     model: opts.model ?? REPLY_MODEL,
-    temperature: opts.temperature ?? 0.8,
+    temperature: opts.temperature ?? 0.78,
     ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
-    messages: [...messages, { role: 'system', content: instruction }],
+    messages: msgs,
   };
 }
 

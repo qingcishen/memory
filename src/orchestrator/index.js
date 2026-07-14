@@ -23,6 +23,14 @@ export {
   stripStockEndingsFromParts,
   buildTurnBrief,
 } from './turnPlan.js';
+export {
+  humanizeReplyParts,
+  sanitizeHistoryForPrompt,
+  compressAssistantHistory,
+  compressNarration,
+  compressDialogue,
+  INTIMATE_REPLY_STYLE_LOCK,
+} from './humanizeReply.js';
 export { explainRecallHits, formatRecallExplanation } from './explainRecall.js';
 export {
   planStructuredHeuristic,

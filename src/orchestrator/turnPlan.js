@@ -70,8 +70,11 @@ export function planTurn(ctx = {}) {
   }
   const recallQuery = seeds.filter(Boolean).join(' · ').slice(0, 200) || msg || '最近';
 
-  // ---- parts 预算 ----
-  const partsBudget = Math.max(1, Math.min(6, Number(behavior.partsBudget) || 2));
+  // ---- parts 预算：亲密场景默认 2（1 旁白 + 1 台词），防拆成多条网文段 ----
+  let partsBudget = Math.max(1, Math.min(6, Number(behavior.partsBudget) || 2));
+  if (['foreplay', 'peak', 'aftercare', 'flirting'].includes(phase)) {
+    partsBudget = Math.min(partsBudget, 2);
+  }
 
   // ---- 简报：高显著度、短 ----
   const turnBrief = buildTurnBrief({

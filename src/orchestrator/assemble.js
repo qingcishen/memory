@@ -4,6 +4,7 @@
 // 见 docs/DEVELOPMENT.md 与编排器设计方案 §6。
 
 import { PARAMS } from '../params.js';
+import { sanitizeHistoryForPrompt } from './humanizeReply.js';
 
 /** 按固定顺序拼接各子系统的自然语言段落, 跳过空串。 */
 export function buildSystemPrompt({
@@ -147,11 +148,14 @@ export function buildGapHint(gapHours, tiers = PARAMS.proactive.silenceTiers, { 
  * 拼出最终喂给回复模型的 messages: [system?, ...history(最近 historyTurns*2 条), user]。
  * history 为空或 system 为空串时对应部分被省略。
  */
-export function assemble({ userMessage, history = [], historyTurns = 6, ...promptParts }) {
+export function assemble({ userMessage, history = [], historyTurns = 6, sanitizeHistory = true, ...promptParts }) {
   const system = buildSystemPrompt(promptParts);
   const messages = [];
   if (system) messages.push({ role: 'system', content: system });
-  messages.push(...history.slice(-historyTurns * 2));
+  let hist = history.slice(-historyTurns * 2);
+  // 去掉历史里的网文腔旁白，避免模型 few-shot 自我污染
+  if (sanitizeHistory !== false) hist = sanitizeHistoryForPrompt(hist);
+  messages.push(...hist);
   messages.push({ role: 'user', content: userMessage });
   return messages;
 }
