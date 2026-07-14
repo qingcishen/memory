@@ -6,18 +6,44 @@
 import { chunkText } from './memory-channel.js';
 
 /**
- * 按中文/英文句号等拆成最多 max 条，短句不拆。
+ * 按中文/英文句号、换行、破折号等拆成最多 max 条。
+ * 像微信：短句也尽量拆成 2 条连发，而不是永远「你一句我一整段」。
  */
-export function splitDialogueBubbles(text = '', max = 3, minSplitLen = 28) {
+export function splitDialogueBubbles(text = '', max = 3, minSplitLen = 12) {
   const s = String(text || '').trim();
   if (!s) return [];
-  if (s.length < minSplitLen || max <= 1) return [s];
+  if (max <= 1) return [s];
+
   let pieces = s.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+
   if (pieces.length === 1) {
-    pieces = s.split(/(?<=[。！？!?…])\s*/).map((x) => x.trim()).filter(Boolean);
+    pieces = s
+      .split(/(?<=[。！？!?…～—])\s*/u)
+      .map((x) => x.trim())
+      .filter(Boolean);
   }
+
+  // 仍是一条：用省略号/破折号/分号再拆（「嗯……再深一点」）
+  if (pieces.length === 1) {
+    const soft = s
+      .split(/(?<=[…‥]{1,3}|——|；|;)\s*/u)
+      .map((x) => x.trim())
+      .filter(Boolean);
+    if (soft.length > 1) pieces = soft;
+  }
+
+  // 仍是一条：在逗号处拆成两半（「过来，今天你别动」），短句也拆
+  if (pieces.length === 1 && s.length >= 6) {
+    const m = s.match(/^(.{1,}?[，,])\s*(.{2,})$/u);
+    if (m && m[1].replace(/[，,\s]/gu, '').length >= 1 && m[2].trim().length >= 2) {
+      pieces = [m[1].replace(/[，,]\s*$/u, '').trim(), m[2].trim()].filter(Boolean);
+    }
+  }
+
+  // 极短且拆不开：保持 1 条（「嗯。」）
   if (pieces.length <= 1) return [s];
   if (pieces.length <= max) return pieces;
+
   const out = [];
   const bucket = Math.ceil(pieces.length / max);
   for (let i = 0; i < pieces.length; i += bucket) {
@@ -32,13 +58,14 @@ export function splitDialogueBubbles(text = '', max = 3, minSplitLen = 28) {
  */
 export function buildHumanOutgoingMessages(
   parts = [],
-  { maxDialogueBubbles = 3, minSplitLen = 28, chunkLimit = 1900, merge = false } = {},
+  { maxDialogueBubbles = 3, minSplitLen = 12, chunkLimit = 1900, merge = false } = {},
 ) {
   if (merge) {
     const text = (parts ?? []).map((p) => String(p?.text || '').trim()).filter(Boolean).join('\n\n');
     return chunkText(text, chunkLimit).map((t) => ({ type: 'merged', text: t }));
   }
   const out = [];
+  let dialogueBudget = Math.max(1, Number(maxDialogueBubbles) || 3);
   for (const p of parts || []) {
     const text = String(p?.text || '').trim();
     if (!text) continue;
@@ -46,8 +73,13 @@ export function buildHumanOutgoingMessages(
       out.push({ type: 'narration', text });
       continue;
     }
-    const bubbles = splitDialogueBubbles(text, maxDialogueBubbles, minSplitLen);
-    for (const b of bubbles) out.push({ type: 'dialogue', text: b });
+    if (dialogueBudget <= 0) continue;
+    const bubbles = splitDialogueBubbles(text, dialogueBudget, minSplitLen);
+    for (const b of bubbles) {
+      if (dialogueBudget <= 0) break;
+      out.push({ type: 'dialogue', text: b });
+      dialogueBudget -= 1;
+    }
   }
   if (!out.length) {
     return chunkText('...', chunkLimit).map((t) => ({ type: 'dialogue', text: t }));
@@ -105,7 +137,7 @@ export async function deliverHumanBubbles(parts, sendFn, opts = {}) {
     process.env.CHANNEL_MERGE_MESSAGES === 'true';
   const bubbles = buildHumanOutgoingMessages(parts, {
     maxDialogueBubbles: opts.maxDialogueBubbles ?? 3,
-    minSplitLen: opts.minSplitLen ?? 28,
+    minSplitLen: opts.minSplitLen ?? 12,
     chunkLimit: opts.chunkLimit ?? 1900,
     merge,
   });

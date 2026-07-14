@@ -25,6 +25,8 @@ export {
 } from './turnPlan.js';
 export {
   humanizeReplyParts,
+  expandDialogueIntoBubbles,
+  splitIntoChatBubbles,
   sanitizeHistoryForPrompt,
   compressAssistantHistory,
   compressNarration,

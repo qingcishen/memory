@@ -23,25 +23,30 @@ export function planStructuredHeuristic(ctx = {}) {
   let mentionStory = goals.some((g) => g.kind === 'story' && g.priority >= 0.4);
   let mentionUnfinished = goals.some((g) => g.kind === 'unfinished');
   let wantPhoto = /自拍|照片|看看你|发张图/.test(msg);
-  let bubbleCount = Math.min(3, Math.max(1, Number(behavior.partsBudget) || 2));
+  // 默认连发 2～3 条短气泡（像微信），不是永远 1 条
+  let bubbleCount = Math.min(3, Math.max(2, Number(behavior.partsBudget) || 3));
   let attitude = 'warm';
 
-  // 冲突才 guarded；单纯 terse（修复期/累）仍可 warm，只是话少
+  // 冲突才 guarded；单纯 terse 可 1～2 条，仍避免机械单条长文
   if (lockIds.has('conflict')) {
     attitude = 'guarded';
-    bubbleCount = 1;
+    bubbleCount = Math.min(bubbleCount, 2);
     mentionStory = false;
   } else if (lengthHint === 'terse') {
-    bubbleCount = Math.min(bubbleCount, 1);
+    bubbleCount = Math.min(bubbleCount, 2);
   }
-  if (lockIds.has('intimate') || ['foreplay', 'peak', 'aftercare'].includes(phase)) {
+  if (lengthHint === 'chatty') {
+    bubbleCount = Math.max(bubbleCount, 3);
+  }
+  if (lockIds.has('intimate') || ['foreplay', 'peak', 'aftercare', 'flirting'].includes(phase)) {
     attitude = 'intimate';
     mentionStory = false;
+    bubbleCount = Math.max(2, Math.min(3, bubbleCount));
   }
   if (ctx.bodySit?.sick || ctx.bodySit?.period || (ctx.bodySit?.lowEnergy && ctx.bodySit?.lowHealth)) {
     attitude = 'soft';
     lengthHint = 'terse';
-    bubbleCount = 1;
+    bubbleCount = Math.min(bubbleCount, 2);
     wantPhoto = false;
   }
   if (/(今天|最近|怎么样)/.test(msg) && storyBeat?.content) mentionStory = true;

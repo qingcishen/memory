@@ -37,7 +37,7 @@ const LITERARY_FILLER =
 
 /**
  * @param {Array<{type?: string, text?: string}>} parts
- * @param {{ intimacyPhase?: string|null, maxNarrationChars?: number, maxDialogueChars?: number }} [opts]
+ * @param {{ intimacyPhase?: string|null, maxNarrationChars?: number, maxDialogueChars?: number, multiBubble?: boolean, maxDialogueBubbles?: number }} [opts]
  */
 export function humanizeReplyParts(parts = [], opts = {}) {
   const list = Array.isArray(parts) ? parts : [];
@@ -47,6 +47,8 @@ export function humanizeReplyParts(parts = [], opts = {}) {
   const intimate = ['flirting', 'foreplay', 'peak', 'aftercare', 'cooldown'].includes(phase);
   const maxNarr = Number(opts.maxNarrationChars) || (intimate ? 72 : 100);
   const maxDial = Number(opts.maxDialogueChars) || (intimate ? 100 : 160);
+  const multiBubble = opts.multiBubble !== false;
+  const maxBubbles = Math.max(1, Number(opts.maxDialogueBubbles) || (intimate ? 3 : 3));
 
   const out = [];
   for (const p of list) {
@@ -59,10 +61,11 @@ export function humanizeReplyParts(parts = [], opts = {}) {
     if (text) out.push({ type, text });
   }
 
-  // 亲密场景：旁白最多 1 条；若旁白被压空只留台词
+  // 亲密场景：旁白最多 1 条
+  let slim = out;
   if (intimate) {
     let narrUsed = 0;
-    const slim = [];
+    slim = [];
     for (const p of out) {
       if (p.type === 'narration') {
         if (narrUsed >= 1) continue;
@@ -70,9 +73,66 @@ export function humanizeReplyParts(parts = [], opts = {}) {
       }
       slim.push(p);
     }
-    return slim.length ? slim : out.slice(0, 1);
+    if (!slim.length) slim = out.slice(0, 1);
   }
-  return out.length ? out : list.slice(0, 1);
+
+  // 像微信连发：把台词拆成多条短 dialogue part（发送层会分条+间隔）
+  if (multiBubble) slim = expandDialogueIntoBubbles(slim, maxBubbles);
+
+  return slim.length ? slim : list.slice(0, 1);
+}
+
+/**
+ * 把「一整段台词」拆成 2～3 条短气泡 parts。
+ * 真人聊天常见：嗯 / 过来 / 今天你别动 —— 而不是合成一条。
+ */
+export function expandDialogueIntoBubbles(parts = [], maxDialogueBubbles = 3) {
+  const maxDial = Math.max(1, Number(maxDialogueBubbles) || 3);
+  const out = [];
+  let dialLeft = maxDial;
+
+  for (const p of parts || []) {
+    if (!p?.text?.trim()) continue;
+    if (p.type === 'narration') {
+      out.push(p);
+      continue;
+    }
+    if (dialLeft <= 0) continue;
+
+    const bubbles = splitIntoChatBubbles(p.text, dialLeft);
+    for (const b of bubbles) {
+      if (dialLeft <= 0) break;
+      out.push({ type: 'dialogue', text: b });
+      dialLeft -= 1;
+    }
+  }
+  return out.length ? out : parts;
+}
+
+/** 纯逻辑拆句：换行 > 句号 > 省略号/破折号 > 逗号对半 */
+export function splitIntoChatBubbles(text = '', max = 3) {
+  const s = String(text || '').trim();
+  if (!s) return [];
+  if (max <= 1) return [s];
+
+  let pieces = s.split(/\n+/).map((x) => x.trim()).filter(Boolean);
+  if (pieces.length === 1) {
+    pieces = s.split(/(?<=[。！？!?…～])\s*/u).map((x) => x.trim()).filter(Boolean);
+  }
+  if (pieces.length === 1) {
+    const soft = s.split(/(?<=[…‥]{1,3}|——|；)\s*/u).map((x) => x.trim()).filter(Boolean);
+    if (soft.length > 1) pieces = soft;
+  }
+  if (pieces.length === 1 && s.length >= 12) {
+    const m = s.match(/^(.{3,}?[，,])\s*(.{3,})$/u);
+    if (m) pieces = [m[1].replace(/[，,]\s*$/u, '').trim(), m[2].trim()];
+  }
+  if (pieces.length <= 1) return [s];
+  if (pieces.length <= max) return pieces;
+  // 过多则合并尾部
+  const head = pieces.slice(0, max - 1);
+  const tail = pieces.slice(max - 1).join('');
+  return [...head, tail];
 }
 
 export function compressNarration(text = '', maxChars = 72) {
@@ -103,12 +163,10 @@ export function compressDialogue(text = '', maxChars = 100, intimate = false) {
   for (const re of STOCK_DIALOGUE_TAILS) t = t.replace(re, '');
   t = t.replace(/\n{3,}/g, '\n\n').trim();
 
-  // 亲密：最多两行/三句
+  // 亲密：保留换行便于后续拆气泡；句数上限放宽到 3 行
   if (intimate) {
     const lines = t.split(/\n+/).map((s) => s.trim()).filter(Boolean);
-    if (lines.length > 2) t = lines.slice(0, 2).join('\n');
-    const sents = t.split(/(?<=[。！？…—～])\s*/u).filter(Boolean);
-    if (sents.length > 3) t = sents.slice(0, 3).join('');
+    if (lines.length > 3) t = lines.slice(0, 3).join('\n');
   }
 
   if (t.length > maxChars) {
@@ -180,21 +238,19 @@ export function compressAssistantHistory(content = '') {
 
 /** 亲密 JSON 格式的 few-shot + 硬约束（追加为最后一条 system） */
 export const INTIMATE_REPLY_STYLE_LOCK = `【本轮输出·像真人硬锁·必遵】
-你正在和同居恋人说话/做爱现场，不是写网文连载。
+你正在和同居恋人说话/做爱现场，不是写网文连载，也不是客服一问一答。
 
 强制：
-1) narration ≤ 2 句、≤ 70 字；只写「她侧」当下这一下身体因果（被碰到→怎么变）。
-2) dialogue 1～2 句短碎人话；可喘、可半命令、可软；禁止解说剧情。
-3) 禁止：以「沈清词…」开场；禁止复读散着头发/丝质睡衣/半敞/往怀里嵌/耳尖微热/指尖收紧。
-4) 禁止：全知代写他的性器步骤；禁止解剖学流水账；禁止跟对方长文拼字数。
-5) 禁止收尾复读：你真的一直想我吗 / 搂紧点别松手 / 我有点空想靠你。
-6) 每轮只推进一步；节奏可不匀（喘、停、慢点/深一点）。
+1) 像微信连发：优先 2～3 个短 dialogue part（每条一句），可夹 0～1 个短 narration。禁止单条长文回完。
+2) narration ≤ 40 字；只写她侧当下这一下（被碰到→怎么变）。
+3) 禁止：以「沈清词…」开场；禁止散着头发/丝质睡衣/半敞/往怀里嵌/耳尖微热。
+4) 禁止：全知代写他的步骤、解剖学流水账、跟对方拼长文。
+5) 禁止收尾复读：你真的一直想我吗 / 搂紧点别松手。
+6) 节奏可不匀（喘、停、慢点/深一点）；每轮只推进一步。
 
-合格示例（模仿结构，勿照抄情节）：
-{"parts":[{"type":"narration","text":"被顶到那一下，腿先夹紧，呼吸断了半拍。"},{"type":"dialogue","text":"嗯……慢点。再深一点。"}]}
+合格（连发）：
+{"parts":[{"type":"narration","text":"腿先夹紧。"},{"type":"dialogue","text":"嗯……"},{"type":"dialogue","text":"慢点。再深一点。"}]}
 
-{"parts":[{"type":"narration","text":"她按住他手腕，髋往前送了送。"},{"type":"dialogue","text":"手给我。今天我带。"}]}
+{"parts":[{"type":"dialogue","text":"手给我。"},{"type":"dialogue","text":"今天我带。你别抢。"}]}
 
-不合格（禁止）：
-- 沈清词听他那么说，散着的头发……丝质睡衣半敞……往怀里嵌……
-- 长段双方全知黄文 + 结尾「逸晨，你是不是一直想我」`;
+不合格：一条 dialogue 把所有话写完；或网文长旁白。`;

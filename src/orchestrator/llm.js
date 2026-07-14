@@ -10,19 +10,32 @@ import { INTIMATE_REPLY_STYLE_LOCK, humanizeReplyParts } from './humanizeReply.j
 const REPLY_PART_TYPES = ['dialogue', 'narration'];
 
 const REPLY_JSON_INSTRUCTION = `【输出格式·JSON】必须只输出一个 JSON 对象，不要 markdown 代码块，不要 JSON 以外的任何文字。格式: {"parts": [{"type": "dialogue" 或 "narration", "text": "..."}]}。
-parts 至少有一个 dialogue part。dialogue 是她说/发出去的话本身；narration 是第三人称、极短、只写她侧——两者不能混 part。
-【长度硬顶】narration ≤ 2 句且通常 ≤ 70 字；dialogue ≤ 2 句短碎人话。禁止旁白比台词长。
-【禁止】全名开场（沈清词听…）、睡衣头发清单、全知代写对方步骤、解剖学流水账、收尾「你真的一直想我吗/搂紧别松」。
-她的话默认一个 dialogue part；偶尔像真人连发再拆 2 条短 dialogue。
-要不要加 narration 按场景旁白指令；日常通常不要 narration。
+parts 至少有一个 dialogue part。dialogue = 她嘴里说的话；narration = 极短第三人称动作（只写她侧）。两者不能混 part。
 
-合格示例：
-{"parts":[{"type":"narration","text":"被顶到那一下，腿先夹紧。"},{"type":"dialogue","text":"嗯……慢点。再深一点。"}]}`;
+【像微信连发·硬性】真人不会永远「你一句、我一整段」。多数轮次请输出 2～3 个短 dialogue part（每条一句人话，像连发两条消息）。
+可有 0～1 个短 narration part（插在台词前或中间）。禁止把所有话塞进同一个 dialogue。
+【长度】每条 dialogue 尽量 ≤ 25 字；narration ≤ 40 字。禁止旁白比所有台词加起来还长。
+【禁止】全名开场、睡衣头发清单、全知代写对方、解剖学流水账、复读「你真的一直想我吗/搂紧别松」。
 
-/** 日常 plain 模式：首 token 更快，适合流式打字机；亲密场景仍用 JSON。 */
-const REPLY_PLAIN_INSTRUCTION = `【输出格式·纯台词】直接输出她要发出去/说出口的话，像微信聊天。
-不要 JSON、不要 markdown 代码块、不要用引号包住整段、不要写旁白/动作描写、不要「角色名：」前缀。
-可以偶尔用换行拆成两句短消息感，但多数时候一两句即可。`;
+合格（连发）：
+{"parts":[{"type":"narration","text":"腿先夹紧。"},{"type":"dialogue","text":"嗯……"},{"type":"dialogue","text":"慢点。再深一点。"}]}
+
+合格（日常连发）：
+{"parts":[{"type":"dialogue","text":"在呢。"},{"type":"dialogue","text":"刚忙完，怎么了？"}]}
+
+不合格：只有一条超长 dialogue 把所有意思说完。`;
+
+/** 日常 plain 模式：首 token 更快；用换行模拟连发，发送层会拆气泡。 */
+const REPLY_PLAIN_INSTRUCTION = `【输出格式·纯台词】直接输出她要发出去的话，像微信聊天。
+不要 JSON、不要 markdown、不要引号包整段、不要旁白/动作描写、不要「角色名：」前缀。
+
+【像微信连发】多数时候用换行拆成 2～3 行短句（每行一条气泡），不要合成一大段。
+例：
+在呢。
+刚忙完。
+怎么了？
+
+极短回应（嗯/好）可以只一行。`;
 
 /**
  * 选择输出格式：亲密/车内/有旁白需求 → json；日常 → plain（更快首包）。

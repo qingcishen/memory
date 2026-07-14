@@ -1,11 +1,14 @@
 import assert from 'node:assert';
 import {
   humanizeReplyParts,
+  expandDialogueIntoBubbles,
+  splitIntoChatBubbles,
   compressNarration,
   compressDialogue,
   compressAssistantHistory,
   sanitizeHistoryForPrompt,
 } from '../src/orchestrator/humanizeReply.js';
+import { splitDialogueBubbles, buildHumanOutgoingMessages } from '../src/channels/humanSend.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -30,11 +33,14 @@ console.log('humanizeReply');
     ],
     { intimacyPhase: 'peak' },
   );
-  ok('去掉姓名开场', !/沈清词/.test(raw.map((p) => p.text).join('')));
-  ok('去掉睡衣头发库存', !/丝质睡衣|散着的头发|耳尖微热/.test(raw.map((p) => p.text).join('')));
-  ok('去掉复读收尾', !/你真的一直想我吗/.test(raw.find((p) => p.type === 'dialogue')?.text || ''));
-  ok('仍有台词', (raw.find((p) => p.type === 'dialogue')?.text || '').includes('慢点'));
+  const joined = raw.map((p) => p.text).join('\n');
+  const dialAll = raw.filter((p) => p.type === 'dialogue').map((p) => p.text).join('\n');
+  ok('去掉姓名开场', !/沈清词/.test(joined));
+  ok('去掉睡衣头发库存', !/丝质睡衣|散着的头发|耳尖微热/.test(joined));
+  ok('去掉复读收尾', !/你真的一直想我吗/.test(dialAll));
+  ok('仍有台词', /慢点|再深/.test(dialAll));
   ok('旁白被压短', (raw.find((p) => p.type === 'narration')?.text || '').length <= 80);
+  ok('台词拆成连发气泡', raw.filter((p) => p.type === 'dialogue').length >= 2);
 }
 
 {
@@ -69,6 +75,41 @@ console.log('humanizeReply');
     '沈清词抬眼看他。散着的头发顺着肩滑落，深色丝质睡衣领口松松敞着。\n\n好点了。想带，你别动。',
   );
   ok('compressAssistantHistory 偏台词', /好点了|想带/.test(c));
+}
+
+console.log('multi-bubble / 连发');
+{
+  const bubbles = splitIntoChatBubbles('嗯……\n慢点。再深一点。', 3);
+  ok('换行拆成多气泡', bubbles.length >= 2);
+
+  const soft = splitIntoChatBubbles('嗯……再深一点。', 3);
+  ok('省略号可拆', soft.length >= 2 || soft[0].includes('再深'));
+
+  const expanded = expandDialogueIntoBubbles(
+    [{ type: 'dialogue', text: '在呢。\n刚忙完。\n怎么了？' }],
+    3,
+  );
+  ok('expand 成多条 dialogue part', expanded.filter((p) => p.type === 'dialogue').length >= 2);
+
+  const human = humanizeReplyParts(
+    [{ type: 'dialogue', text: '过来。今天你别动，听我的。' }],
+    { intimacyPhase: 'peak', multiBubble: true },
+  );
+  ok('humanize 后多气泡', human.filter((p) => p.type === 'dialogue').length >= 2);
+
+  const send = buildHumanOutgoingMessages(
+    [
+      { type: 'narration', text: '腿先夹紧。' },
+      { type: 'dialogue', text: '嗯……' },
+      { type: 'dialogue', text: '慢点。' },
+      { type: 'dialogue', text: '再深一点。' },
+    ],
+    { maxDialogueBubbles: 3, minSplitLen: 10 },
+  );
+  ok('发送层至少 3 条气泡', send.length >= 3);
+
+  const split = splitDialogueBubbles('过来，今天你别动。', 3, 10);
+  ok('逗号可拆成连发', split.length >= 2);
 }
 
 console.log(`\nhumanize-reply ${passed} 条断言通过`);

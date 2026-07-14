@@ -148,9 +148,14 @@ export class FeishuMemoryBot {
         stopIntimate: gate.stopIntimate,
         intimacyAllowed: gate.intimacyAllowed,
       });
-      // 像真人连发：旁白/多句台词分条 + 间隔（CHANNEL_MERGE_MESSAGES=1 可关）
+      // 像真人连发：多条短气泡 + 打字间隔（CHANNEL_MERGE_MESSAGES=1 可关）
       await deliverHumanBubbles(result.parts, (bubble) => this.send(message.chat_id, bubble), {
         chunkLimit: 3800,
+        maxDialogueBubbles: 3,
+        minSplitLen: 10,
+        behaviorPolicy: result.behaviorPolicy,
+        policyCapMs: Number(process.env.CHANNEL_DELIVERY_CAP_MS) || 8000,
+        typing: { min: 280, max: 1100, perChar: 14 },
       });
     } catch (error) {
       console.error('[feishu] reply failed:', error);
