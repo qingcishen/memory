@@ -63,8 +63,8 @@ export function maybeFallSick(state, now = Date.now(), rng = Math.random, stepHo
   const h = PARAMS.health;
   if (isSick(state, now)) return { sick: false, state, moodDelta: null };
 
-  // 康复冷却：刚病好 12h 内不再掷骰（避免「刚好又病」）
-  const coolMs = (Number(h.recoveryCooldownHours) || 12) * HOUR;
+  // 康复冷却：默认 7 天内不再自动发病（健康人不会刚病好又病）
+  const coolMs = (Number(h.recoveryCooldownHours) || 168) * HOUR;
   if (state?.sick_until) {
     const ended = new Date(state.sick_until).getTime();
     if (Number.isFinite(ended) && ended <= now && now - ended < coolMs) {
