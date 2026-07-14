@@ -557,6 +557,15 @@ export class Orchestrator {
     if (!storyBeat && typeof this.story?.pendingShare === 'function') {
       storyBeat = await this.story.pendingShare().catch(() => null);
     }
+    // dueItems (如周年纪念日) 一旦被喂进 goals 就标记 fired——checkProspective 的注释写着
+    // "决定提起后用 dismissProspective 标记", 但这一步在对话回复链路里从来没人调用过,
+    // 只有独立的主动推送(scheduler.js)会标记。结果是同一条到期提醒(比如"记得我们
+    // 第一次聊天吗")每一轮都重新判定成 due, 在对话里被反复提起, 哪怕已经问过、对方
+    // 也已经回答过。这里补上这一步; annual 类型标记后 markFired 会把它顺延到明年,
+    // 不是永久消失。
+    if (dueItems?.length) {
+      this.memory.dismissProspective?.(dueItems.map((item) => item?.id).filter(Boolean)).catch(() => {});
+    }
     const goals = buildConversationGoals({
       dueItems,
       desires: stateSnapshot?.desires,
@@ -800,6 +809,16 @@ export class Orchestrator {
       forceFormat: opts.replyFormat,
     });
     samplingHints.format = replyFormat;
+    // json 格式要装下 narration part(亲密场景要求比 dialogue 更长) + 多条 dialogue part +
+    // JSON 语法本身的括号/引号/键名开销，比纯文本重得多。health/behavior 那两层压缩
+    // (turnPlan.applyBehaviorSampling、life.lifeSamplingHints) 是为了让人在委屈/生病时
+    // 话短一点，压到 260~380 对纯文本没问题，但对 json 会在结构写完前就被截断——
+    // JSON.parse 失败后 parseReplyParts 的兜底是把整段原始 JSON 原文当成一条台词发出去，
+    // 于是聊天里会看到裸露的 {"parts":[{"type":"narration"... 这种半截 JSON。给 json 格式
+    // 单独设一个不受那两层压缩影响的下限。
+    if (replyFormat === 'json') {
+      samplingHints.maxTokens = Math.max(Number(samplingHints.maxTokens) || 0, 700);
+    }
 
     // 流式路径：调用方 for await 消费；非流式保持原语义
     if (opts.stream && typeof this.llm.generateReplyStream === 'function') {

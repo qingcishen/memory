@@ -346,6 +346,49 @@ console.log('Orchestrator.reply (useMonologue: false 时跳过内心独白)');
   ok('system 不含内心独白标记', !messages[0].content.includes('你此刻的想法'));
 }
 
+console.log('Orchestrator.reply json 格式的 maxTokens 有下限 (回归: 委屈/生病压缩过头截断 JSON)');
+{
+  // json 格式要装下 narration + 多条 dialogue + JSON 语法开销，比纯文本重得多。
+  // health/behavior 那两层压缩是为了让人在委屈/生病时话短一点，压到两三百 token 对纯
+  // 文本没问题，但会在 json 结构写完前就截断——JSON.parse 失败后原始半截 JSON 会被当
+  // 成一条台词原样发出去，聊天里就会看到裸露的 {"parts":[{"type":"narration"...。
+  const deps = makeMocks(); // mock stateLayer.samplingHints 固定返回 maxTokens: 333，模拟压缩后的低值
+  const orch = new Orchestrator({ userId: 'u_json_tokens', deps, options: { useMonologue: false } });
+  await orch.reply('抱紧一点', { replyFormat: 'json' });
+  const { opts } = deps.llm.generateCalls[0];
+  ok('json 格式下 maxTokens 被抬到安全下限之上', opts.format === 'json' && opts.maxTokens >= 700);
+
+  const deps2 = makeMocks();
+  const orch2 = new Orchestrator({ userId: 'u_plain_tokens', deps: deps2, options: { useMonologue: false } });
+  await orch2.reply('在干嘛', { replyFormat: 'plain' });
+  const { opts: opts2 } = deps2.llm.generateCalls[0];
+  ok('plain 格式不受这条下限影响，维持原压缩值', opts2.format === 'plain' && opts2.maxTokens === 333);
+}
+
+console.log('Orchestrator.reply 把 dueItems 标记 fired (回归: 到期提醒被反复带进对话)');
+{
+  // checkProspective 的注释写着"决定提起后用 dismissProspective 标记"，但 reply() 里
+  // 从没调用过——同一条到期提醒(比如周年纪念日)会一直判定成 due，每轮都被塞进 goals
+  // 影响回复，哪怕已经在对话里问过、对方也已经回答过。这里验证 reply() 真的会调用
+  // dismissProspective，不会一直让同一条提醒反复出现。
+  const deps = makeMocks();
+  const dismissedCalls = [];
+  deps.memory.checkProspective = async () => [{ id: 'anniv-1', content: '周年纪念日' }];
+  deps.memory.dismissProspective = async (ids) => { dismissedCalls.push(ids); };
+  const orch = new Orchestrator({ userId: 'u_prospective', deps, options: { useMonologue: false } });
+  await orch.reply('你好');
+  ok('到期项被喂进 goals 后调用了 dismissProspective', dismissedCalls.length === 1);
+  ok('dismissProspective 收到对应的 id', dismissedCalls[0].includes('anniv-1'));
+
+  const deps2 = makeMocks();
+  const dismissedCalls2 = [];
+  deps2.memory.checkProspective = async () => [];
+  deps2.memory.dismissProspective = async (ids) => { dismissedCalls2.push(ids); };
+  const orch2 = new Orchestrator({ userId: 'u_prospective_none', deps: deps2, options: { useMonologue: false } });
+  await orch2.reply('你好');
+  ok('没有到期项时不调用 dismissProspective', dismissedCalls2.length === 0);
+}
+
 console.log('Orchestrator 可注入 historyStore (启动加载 + 回复后异步追加)');
 {
   const deps = makeMocks();
