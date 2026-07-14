@@ -132,22 +132,28 @@ export function evolveIntimacyOverTime(state = {}, hours = 0, config = PARAMS.in
   if (elapsed >= 12 && ['aftercare', 'cooldown'].includes(next.scene_phase)) {
     next.scene_phase = 'none';
   }
-  // stop_signal 是死循环陷阱：maxAllowedPhase 只要它是 true 就把 maxPhase 钉死在 'none'，
-  // 而 settleIntimacyFromTurns 里所有清它的分支又都要求 !gatedOut（即 maxPhase !== 'none'）——
-  // 一旦置 true 就再也没有信号路径能把它改回 false，「停」过一次之后哪怕只是亲一下也会被
-  // 永久按"温柔拒绝"的指令写。这里给一条不依赖那套判定的时间出口：从"停"那一刻算起(不是
-  // 从上次快照算起——活跃聊天时快照间隔常常只有几分钟，会让这个出口永远够不到)，安静够
-  // 久就当这次"停"已经翻篇，不再无限期把之后全新的、更克制的举动也当成要被拒绝的邀请。
+  // stop_signal 死锁修复：原先 12 小时太长，且活跃聊天时 evolve 的 elapsed 往往很小。
+  // 改为：距 stop_at 满 2 小时即解除（用当前时间 + stop_at，不依赖快照间隔）。
   if (next.consent?.stop_signal) {
-    const anchorMs = current.updated_at ? new Date(current.updated_at).getTime() : Date.now();
-    const nowMs = anchorMs + elapsed * HOUR;
-    const stopAtMs = next.consent.stop_at ? new Date(next.consent.stop_at).getTime() : anchorMs;
-    if ((nowMs - stopAtMs) / HOUR >= 12) {
-      next.consent = { ...next.consent, stop_signal: false };
+    const stopAtMs = next.consent.stop_at ? new Date(next.consent.stop_at).getTime() : 0;
+    const nowMs = Date.now();
+    const hoursSinceStop = stopAtMs ? (nowMs - stopAtMs) / HOUR : elapsed;
+    if (hoursSinceStop >= 2) {
+      next.consent = { ...next.consent, stop_signal: false, stop_at: null };
     }
   }
 
   return clampIntimacy(next);
+}
+
+/** 去掉引号/转述里的台词，避免用户长文引用「够了/停」误触发 stop */
+export function stripQuotedDialogue(text = '') {
+  return String(text || '')
+    .replace(/[「『].*?[」』]/gs, ' ')
+    .replace(/“[^”]*”/g, ' ')
+    .replace(/"[^"]*"/g, ' ')
+    .replace(/‘[^’]*’/g, ' ')
+    .replace(/'[^']*'/g, ' ');
 }
 
 /**
@@ -165,23 +171,37 @@ export function detectIntimacySignals(turns = []) {
     .map((t) => String(t?.content ?? ''))
     .join('\n');
   const all = `${userText}\n${asstText}`;
+  // 用户长文常引用她上一句「够了/停」——去掉引号再判 stop，避免误锁
+  const userBare = stripQuotedDialogue(userText);
 
   const invite =
     /(想要你|要你|做吧|做吗|做爱|上床|想和你|想跟你|想摸摸|抱紧我|进来|插|舔|亲我|想被你|想干|想搞|今晚做|继续|别停|快一点|深一点)/u.test(
       userText
     ) || /(想要你|做吧|进来|别停|深一点)/u.test(asstText);
   // 身体小动作 / 半句话暗示：不用「我们做爱」也能懂
-  // 覆盖：拍了拍她的屁股 / 拍拍屁股 / 摸了摸你的腿 / 动作括号描写 等
   const subtle =
     /(拍(了|拍|一下|一拍)*\s*(我的|你的|她的|他的)?\s*屁股|拍拍屁股|揉(了|揉|一下)*\s*(我的|你的|她的|他的)?\s*屁股|掐腰|搂腰|摸(了|摸|一下)*\s*(我的|你的|她的|他的)?\s*(腿|腰|胸|屁股)|手(滑|伸|往下|放在)|蹭(了|过来|上来|着)?|顶(着|过来)|咬(耳朵|脖|唇)|亲(脖|锁骨|耳垂)|把我按|压过来|拉进怀里|从后面抱|贴着(我|她)睡|腿环|骑上来|解开|拉链|衣角|往下摸|不安分)/u.test(
       userText
     ) ||
     /(拍.{0,6}屁股|摸腿|蹭过来|咬耳朵|手不安分)/u.test(all);
   const refuse =
-    /(不要|别这样|不想做|做不了|太累|生病|身体不舒服|先别|冷静|还没和好|心情不好|没兴趣)/u.test(userText);
-  const stop =
-    /(停下|停止|不要了|停|疼|不舒服|扫兴|滚|恶心|够了)/u.test(userText) ||
-    /(停下|不要了|先停)/u.test(asstText);
+    /(不要|别这样|不想做|做不了|太累|生病|身体不舒服|先别|冷静|还没和好|心情不好|没兴趣)/u.test(userBare);
+  // 合作式停手（用户听劝）≠ 用户在拒绝亲密
+  const cooperative =
+    /(我(立刻|马上|现在)?停了|好[，,]?\s*(我)?停|听你的|不进了|不往下了|就抱着|哪儿都不去|不再深|不深了)/u.test(userBare);
+  // 用户硬停：完整词组，且非合作退让
+  const stopUser =
+    !cooperative &&
+    /(停下|停止|不要了|好疼|疼死了|有点疼|太疼|疼得|不舒服|扫兴|恶心|别做了)/u.test(userBare);
+  // 她侧硬停：停 + 到这儿 / 别再往下 等
+  const stopAsst =
+    /(停下|不要了|先停)/u.test(asstText) ||
+    /(停[。！.?？]|停[，,].{0,8}(到这儿|真的)|真的到这儿|别再往下|今天到这儿|现在别)/u.test(asstText);
+  const stop = stopUser || stopAsst;
+  // 用户接受边界、示好 —— 用于解除 stop 锁
+  const acceptBoundary =
+    cooperative ||
+    /(好[的吧]?|知道了|听你的|那就抱着|先抱着|不勉强|慢慢来|对不起|抱歉)/u.test(userBare);
   const aftercare =
     /(抱抱|抱着我|别走|陪我|事后|还想贴着|累了|缓一缓|亲一下额头)/u.test(all);
   const peak =
@@ -191,18 +211,18 @@ export function detectIntimacySignals(turns = []) {
   const romantic =
     /(亲亲|想你|喜欢你|爱你|暧昧|撒娇|靠近|贴着)/u.test(userText);
   const dismissive = /^(嗯+|哦+|好吧|行吧|随便|呵呵)[。.!！?？~～]*$/u.test(userText.trim());
-  const caring = /(辛苦|抱抱|心疼|还好吗|怎么了|照顾|温柔|慢一点|别勉强)/u.test(userText);
-  // 她侧主导迹象（回复或用户描述她在带）
+  const caring = /(辛苦|抱抱|心疼|还好吗|怎么了|照顾|温柔|慢一点|别勉强|吃药|喂|粥|好点没)/u.test(userText);
   const lead =
     /(姐带|我来|坐好|听话|乖|别动|让姐|学姐|我教你|自己坐上来|帮你)/u.test(asstText) ||
     /(你主动|你来|你带我|你教我)/u.test(userText);
 
   return {
-    invite: invite || subtle, // 暗示在关系够时等同邀请入口
+    invite: invite || subtle,
     subtle,
     explicitInvite: invite,
     refuse,
     stop,
+    acceptBoundary,
     aftercare,
     peak,
     end,
@@ -258,12 +278,27 @@ export function settleIntimacyFromTurns(state = {}, turns = [], ctx = {}, config
   let next = clampIntimacy(state);
   const signals = detectIntimacySignals(turns);
   const sceneType = ctx.sceneType ?? null;
-  const maxPhase = maxAllowedPhase({ ...ctx, intimacy: next }, config);
-  const gatedOut = maxPhase === 'flirting' || maxPhase === 'none';
+  const nowMs = ctx.now ?? Date.now();
 
-  // stop 优先
-  if (signals.stop) {
-    next.consent = { ...next.consent, active: false, stop_signal: true, stop_at: new Date(ctx.now ?? Date.now()).toISOString() };
+  // 解除 stop 锁：用户示好/接受边界，或距 stop_at 已满 2 小时
+  if (next.consent?.stop_signal) {
+    const stopAtMs = next.consent.stop_at ? new Date(next.consent.stop_at).getTime() : 0;
+    const agedOut = stopAtMs > 0 && (nowMs - stopAtMs) / HOUR >= 2;
+    const softClear =
+      (signals.acceptBoundary || signals.caring) &&
+      !signals.peak &&
+      !(signals.explicitInvite && /插|进来|做爱|正戏/.test(signals.userText || ''));
+    if (agedOut || softClear) {
+      next.consent = { ...next.consent, stop_signal: false, stop_at: agedOut ? null : next.consent.stop_at };
+    }
+  }
+
+  let maxPhase = maxAllowedPhase({ ...ctx, intimacy: next }, config);
+  let gatedOut = maxPhase === 'flirting' || maxPhase === 'none';
+
+  // stop 优先（用户合作停手不锁）
+  if (signals.stop && !signals.acceptBoundary) {
+    next.consent = { ...next.consent, active: false, stop_signal: true, stop_at: new Date(nowMs).toISOString() };
     next.arousal = Math.max(0, next.arousal - 0.4);
     next.engagement = Math.max(0, next.engagement - 0.5);
     next.sexual_tension = clamp(next.sexual_tension + 0.05, 0, 1);
@@ -458,10 +493,29 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
       num(ctx.relationship?.repair_debt) >= num(config?.gates?.maxRepairDebtForIntimate, 0.55) ||
       num(ctx.life?.energy, 1) < num(config?.gates?.minEnergy, 0.25));
 
-  if (gated || s.consent.stop_signal) {
-    lines.push('你现在不适合进入性爱正戏：可能太累、还没和好、或心里别扭。可以亲密依赖、要抱抱，但应温柔拒绝或延后正戏，留台阶，不要表面顺从硬写下去。拒绝时话只围绕「现在为何不宜」，禁止硬接无关的上课/吃饭提醒。');
+  if (s.consent.stop_signal) {
+    lines.push('你刚明确喊过停：可以黏、要抱、要亲，但本轮不要进入正戏；若对方已听话安抚，可慢慢软下来，不必每句都拒绝。');
+  } else if (gated) {
+    lines.push('你现在不适合进入性爱正戏：可能太累、还没和好、或心里别扭。可以亲密依赖、要抱抱，但应温柔延后正戏，留台阶，不要表面顺从硬写下去。拒绝时话只围绕「现在为何不宜」，禁止硬接无关的上课/吃饭提醒。');
   } else if (num(ctx.relationship?.closeness, 1) < num(config?.gates?.minCloseness, 0.55)) {
     lines.push('你们还没到可以很放得开的亲密程度；最多停留在暧昧试探，不要突然进入具体性爱动作。');
+  }
+
+  // 身体状态好 + 高张力 + 低满足：可以主动馋、主动黏、主动往正戏带（姐系）
+  const healthy =
+    num(ctx.life?.energy, 1) >= num(config?.gates?.minEnergy, 0.25) &&
+    num(ctx.life?.health, 1) >= 0.55 &&
+    !(ctx.life?.sick_until && new Date(ctx.life.sick_until).getTime() > Date.now());
+  if (
+    healthy &&
+    !s.consent.stop_signal &&
+    !gated &&
+    s.sexual_tension >= num(th.sexual_tension, 0.55) &&
+    s.satisfaction <= num(th.satisfactionLow, 0.4)
+  ) {
+    lines.push(
+      '你身体已经缓过来了，对逸晨的欲望偏高：可以主动黏、主动亲、主动往正戏带（拉近、半命令、要他碰你），用行动表达馋，不要装冷淡；对方示好时接住并推进，不要无故反复拒绝。',
+    );
   }
 
   // 只有真的进入亲密相关状态时才注入姐系/阶段指引——高亲密日常聊天不硬灌「懂暗示」

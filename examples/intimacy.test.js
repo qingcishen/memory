@@ -40,9 +40,33 @@ ok('唤起随时间回落', evolveIntimacyOverTime({ ...defaultIntimacy(), arous
 // 信号永远清不掉它，"停"过一次之后就算只是重新亲一下也会被永久按"温柔拒绝"的指令写。
 const stopped = clampIntimacy({ consent: { active: false, pace: 'normal', stop_signal: true } });
 ok('stop_signal 卡死 maxAllowedPhase 在 none（回归防护，确认死锁场景真实存在）', maxAllowedPhase({ intimacy: stopped, relationship: { closeness: 0.9, trust: 0.9 }, life: { energy: 0.9 } }) === 'none');
-ok('stop_signal 未满 12 小时不重置', evolveIntimacyOverTime(stopped, 8).consent.stop_signal === true);
-ok('stop_signal 满 12 小时后自动重置（此前无任何信号路径能清掉它）', evolveIntimacyOverTime(stopped, 12).consent.stop_signal === false);
-ok('重置后 maxAllowedPhase 不再被钉死 none', maxAllowedPhase({ intimacy: evolveIntimacyOverTime(stopped, 12), relationship: { closeness: 0.9, trust: 0.9 }, life: { energy: 0.9 } }) !== 'none');
+// 时间解除以 stop_at 为准：未满 2 小时仍锁
+const stoppedRecent = clampIntimacy({
+  consent: { active: false, pace: 'normal', stop_signal: true, stop_at: new Date(Date.now() - 30 * 60 * 1000).toISOString() },
+});
+ok('stop_signal 未满 2 小时不重置', evolveIntimacyOverTime(stoppedRecent, 0.1).consent.stop_signal === true);
+const stoppedOld = clampIntimacy({
+  consent: { active: false, pace: 'normal', stop_signal: true, stop_at: new Date(Date.now() - 3 * 60 * 60 * 1000).toISOString() },
+});
+ok('stop_signal 满 2 小时后自动重置', evolveIntimacyOverTime(stoppedOld, 0.1).consent.stop_signal === false);
+ok('重置后 maxAllowedPhase 不再被钉死 none', maxAllowedPhase({ intimacy: evolveIntimacyOverTime(stoppedOld, 0.1), relationship: { closeness: 0.9, trust: 0.9 }, life: { energy: 0.9 } }) !== 'none');
+
+// 引用台词「够了/停」不应再触发 stop
+const quoteStop = detectIntimacySignals([
+  { role: 'user', content: '我听着她软软地说“够了，真的。就这样抱着，别再喂了。”心里一阵热。好，就不喂了，抱紧你。' },
+]);
+ok('引用「够了」不触发 stop', quoteStop.stop === false);
+ok('合作退让 acceptBoundary', quoteStop.acceptBoundary === true);
+
+const softClear = settleIntimacyFromTurns(
+  defaultIntimacy({
+    scene_phase: 'cooldown',
+    consent: { active: false, pace: 'normal', stop_signal: true, stop_at: new Date().toISOString() },
+  }),
+  [{ role: 'user', content: '好，听你的，就抱着你，不往下了。' }],
+  { relationship: { closeness: 0.9, trust: 0.8 }, life: { energy: 0.8 }, sceneType: 'intimate' },
+);
+ok('用户听话安抚可解除 stop_signal', softClear.state.consent.stop_signal === false);
 
 const lowClose = maxAllowedPhase({ relationship: { closeness: 0.2, trust: 0.5, tension: 0, repair_debt: 0 }, life: { energy: 0.8 } });
 ok('低亲密最多 flirting', lowClose === 'flirting');
@@ -173,6 +197,15 @@ console.log('IntimacyDimension lazy IO (mock)');
 console.log('delta apply');
 ok('delta 受 maxStep 限制', applyIntimacyDeltas({ arousal: 0.1 }, { arousal: 1 }, 0.2).arousal <= 0.3 + 1e-9);
 ok('detect stop', detectIntimacySignals([{ role: 'user', content: '停下' }]).stop === true);
+ok('完整词组"不要了"仍能识别为 stop', detectIntimacySignals([{ role: 'user', content: '不要了，不要了' }]).stop === true);
+ok('完整疼痛短语仍能识别为 stop', detectIntimacySignals([{ role: 'user', content: '好疼，轻一点' }]).stop === true);
+
+// 回归：裸字「够了」「疼」「停」太容易在无关语境里命中，命中就把 consent.stop_signal
+// 钉死、连累后面好几轮被迫"温柔拒绝"——真实案例是喝粥时说"别再喂了，够了"，跟亲密动作
+// 毫无关系，却直接触发了后续整场戏的拒绝。
+ok('"别再喂了，够了"(食物语境) 不再误判成 stop', detectIntimacySignals([{ role: 'user', content: '够了，真的。就这样抱着，别再喂了。' }]).stop === false);
+ok('"心疼你"(关心语境) 不再误判成 stop', detectIntimacySignals([{ role: 'user', content: '心疼你今天这么累' }]).stop === false);
+ok('"车停在楼下"(无关语境) 不再误判成 stop', detectIntimacySignals([{ role: 'user', content: '车停在楼下，我上楼了' }]).stop === false);
 
 console.log('姐系：懂暗示 / 主动');
 {
