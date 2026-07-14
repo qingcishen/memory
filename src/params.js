@@ -310,22 +310,24 @@ export const DEFAULT_PARAMS = {
   // 生病是强情感钩子: 低频自动发病(熬夜抬概率), 表现成行为(虚弱/话少/想被照顾),
   // 你的关心能加速恢复并加关系分, 整段经历进 dyad 共同记忆。
   health: {
-    baseDailySickProb: 0.02, // 基础日发病概率(很低, 偶尔病)
+    // 日概率要低：发病是「偶尔钩子」，不是日常。旧实现每条消息按整天掷骰，会显得「老在病」。
+    baseDailySickProb: 0.008, // ~0.8%/天（原先 2% 再叠消息数就太密）
     sleepDeprivationHours: 20, // 距上次睡觉超过它视为熬夜
-    staleupMultiplier: 3, // 熬夜时发病概率的倍率
-    sickDurationHours: 36, // 一次病程基准时长
-    sickDurationJitterHours: 12, // 病程随机抖动(±)
-    onsetHealthDrop: 0.4, // 发病瞬间 health 的下跌
-    onsetValenceDrop: 0.25, // 发病带来的心情下跌(耦合进 affect)
-    onsetArousalDrop: 0.15, // 发病带来的唤起下降(蔫)
-    careRecoverHours: 8, // 一次"被关心"提前多少病程
-    careHealthGain: 0.15, // 一次"被关心" health 的回升
+    staleupMultiplier: 2.5, // 熬夜时发病概率的倍率（略降）
+    sickDurationHours: 18, // 一次病程基准时长（原 36h 太长，亲密被锁整天不合理）
+    sickDurationJitterHours: 6, // 病程随机抖动(±)
+    onsetHealthDrop: 0.25, // 发病瞬间 health 的下跌
+    onsetValenceDrop: 0.2, // 发病带来的心情下跌(耦合进 affect)
+    onsetArousalDrop: 0.12, // 发病带来的唤起下降(蔫)
+    careRecoverHours: 10, // 一次"被关心"提前多少病程
+    careHealthGain: 0.2, // 一次"被关心" health 的回升
     careValenceGain: 0.2, // 被照顾的暖意(耦合进 affect)
     careClosenessGain: 0.06, // 被照顾拉近的亲密
     careTrustGain: 0.04, // 被照顾增加的信任
     // P2 身体专属参数: 连续"熬夜"(对话发生在角色专属睡眠时段内)达到这个天数后, 发病概率翻倍。
-    lateNightStreakForDouble: 3,
-    lateNightStreakMultiplier: 2,
+    lateNightStreakForDouble: 4,
+    lateNightStreakMultiplier: 1.8,
+    recoveryCooldownHours: 12, // 病好后冷却，防刚清又病
   },
 
   // ---- O 线 穿搭 (当前穿着 + 衣橱 + 随场景切换) ----

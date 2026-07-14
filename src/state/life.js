@@ -195,8 +195,20 @@ export class LifeDimension {
     const lateNightNow = turns.length > 0 && isLateNight(now, this.sleepWindow);
     state = { ...state, ...updateLateNightStreak(state, now, lateNightNow) };
 
-    // 自动发病(熬夜抬概率; P2: sickProbability 按角色覆盖、连续熬夜达标翻倍)
-    const fell = maybeFallSick(state, now, this.rng, 24, { sickProbability: this.sickProbability });
+    // 自动发病：按「距上次写入」折算步长，绝不能写死 24h
+    // （旧 bug：每条消息都按整天 2% 掷骰 → 聊几十句就必然反复生病，极不合常理）
+    const rawHours = state.updated_at
+      ? Math.max(0, (now - new Date(state.updated_at).getTime()) / HOUR)
+      : 1;
+    // 单次最多按 12h 计（防久未上线一次掷出过高概率）；最少 0（同秒连发不计）
+    const stepHours = Math.min(12, rawHours);
+    // 亲密正戏/前戏中不要突然发病打断（身体钩子留给日常时段）
+    const intimateBusy = Array.isArray(turns) && turns.some((t) =>
+      /(做爱|插入|顶|操|日我|高潮|射|湿|进来|别停)/u.test(String(t?.content ?? '')),
+    );
+    const fell = intimateBusy
+      ? { sick: false, state, moodDelta: null }
+      : maybeFallSick(state, now, this.rng, stepHours, { sickProbability: this.sickProbability });
     if (fell.sick) {
       state = fell.state;
       moodDelta = mergeMood(moodDelta, fell.moodDelta);

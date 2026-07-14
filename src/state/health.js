@@ -63,14 +63,31 @@ export function maybeFallSick(state, now = Date.now(), rng = Math.random, stepHo
   const h = PARAMS.health;
   if (isSick(state, now)) return { sick: false, state, moodDelta: null };
 
-  // 日概率 → 本步概率(按时长线性近似, 夹在 [0,1])
+  // 康复冷却：刚病好 12h 内不再掷骰（避免「刚好又病」）
+  const coolMs = (Number(h.recoveryCooldownHours) || 12) * HOUR;
+  if (state?.sick_until) {
+    const ended = new Date(state.sick_until).getTime();
+    if (Number.isFinite(ended) && ended <= now && now - ended < coolMs) {
+      return { sick: false, state, moodDelta: null };
+    }
+  }
+
+  // 日概率 → 本步概率(按时长线性近似)。stepHours 必须是真实间隔；
+  // 若调用方误传整天且每条消息都 evolve，会把「偶尔病」变成「聊着就病」。
   const dailyProb = opts.sickProbability ?? h.baseDailySickProb;
-  let prob = Math.min(1, dailyProb * (Math.max(0, stepHours) / 24));
+  const hours = Math.max(0, Number(stepHours) || 0);
+  // 单次上限：最多按 1 天计，防止久未登录一次必病
+  let prob = Math.min(dailyProb, dailyProb * (hours / 24));
+  // 极短间隔（<5 分钟）几乎不掷，避免连发消息连 roll
+  if (hours < 5 / 60) return { sick: false, state, moodDelta: null };
+
   // 熬夜抬概率(距上次睡觉过久)
   const sinceSleep = hoursSinceSleep(state, now);
   if (sinceSleep != null && sinceSleep > h.sleepDeprivationHours) prob = Math.min(1, prob * h.staleupMultiplier);
-  // P2: 连续熬夜(对话发生在角色专属睡眠时段)达标后概率翻倍
-  if ((state?.late_night_streak ?? 0) >= h.lateNightStreakForDouble) prob = Math.min(1, prob * h.lateNightStreakMultiplier);
+  // P2: 连续熬夜(对话发生在角色专属睡眠时段)达标后抬高
+  if ((state?.late_night_streak ?? 0) >= h.lateNightStreakForDouble) {
+    prob = Math.min(1, prob * (h.lateNightStreakMultiplier ?? 2));
+  }
 
   if (rng() >= prob) return { sick: false, state, moodDelta: null };
 
