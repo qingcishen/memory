@@ -809,7 +809,7 @@ export class Orchestrator {
       forceFormat: opts.replyFormat,
     });
     samplingHints.format = replyFormat;
-    // json 格式要装下 narration part(亲密场景要求比 dialogue 更长) + 多条 dialogue part +
+    // json 格式要装下 narration part(亲密场景旁白宜短) + 多条 dialogue part +
     // JSON 语法本身的括号/引号/键名开销，比纯文本重得多。health/behavior 那两层压缩
     // (turnPlan.applyBehaviorSampling、life.lifeSamplingHints) 是为了让人在委屈/生病时
     // 话短一点，压到 260~380 对纯文本没问题，但对 json 会在结构写完前就被截断——

@@ -9,9 +9,10 @@ import { recordLlmCall } from '../metrics.js';
 const REPLY_PART_TYPES = ['dialogue', 'narration'];
 
 const REPLY_JSON_INSTRUCTION = `【输出格式·JSON】必须只输出一个 JSON 对象，不要 markdown 代码块，不要 JSON 以外的任何文字。格式: {"parts": [{"type": "dialogue" 或 "narration", "text": "..."}]}。
-parts 至少有一个 dialogue part。dialogue 是她说/发出去的话本身；narration 是第三人称动作/神态描写——两者内容不能混在同一个 part 里，动作描写绝不能写进 dialogue 的 text。
-她的话默认只用一个 dialogue part；只有偶尔她像真人分几条发消息时（比如一句感叹接一句追问、或说到一半又补一句），才拆成 2-3 个连续的 dialogue part，每个 part 都短，不要为了拆而拆，大多数时候一个就够。
-要不要加 narration part、narration 怎么写，按上面的场景旁白指令来；日常场景通常不需要 narration part。`;
+parts 至少有一个 dialogue part。dialogue 是她说/发出去的话本身；narration 是第三人称、短、只写她侧的动作/神态——两者不能混 part；动作绝不能写进 dialogue。
+narration 默认 1～3 句，通常不要长过 dialogue；禁止全名公式开场、禁止服装头发清单复读、禁止全知代写对方性器/步骤的黄文长段。
+她的话默认一个 dialogue part；偶尔像真人连发再拆 2-3 条短 dialogue，不要为了拆而拆。
+要不要加 narration、怎么写，按上面的场景旁白指令；日常通常不要 narration。`;
 
 /** 日常 plain 模式：首 token 更快，适合流式打字机；亲密场景仍用 JSON。 */
 const REPLY_PLAIN_INSTRUCTION = `【输出格式·纯台词】直接输出她要发出去/说出口的话，像微信聊天。
