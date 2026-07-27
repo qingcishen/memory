@@ -1,0 +1,21 @@
+{
+  "profile": {
+    "legalName": "云曦",
+    "nicknames": [],
+    "gender": "女",
+    "birthDate": "",
+    "birthPlace": "天神山（天人族）",
+    "nationality": "天人族",
+    "idCardNumber": "",
+    "passportNumber": "",
+    "family": [],
+    "menstrual": {
+      "enabled": false,
+      "lastPeriodStart": "",
+      "cycleLengthDays": 28,
+      "periodLengthDays": 5,
+      "remindersEnabled": false,
+      "notes": ""
+    }
+  }
+}

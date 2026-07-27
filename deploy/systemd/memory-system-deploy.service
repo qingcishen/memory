@@ -1,0 +1,16 @@
+[Unit]
+Description=Deploy Memory System when GitHub branch changes
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+User=root
+WorkingDirectory=/root/memory-system
+Environment=APP_DIR=/root/memory-system
+Environment=DEPLOY_BRANCH=main
+ExecStart=/usr/local/sbin/memory-system-deploy-if-changed
+
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=6

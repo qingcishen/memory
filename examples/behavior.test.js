@@ -15,7 +15,7 @@ for (const label of EMOTION_LABELS) {
 const calm = behaviorPolicy('平静', conflict);
 const angry = behaviorPolicy('生气', conflict);
 ok('生气时延迟增加', angry.replyDelayMs[0] > calm.replyDelayMs[0]);
-ok('生气时 parts=1 / terse', angry.partsBudget === 1 && angry.lengthHint === 'terse');
+ok('生气时允许两条短气泡 / terse', angry.partsBudget === 2 && angry.lengthHint === 'terse');
 ok('所有延迟不超过十分钟硬上限', EMOTION_LABELS.every((label) => behaviorPolicy(label, conflict).replyDelayMs[1] <= 10 * 60 * 1000));
 ok('极高冲突且未用额度可 stonewall', angry.stonewall === true);
 ok('stonewall 每日额度用完立即关闭', behaviorPolicy('生气', { ...conflict, stonewallUsedToday: 1 }).stonewall === false);

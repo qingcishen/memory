@@ -4,7 +4,7 @@
 
 架构参考斯坦福 Generative Agents 的记忆模型,针对伴侣场景做了改动(情绪保护衰减、矛盾不覆盖而是 supersede)。
 
-完整介绍、接入流程和 API 说明见 [项目介绍与使用指南](docs/INTRODUCTION_AND_USAGE.md)。开发计划和架构验收见 [开发文档与路线图](docs/DEVELOPMENT.md)。下一轮"从功能齐到像人"的升级计划(需求系统/情绪行为策略/生活叙事引擎)见 [伴侣升级开发文档 v2](docs/companion-upgrade-v2.md)。
+完整介绍、接入流程和 API 说明见 [项目介绍与使用指南](docs/INTRODUCTION_AND_USAGE.md)。开发计划和架构验收见 [开发文档与路线图](docs/DEVELOPMENT.md)。下一轮"从功能齐到像人"的升级计划(需求系统/情绪行为策略/生活叙事引擎)见 [伴侣升级开发文档 v2](docs/companion-upgrade-v2.md)。亲密/性爱状态机与落地切片见 [性爱系统开发文档](docs/intimacy-design.md)。当前主线:"从像人到可证明"(评测闭环/检索升级/数据学习/工程底盘)见 [全面升级开发文档 v3](docs/upgrade-v3-measurable.md)。
 
 ## 它解决什么
 

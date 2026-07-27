@@ -27,12 +27,25 @@ export function normalizeStoryline(line = {}, index = 0) {
   };
 }
 
-export function toStoryPrompt(snapshot) {
+export function toStoryPrompt(snapshot, { cast = [], forceToday = false } = {}) {
   const lines = snapshot?.lines ?? [];
   if (!lines.length && !snapshot?.today) return '';
-  const active = lines.filter((line) => line.stage !== 'closed').map((line) => `- ${line.title}（${line.stage}）${line.last_beat ? `：${line.last_beat}` : ''}`);
-  const today = snapshot?.today ? `\n今天的新进展：${snapshot.today.content ?? snapshot.today}` : '';
-  return `【她最近的生活】\n${active.join('\n')}${today}\n这些是连续发生的生活，不要像念设定；被问近况时优先从这里自然回答。`;
+  const active = lines
+    .filter((line) => line.stage !== 'closed')
+    .map((line) => `- ${line.title}（${line.stage}）${line.last_beat ? `：${line.last_beat}` : ''}`);
+  const todayRaw = snapshot?.today?.content ?? snapshot?.today;
+  const today = todayRaw
+    ? `\n【今天必知】${typeof todayRaw === 'string' ? todayRaw : snapshot.today.content}——被问「今天/最近/在忙什么」时优先从这里答，像她自己的生活，不要说「剧情线」。`
+    : '';
+  const castLine =
+    Array.isArray(cast) && cast.length
+      ? `\n配角名字固定：${cast.map((m) => m.name).filter(Boolean).slice(0, 6).join('、')}——禁止改名或换人。`
+      : '';
+  const force =
+    forceToday && todayRaw
+      ? '\n本轮若对方聊近况或闲聊开口，至少轻轻带一点今天的生活碎片，别整轮只客服式接话。'
+      : '';
+  return `【她最近的生活】\n${active.join('\n')}${today}${castLine}${force}\n这些是连续发生的生活，不要像念设定；上周的事这周可以有下文。`;
 }
 
 export function nextStoryStage(stage, requested = null) {
@@ -45,14 +58,14 @@ export function composeTickPrompt(line, cast = [], facts = []) {
   return [
     `故事线：${line.title}\n阶段：${line.stage}\n上一拍：${line.last_beat || '(刚开始)'}\n下一拍提示：${line.next_beat_hint || '(自然推进)'}`,
     `不可更改的卡司事实：\n${castFacts}`,
-    `相关知识图谱事实：\n${facts.join('\n') || '(无额外事实)'}`,
-    '生成今天发生的一小拍，必须延续上一拍且不改变人物姓名、身份和关系。不要涉及用户与她之间未发生的共同经历。',
+    `相关固定事实与边界：\n${facts.join('\n') || '(无额外事实)'}`,
+    '生成今天发生的一小拍，必须延续上一拍且不改变人物姓名、身份、关系和项目硬事实。没有事实支持的金额、合同、客户真名、人员任免或重大结果一律不要编造。不要涉及用户与她之间未发生的共同经历。',
   ].join('\n\n');
 }
 
 export class StoryEngine {
-  constructor({ userId, companionId = 'default', companionName = '她', cast = [], lines = [], client = supabase, entityWriter = upsertEntities, relationWriter = upsertRelations, llmClient = defaultLlm, model = LLM_MODEL, memory = null, desire = null, affectUpdater = updateFromTurn, worldRead = readWorldState, worldWrite = writeWorldState, factProvider = null } = {}) {
-    Object.assign(this, { userId, companionId, companionName, client, entityWriter, relationWriter, llmClient, model, memory, desire, affectUpdater, worldRead, worldWrite, factProvider });
+  constructor({ userId, companionId = 'default', companionName = '她', cast = [], lines = [], client = supabase, entityWriter = upsertEntities, relationWriter = upsertRelations, llmClient = defaultLlm, model = LLM_MODEL, memory = null, desire = null, affectUpdater = updateFromTurn, worldRead = readWorldState, worldWrite = writeWorldState, factProvider = null, onStoryBeat = null } = {}) {
+    Object.assign(this, { userId, companionId, companionName, client, entityWriter, relationWriter, llmClient, model, memory, desire, affectUpdater, worldRead, worldWrite, factProvider, onStoryBeat });
     this.castSeed = normalizeCast(cast);
     this.lineSeeds = (lines ?? []).map(normalizeStoryline).filter((line) => line.title);
     this.entityIds = new Map();
@@ -102,7 +115,9 @@ export class StoryEngine {
     return { lines, today };
   }
 
-  toPrompt(snapshot) { return toStoryPrompt(snapshot); }
+  toPrompt(snapshot, opts = {}) {
+    return toStoryPrompt(snapshot, { cast: this.castSeed, ...opts });
+  }
 
   async pendingShare(now = Date.now()) {
     const { lines } = await this.current(now);
@@ -119,10 +134,15 @@ export class StoryEngine {
     return true;
   }
 
-  async tick({ now = Date.now(), state = null } = {}) {
+  async tick({ now = Date.now(), state = null, storylineIds = null } = {}) {
     if (!this.userId) return null;
     const snapshot = await this.current(now).catch(() => ({ lines: [] }));
-    const active = snapshot.lines.filter((line) => line.stage !== 'closed').slice(0, PARAMS.story.maxActiveLines);
+    const allowed = Array.isArray(storylineIds) && storylineIds.length
+      ? new Set(storylineIds.map(String))
+      : null;
+    const active = snapshot.lines
+      .filter((line) => line.stage !== 'closed' && (!allowed || allowed.has(line.id)))
+      .slice(0, PARAMS.story.maxActiveLines);
     if (!active.length) return null;
     const day = new Date(now).toISOString().slice(0, 10);
     const line = active.find((item) => item.beats_day !== day || item.beats_today < PARAMS.story.beatsPerDay);
@@ -162,6 +182,8 @@ export class StoryEngine {
       this.desire?.accumulate?.({ sharing: beat.sharing, comfort: beat.mood_link < 0 ? Math.abs(beat.mood_link) * 0.5 : 0 }),
       this.affectUpdater?.(this.userId, this.companionId, [], { useLLM: false, extraDeltas: { mood: { valence: beat.mood_link * 0.35, arousal: Math.abs(beat.mood_link) * 0.15 } } }),
       this.updateWorld(beat),
+      // L5：故事拍软种子情绪残留（编排器注入 onStoryBeat 时）
+      typeof this.onStoryBeat === 'function' ? Promise.resolve(this.onStoryBeat(beat)) : null,
     ].filter(Boolean));
   }
 

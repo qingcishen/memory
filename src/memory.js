@@ -49,11 +49,34 @@ export class Memory {
     // 合并进【同一次】 updateFromTurn 写入, 避免 affect 被第二条写路径覆盖(见 docs 设计)。
     const life = opts.life ?? null;
     const coupling = life ? await life.evolve(turns).catch(() => null) : null;
-    const extraDeltas = coupling ? couplingToDelta(coupling) : opts.extraDeltas;
+
+    // I3: 先演变亲密状态（启发式），其关系/情绪反馈并入本轮 affect 写入。
+    let intimacyResult = null;
+    if (opts.intimacy && PARAMS.intimacy?.enabled !== false) {
+      const relPreview = await readState(this.userId, this.companionId).catch(() => null);
+      const lifeSnap = typeof life?.current === 'function' ? await life.current().catch(() => null) : null;
+      intimacyResult = await opts.intimacy
+        .evolve(turns, {
+          relationship: relPreview?.relationship ?? relPreview,
+          life: lifeSnap,
+          sceneType: opts.sceneType ?? null,
+        })
+        .catch(() => null);
+    }
+
+    const intimacyAffect = intimacyResult?._meta?.affectDelta ?? null;
+    const extraDeltas = mergeExtraDeltas(coupling ? couplingToDelta(coupling) : null, intimacyAffect, opts.extraDeltas);
+
+    const extractOpts = {
+      intimate: Boolean(
+        opts.sceneType === 'intimate' ||
+          ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyResult?.scene_phase)
+      ),
+    };
 
     const [{ before, after, desireDeltas }, extracted, scheduled, knowledge] = await Promise.all([
       updateFromTurn(this.userId, this.companionId, turns, { ...opts, extraDeltas }).catch(() => ({ before: null, after: null })),
-      extractMemories(turns, this.subjectName, this.companionName).catch(() => []),
+      extractMemories(turns, this.subjectName, this.companionName, extractOpts).catch(() => []),
       // M5: 顺手识别"未来意图"("我明天面试") 并排一条预期记忆。
       opts.prospective === false ? null : scheduleFromTurns(this.userId, this.companionId, turns, opts.now, this.subjectName).catch(() => null),
       // K1: 抽取"实体—关系→实体"结构化事实进知识图谱 (失败隔离, 不拖垮主链路)。
@@ -62,13 +85,36 @@ export class Memory {
         : observeKnowledge(this.userId, this.companionId, turns, { subjectName: this.subjectName, companionName: this.companionName }).catch(() => null),
     ]);
     // D2: 复用上面的同一次状态 LLM 推断，把需求增量交给 DesireDimension 合并落库。
-    if (opts.desire) await opts.desire.evolve(turns, { deltas: desireDeltas }).catch(() => null);
+    const desireExtra = intimacyResult?._meta?.desireDelta ?? null;
+    if (opts.desire) {
+      await opts.desire
+        .evolve(turns, { deltas: mergeDesireDeltas(desireDeltas, desireExtra) })
+        .catch(() => null);
+    }
+    // O 线: 对话触发换装 / 情境校正（失败隔离）
+    let outfitResult = null;
+    if (opts.outfit && PARAMS.outfit?.enabled !== false) {
+      const lifeSnap = typeof life?.current === 'function' ? await life.current().catch(() => null) : null;
+      outfitResult = await opts.outfit
+        .evolve(turns, { life: lifeSnap, intimacy: intimacyResult })
+        .catch(() => null);
+    }
     // 情绪 → 记忆重要性 (emotion-design.md §8): 这一轮心情位移大, 说明发生了要紧的事。
     let boosted = before && after ? applyMoodShiftBoost(extracted, moodShiftMagnitude(before, after)) : extracted;
     // L4: 这次"生病被照顾"作为一条 dyad 共同记忆存下来(她会记得你照顾过她)。
     if (coupling?.careEvent) boosted = [...boosted, buildCareMemory(this.subjectName, coupling.careEvent)];
+    // I4: 亲密轮次提高 preference 重要性下限敏感度（已在 extract 侧加权）
     const stored = boosted.length === 0 ? [] : await storeMemories(this.userId, this.companionId, boosted);
-    return { state: after, desires: opts.desire ? await opts.desire.snapshot().catch(() => null) : null, stored, scheduled, coupling, knowledge };
+    return {
+      state: after,
+      desires: opts.desire ? await opts.desire.snapshot().catch(() => null) : null,
+      intimacy: intimacyResult ? { ...intimacyResult, _meta: undefined } : opts.intimacy ? await opts.intimacy.snapshot().catch(() => null) : null,
+      outfit: outfitResult ? { ...outfitResult, _meta: undefined } : opts.outfit ? await opts.outfit.snapshot().catch(() => null) : null,
+      stored,
+      scheduled,
+      coupling,
+      knowledge,
+    };
   }
 
   /**
@@ -91,6 +137,19 @@ export class Memory {
         const have = new Set(hits.map((m) => m.id));
         const backdrop = (await dyadBackdrop(this.userId, this.companionId, n).catch(() => [])).filter((m) => !have.has(m.id));
         hits = [...hits, ...backdrop];
+      }
+    }
+    // I4: romantic/intimate 场景对 preference 记忆轻微提权（不改引擎打分公式，只做稳定重排加成）
+    if (opts.intimateBoost || opts.sceneType === 'intimate' || opts.sceneType === 'romantic') {
+      const boost = Number(PARAMS.intimacy?.preferenceRecallBoost) || 0;
+      if (boost > 0) {
+        hits = [...hits].sort((a, b) => {
+          const ap = a.type === 'preference' || a.fact_locked ? boost : 0;
+          const bp = b.type === 'preference' || b.fact_locked ? boost : 0;
+          const as = (a._score ?? a.similarity ?? a.importance ?? 0) + ap;
+          const bs = (b._score ?? b.similarity ?? b.importance ?? 0) + bp;
+          return bs - as;
+        });
       }
     }
     // P1 不确定性表达 (#4): 相关度低/很久没强化/同话题情绪冲突 → _lowConfidence,
@@ -141,6 +200,25 @@ export class Memory {
     return storeMemories(this.userId, this.companionId, [{
       type: 'episode', fact_core: text, content: text, narrative: opts.narrative ?? text,
       subject_kind: 'self', importance: opts.importance ?? 4, affect_valence: opts.valence ?? -0.2, affect_intensity: opts.intensity ?? 0.5,
+    }]);
+  }
+
+  /**
+   * 关系篇章（dyad episode）: 会话级叙事记忆，召回时作为「最近发生过什么」的素材。
+   * fact_core = 摘要正文，永不被 reconsolidate 改写。
+   */
+  async recordEpisode(episode = {}) {
+    const text = String(episode.content ?? episode.title ?? '').trim();
+    if (!text) return [];
+    return storeMemories(this.userId, this.companionId, [{
+      type: 'episode',
+      fact_core: text,
+      content: text,
+      narrative: episode.title ? `${episode.title}。${text}` : text,
+      subject_kind: episode.subject_kind || 'dyad',
+      importance: episode.importance ?? 5,
+      affect_valence: episode.emotion != null ? Math.min(0.5, Number(episode.emotion) * 0.4) : 0.1,
+      affect_intensity: episode.emotion ?? 0.3,
     }]);
   }
 
@@ -267,6 +345,42 @@ function couplingToDelta(coupling) {
   if (coupling.moodDelta?.mood) delta.mood = coupling.moodDelta.mood;
   if (coupling.relationshipDelta?.relationship) delta.relationship = coupling.relationshipDelta.relationship;
   return delta;
+}
+
+/** 合并 life 耦合 / 亲密反馈 / 调用方 extra 的 affect 增量。 */
+function mergeExtraDeltas(...parts) {
+  const out = { mood: {}, relationship: {} };
+  let any = false;
+  for (const part of parts) {
+    if (!part) continue;
+    if (part.mood) {
+      for (const [k, v] of Object.entries(part.mood)) {
+        out.mood[k] = (out.mood[k] ?? 0) + Number(v || 0);
+        any = true;
+      }
+    }
+    if (part.relationship) {
+      for (const [k, v] of Object.entries(part.relationship)) {
+        out.relationship[k] = (out.relationship[k] ?? 0) + Number(v || 0);
+        any = true;
+      }
+    }
+  }
+  if (!any) return parts.find(Boolean) ?? null;
+  const delta = {};
+  if (Object.keys(out.mood).length) delta.mood = out.mood;
+  if (Object.keys(out.relationship).length) delta.relationship = out.relationship;
+  return Object.keys(delta).length ? delta : null;
+}
+
+function mergeDesireDeltas(a, b) {
+  if (!a && !b) return null;
+  if (!a) return b;
+  if (!b) return a;
+  const keys = new Set([...Object.keys(a), ...Object.keys(b)]);
+  const out = {};
+  for (const k of keys) out[k] = (Number(a[k]) || 0) + (Number(b[k]) || 0);
+  return out;
 }
 
 /** 把"生病被照顾"这件事做成一条 dyad 共同记忆 (走标准存储, subject_kind='dyad')。 */

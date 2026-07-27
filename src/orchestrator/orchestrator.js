@@ -6,19 +6,89 @@
 // 详见编排器设计方案 §5。
 
 import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
-import { DefaultLLM, normalizeReplyResult } from './llm.js';
+import { DefaultLLM, normalizeReplyResult, joinReplyParts, pickReplyFormat } from './llm.js';
 import { assemble, buildMonologueContext, buildTimePrompt } from './assemble.js';
 import { hoursSince } from '../decay.js';
 import { getCompanion } from '../companion.js';
-import { Selfie, decidePhoto } from '../appearance/index.js';
+import { Selfie, decidePhoto, canSendSelfie } from '../appearance/index.js';
+import { listReferenceImages, referenceFilePath } from '../appearance/references.js';
+import {
+  generateDailyLookPhoto,
+  shouldGenerateDailyPhoto,
+  shouldShareDailyPhoto,
+  markDailyPhotoShared,
+} from '../state/dailyLook.js';
+import { writeOutfit, clampOutfitState } from '../state/outfit.js';
 import { buildNarrationPrompt } from '../narration.js';
 import { PARAMS } from '../params.js';
-import { inferEmotionLabel } from '../state/emotionLabel.js';
+import { inferEmotionLabel, emotionLabelToPrompt } from '../state/emotionLabel.js';
+import {
+  emptyEmotionResidue,
+  normalizeEmotionResidue,
+  serializeEmotionResidue,
+  seedResidueFromStoryBeat,
+} from '../state/emotionResidue.js';
+import { resonateFromMemoryHits, applyResonanceToEmotion } from '../state/emotionResonance.js';
+import { residueToDesireEvent } from '../state/emotionDesireBridge.js';
+import {
+  emptyEmotionJournal,
+  normalizeEmotionJournal,
+  appendEmotionEvent,
+  shouldLogEmotionTransition,
+  emotionJournalToPrompt,
+} from '../state/emotionJournal.js';
+import { emotionDecayOverridesFromConfig } from '../state/affect.js';
+import { fuseEmotionPrompt } from '../emotion.js';
 import { behaviorPolicy, behaviorToPrompt } from '../state/behavior.js';
 import { StoryEngine } from '../story/index.js';
 import { buildConversationGoals, goalsToPrompt } from './goals.js';
+import { prepareIntimacyForTurn, defaultIntimacy, mergeIntimacyConfig } from '../state/intimacy.js';
+import { normalizeWardrobe } from '../state/outfit.js';
+import { detectSceneLocks, sceneCoherenceToPrompt, extractUnfinishedHooks, nonSequiturRepairHint } from '../companion/sceneCoherence.js';
+import { inferRelationshipStage, relationshipStageToPrompt, applyStageToBehavior } from '../companion/relationshipStage.js';
+import { buildEpisodeHeuristic, episodesToPrompt, synthesizeEpisodeChain } from '../companion/episode.js';
+import { companyCast, companyStoryFacts, companyToPrompt } from '../company/index.js';
+import { buildProactiveContentPack, PROACTIVE_STYLE_GUIDE } from '../companion/proactiveContent.js';
+import { inferBodySituation, bodyStateToPrompt, applyBodyToBehavior, bodyIntimacyGate } from '../companion/bodyState.js';
+import {
+  planTurn,
+  applyBehaviorSampling,
+  enforcePartsBudget,
+  stripStockEndingsFromParts,
+} from './turnPlan.js';
+import { humanizeReplyParts, isRepetitiveReply, stripRepeatedParts } from './humanizeReply.js';
+import { explainRecallHits, formatRecallExplanation } from './explainRecall.js';
+import {
+  planStructuredHeuristic,
+  enrichStructuredPlan,
+  applyStructuredToTurn,
+  structuredPlanToPrompt,
+} from './structuredPlan.js';
+import {
+  synthesizeRelationshipNarrative,
+  relationshipNarrativeToPrompt,
+  readRelationshipNarrative,
+  saveRelationshipNarrative,
+} from '../companion/relationshipNarrative.js';
+import {
+  emptySessionThread,
+  updateSessionThread,
+  sessionThreadToPrompt,
+  sessionHooksToUnfinished,
+  shouldResetSession,
+  detectSessionDrift,
+  normalizeSessionThread,
+  serializeSessionThread,
+  rebuildSessionThreadFromHistory,
+} from '../companion/sessionThread.js';
+import { readUserProfilePrompt } from '../profile.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
+
+function buildReplyStylePrompt(style = {}) {
+  const rules = Array.isArray(style?.promptRules) ? style.promptRules.filter(Boolean) : [];
+  return rules.length ? `【角色专属回复风格】\n${rules.map((rule) => `- ${rule}`).join('\n')}` : '';
+}
 
 // 用户在话里要看她的样子/照片 (触发自拍)。
 const PHOTO_REQUEST_RE = /自拍|拍(张|个|一)?照|照片|你长(啥|什么)样|看看你(长|现在|的样子)?|发(张|个)?(图|照)|想看你|你现在(啥|什么)样/;
@@ -29,7 +99,7 @@ export class Orchestrator {
    * @param companionName 显示名/称呼; 不显式传时由 companions 表里的 CompanionConfig.name 覆盖。
    * @param config 可选: 预加载好的 CompanionConfig; 不传则 init() 时按 (userId, companionId) 从 companions 表拉。
    * @param deps 可注入 { memory, stateLayer, relationship, persona, llm, historyStore }, 默认用真实适配器。
-   * @param options { useMonologue=true, historyTurns=6 }
+   * @param options { useMonologue=true, historyTurns=6, timeZone='Asia/Shanghai', place='武汉' }
    */
   constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', config = null, activityFn = null, lifeConfig = null, deps = {}, options = {} }) {
     if (!userId) throw new Error('Orchestrator 需要 userId');
@@ -43,15 +113,46 @@ export class Orchestrator {
       useMonologue: true,
       historyTurns: DEFAULT_HISTORY_TURNS,
       personaRefreshMs: PARAMS.orchestrator.personaRefreshMs,
+      timeZone: 'Asia/Shanghai',
+      place: '武汉',
       ...options,
     };
+    // 单一现实钟：回复时间、生活状态、跨会话间隔全部从同一个 now() 读取。
+    // 测试可注入固定时刻；生产默认与用户所在现实世界等速前进。
+    this.now = typeof deps.now === 'function' ? deps.now : () => Date.now();
 
-    // 先建状态层, 再把它内部的 LifeDimension 注入记忆适配器 —— 让 memory.observe 与状态层
-    // 共用同一个 life 实例 (L4: 生病/被照顾由 memory.observe 统一演变, 避免双写 life_state)。
-    this.stateLayer = deps.stateLayer ?? new StateLayerAdapter(userId, companionId, null, { activityFn, lifeConfig });
+    // 先建状态层, 再把它内部的 LifeDimension / IntimacyDimension 注入记忆适配器 ——
+    // 让 memory.observe 与状态层共用同一实例 (L4 身心耦合 + I 线亲密演变, 避免双写)。
+    this.stateLayer =
+      deps.stateLayer ??
+      new StateLayerAdapter(userId, companionId, null, {
+        activityFn,
+        lifeConfig,
+        now: this.now,
+        intimacyBaseline: config?.intimacyBaseline ?? null,
+        intimacyHardBoundaries: config?.intimacyHardBoundaries ?? null,
+        intimacyConfig: {
+          ...mergeIntimacyConfig(PARAMS.intimacy, config?.intimacyDrive),
+          ...(config?.intimacyKnowledge ? { knowledge: config.intimacyKnowledge } : {}),
+        },
+        outfitWardrobe: config?.outfitWardrobe ?? null,
+      });
     const sharedLife = this.stateLayer?.stateLayer?.life ?? null;
     const sharedDesire = this.stateLayer?.stateLayer?.desire ?? null;
-    this.memory = deps.memory ?? new MemoryAdapter({ userId, companionId, subjectName, companionName, life: sharedLife, desire: sharedDesire });
+    const sharedIntimacy = this.stateLayer?.stateLayer?.intimacy ?? null;
+    const sharedOutfit = this.stateLayer?.stateLayer?.outfit ?? null;
+    this.memory =
+      deps.memory ??
+      new MemoryAdapter({
+        userId,
+        companionId,
+        subjectName,
+        companionName,
+        life: sharedLife,
+        desire: sharedDesire,
+        intimacy: sharedIntimacy,
+        outfit: sharedOutfit,
+      });
     this.relationship = deps.relationship ?? new RelationshipAdapter(userId, companionId);
     this.persona = deps.persona ?? new PersonaAdapter({ userId, companionId, subjectName: companionName });
     this.llm = deps.llm ?? new DefaultLLM();
@@ -76,6 +177,15 @@ export class Orchestrator {
     this._personaLoadedAt = 0;
     this._historyLoaded = false;
     this._configLoaded = false;
+    this._relationshipNarrative = '';
+    this._userProfilePrompt = '';
+    this._residentSlotsLoadedAt = 0;
+    this._episodeBuffer = [];
+    this._lastStructured = null;
+    this._lastTurnPlan = null;
+    this._sessionThread = emptySessionThread(this.now());
+    this._emotionResidue = emptyEmotionResidue();
+    this._emotionJournal = emptyEmotionJournal();
   }
 
   /**
@@ -84,7 +194,7 @@ export class Orchestrator {
    * (如 ProactiveScheduler 反复复用同一个 Orchestrator) 能感知到 self 记忆的更新。
    */
   async init() {
-    const now = Date.now();
+    const now = this.now();
     // 多角色: 首次 init 时加载 CompanionConfig (名字/外貌/说话风格/性格)。
     // 没显式传 companionName 时用 config.name 作称呼; 外貌等补充随 persona 段注入 (方案 A)。
     if (!this._configLoaded) {
@@ -105,11 +215,42 @@ export class Orchestrator {
         if (typeof this.relationship?.seedIfNew === 'function') {
           await this.relationship.seedIfNew(this._config);
         }
-        if (!this._storyProvided && (this._config.storyCast?.length || this._config.storylines?.length)) {
+        // E3 人设气质 → 衰减半衰期/基线
+        const emoOv = emotionDecayOverridesFromConfig(this._config);
+        if (emoOv && this.stateLayer?.stateLayer?.setEmotionDecayOverrides) {
+          this.stateLayer.stateLayer.setEmotionDecayOverrides(emoOv);
+        } else if (emoOv && typeof this.stateLayer?.setEmotionDecayOverrides === 'function') {
+          this.stateLayer.setEmotionDecayOverrides(emoOv);
+        }
+        // I 线: 配置加载后把人设基线/硬边界/欲望 drive 挂到共享 IntimacyDimension
+        const intimacyDim = this.stateLayer?.stateLayer?.intimacy;
+        if (intimacyDim && this._config) {
+          if (this._config.intimacyBaseline) intimacyDim.baseline = this._config.intimacyBaseline;
+          if (this._config.intimacyHardBoundaries?.length) intimacyDim.hardBoundaries = this._config.intimacyHardBoundaries;
+          if (this._config.intimacyDrive || this._config.intimacyKnowledge) {
+            intimacyDim.config = {
+              ...mergeIntimacyConfig(PARAMS.intimacy, this._config.intimacyDrive),
+              ...(this._config.intimacyKnowledge ? { knowledge: this._config.intimacyKnowledge } : {}),
+            };
+            if (this._config.intimacyKnowledge) intimacyDim.knowledge = this._config.intimacyKnowledge;
+          }
+          if (this._config.intimacyEnabled === false && intimacyDim.config) {
+            intimacyDim.config = { ...intimacyDim.config, enabled: false };
+          }
+        }
+        // O 线: 衣橱目录挂到 OutfitDimension
+        const outfitDim = this.stateLayer?.stateLayer?.outfit;
+        if (outfitDim && this._config?.outfitWardrobe) {
+          outfitDim.wardrobe = normalizeWardrobe(this._config.outfitWardrobe);
+        }
+        if (!this._storyProvided && (this._config.storyCast?.length || this._config.storylines?.length || this._config.company)) {
+          const fixedCast = mergeStoryCast(this._config.storyCast, companyCast(this._config.company));
           this.story = new StoryEngine({
             userId: this.userId, companionId: this.companionId, companionName: this.companionName,
-            cast: this._config.storyCast, lines: this._config.storylines, memory: this.memory,
+            cast: fixedCast, lines: this._config.storylines, memory: this.memory,
             desire: this.stateLayer?.stateLayer?.desire ?? null,
+            factProvider: (line) => companyStoryFacts(this._config.company, line),
+            onStoryBeat: (beat) => this.applyStoryBeatToEmotion(beat),
           });
         }
       }
@@ -131,10 +272,45 @@ export class Orchestrator {
       await this.memory.ensureAnniversaries().catch(() => {});
       this._anniversariesEnsured = true;
     }
+    // 关系周记 / 用户画像常驻槽（失败静默，mock 测试不连库）
+    await this.loadResidentSlots().catch(() => {});
     return this;
   }
 
-  /** 从可选 historyStore 拉最近短期历史; 默认内存版什么也不做。 */
+  /**
+   * 加载跨会话常驻槽：【我们最近】关系周记 + 【她眼中的你】用户画像。
+   * 与 persona 同刷新周期；PARAMS.orchestrator.residentSlots === false 时跳过。
+   */
+  async loadResidentSlots({ force = false } = {}) {
+    if (PARAMS.orchestrator?.residentSlots === false) {
+      this._relationshipNarrative = '';
+      this._userProfilePrompt = '';
+      return this;
+    }
+    const now = this.now();
+    const ttl = this.options.personaRefreshMs ?? PARAMS.orchestrator?.personaRefreshMs ?? 30 * 60 * 1000;
+    if (!force && this._residentSlotsLoadedAt && now - this._residentSlotsLoadedAt < ttl) return this;
+
+    // 与 companions 配置加载同门：全 mock 编排器测试（persona 无 setExtra）不连库。
+    // 真实 PersonaAdapter / 显式 forceResidentSlots 才读周记与画像。
+    const canHitDb =
+      this.options.forceResidentSlots === true || typeof this.persona?.setExtra === 'function';
+    if (!canHitDb) {
+      this._residentSlotsLoadedAt = now;
+      return this;
+    }
+
+    const [narrative, profilePrompt] = await Promise.all([
+      readRelationshipNarrative(this.userId, this.companionId).catch(() => ''),
+      readUserProfilePrompt(this.userId, this.companionId).catch(() => ''),
+    ]);
+    if (narrative) this._relationshipNarrative = narrative;
+    if (profilePrompt) this._userProfilePrompt = profilePrompt;
+    this._residentSlotsLoadedAt = now;
+    return this;
+  }
+
+  /** 从可选 historyStore 拉最近短期历史 + 会话线; 默认内存版什么也不做。 */
   async loadHistory() {
     if (!this.historyStore || typeof this.historyStore.load !== 'function') return this.history;
     const limit = this.options.historyTurns * 2;
@@ -143,7 +319,122 @@ export class Orchestrator {
       this.history = normalizeHistory(loaded).slice(-limit);
       this.trimHistory();
     }
+    await this.loadSessionThread().catch(() => {});
+    await this.loadEmotionResidue().catch(() => {});
     return this.history;
+  }
+
+  async loadEmotionResidue() {
+    let raw = null;
+    if (this.historyStore && typeof this.historyStore.loadEmotionResidue === 'function') {
+      raw = await this.historyStore
+        .loadEmotionResidue({ userId: this.userId, companionId: this.companionId })
+        .catch(() => null);
+    }
+    this._emotionResidue = raw ? normalizeEmotionResidue(raw) : emptyEmotionResidue();
+    this._emotionJournal = normalizeEmotionJournal(raw?.journal);
+    return this._emotionResidue;
+  }
+
+  persistEmotionResidue() {
+    if (!this.historyStore || typeof this.historyStore.saveEmotionResidue !== 'function') return Promise.resolve();
+    const residue = serializeEmotionResidue(this._emotionResidue);
+    const journal = normalizeEmotionJournal(this._emotionJournal);
+    this._lastEmotionPersist = Promise.resolve(
+      this.historyStore.saveEmotionResidue({
+        userId: this.userId,
+        companionId: this.companionId,
+        residue,
+        journal,
+      }),
+    ).catch((reason) => {
+      console.error('[historyStore.emotion]', reason);
+    });
+    return this._lastEmotionPersist;
+  }
+
+  /** 标签变化时记 journal + residual→desire 耦合 */
+  applyEmotionSideEffects(prevResidue, nextResidue, { userMessage = '', source = 'turn' } = {}) {
+    const prev = normalizeEmotionResidue(prevResidue);
+    const next = normalizeEmotionResidue(nextResidue);
+    if (shouldLogEmotionTransition(prev.label, next.label, prev.intensity, next.intensity)) {
+      this._emotionJournal = appendEmotionEvent(this._emotionJournal, {
+        fromLabel: prev.label,
+        toLabel: next.label,
+        intensity: next.intensity,
+        cause: userMessage || next.cause,
+        source,
+        at: this.now(),
+      });
+    }
+    this._emotionResidue = next;
+    // desire bridge（异步，不阻塞）
+    const desireEvent = residueToDesireEvent(next);
+    if (desireEvent) {
+      const dim = this.stateLayer?.stateLayer?.desire ?? this.stateLayer?.desire;
+      if (dim && typeof dim.accumulate === 'function') {
+        const { reason, ...deltas } = desireEvent;
+        this._lastDesireBridge = Promise.resolve(dim.accumulate(deltas)).catch(() => null);
+      }
+    }
+  }
+
+  /** 故事 beat 软种子 residual（maintain/story 回调） */
+  applyStoryBeatToEmotion(beat) {
+    const prev = this._emotionResidue;
+    const { residual, changed, event } = seedResidueFromStoryBeat(prev, beat, this.now());
+    if (changed && event) {
+      this.applyEmotionSideEffects(prev, residual, { userMessage: event.cause, source: 'story' });
+      this.persistEmotionResidue();
+    }
+    return residual;
+  }
+
+  /**
+   * 加载本场会话线：优先 historyStore 快照；否则从短期历史重建。
+   * 超时（4h）则空会话。
+   */
+  async loadSessionThread() {
+    if (PARAMS.orchestrator?.sessionThread === false) {
+      this._sessionThread = emptySessionThread(this.now());
+      return this._sessionThread;
+    }
+    let raw = null;
+    if (this.historyStore && typeof this.historyStore.loadSessionThread === 'function') {
+      raw = await this.historyStore
+        .loadSessionThread({ userId: this.userId, companionId: this.companionId })
+        .catch(() => null);
+    }
+    const now = this.now();
+    let thread = raw ? normalizeSessionThread(raw, now) : null;
+    if (!thread || !thread.turnCount) {
+      // 冷启动：从已 load 的 history 重建
+      if (this.history?.length) {
+        thread = rebuildSessionThreadFromHistory(this.history, { now });
+      } else {
+        thread = emptySessionThread(now);
+      }
+    }
+    if (shouldResetSession(thread, now)) thread = emptySessionThread(now);
+    this._sessionThread = thread;
+    return this._sessionThread;
+  }
+
+  /** 异步持久化会话线（失败只打日志） */
+  persistSessionThread() {
+    if (PARAMS.orchestrator?.sessionThread === false) return Promise.resolve();
+    if (!this.historyStore || typeof this.historyStore.saveSessionThread !== 'function') return Promise.resolve();
+    const thread = serializeSessionThread(this._sessionThread);
+    this._lastSessionPersist = Promise.resolve(
+      this.historyStore.saveSessionThread({
+        userId: this.userId,
+        companionId: this.companionId,
+        thread,
+      }),
+    ).catch((reason) => {
+      console.error('[historyStore.session]', reason);
+    });
+    return this._lastSessionPersist;
   }
 
   /** 只保留最近 historyTurns 轮(user+assistant 各一条)。 */
@@ -171,112 +462,795 @@ export class Orchestrator {
    */
   async reply(userMessage, opts = {}) {
     await this.init();
-    // 长时间沉默后清历史: 若距上次用户发言超过 4 小时, 旧消息时间背景与当前严重错位,
-    // 清掉旧历史让 LLM 按系统提示的当前时间重新建立上下文, 防止它被几小时前的对话带偏。
-    const idleHours = this._lastUserMessageAt ? (Date.now() - this._lastUserMessageAt) / 3600000 : 0;
-    if (idleHours >= 4 && this.history.length > 0) {
+    const historyUserMessage = String(opts.historyUserMessage ?? userMessage);
+    const nowMs = this.now();
+    // 先读持久历史的真实时间，再做任何情绪/场景判断。过去只看进程内时间，重启后会把
+    // 几小时前加载回来的旧饭局当成“刚刚”，造成角色时间冻结。
+    const storedLastUserMessageAt =
+      this.historyStore && typeof this.historyStore.lastUserMessageAt === 'function'
+        ? await this.historyStore
+            .lastUserMessageAt({ userId: this.userId, companionId: this.companionId })
+            .catch(() => null)
+        : null;
+    const memoryIdleHours = this._lastUserMessageAt ? Math.max(0, (nowMs - this._lastUserMessageAt) / 3600000) : null;
+    const storedGapHours = storedLastUserMessageAt != null ? hoursSince(storedLastUserMessageAt, nowMs) : null;
+    const gapHours = maxKnown(memoryIdleHours, storedGapHours);
+    // 长时间沉默后清历史: 旧消息的事实仍可由长期记忆召回，但旧物理现场必须结束。
+    if (gapHours != null && gapHours >= 4 && this.history.length > 0) {
       this.history = [];
       this._lastSceneType = null; // 隔了这么久, 场景连续性提示也该重新开始判断, 不该沿用几小时前的场景
+      this._sessionThread = emptySessionThread(); // 新会话线
+      this.persistSessionThread();
     }
-    this._lastUserMessageAt = Date.now();
+    // 会话线超时重置（即使 history 已空）
+    if (PARAMS.orchestrator?.sessionThread !== false && shouldResetSession(this._sessionThread, nowMs)) {
+      this._sessionThread = emptySessionThread(nowMs);
+      this.persistSessionThread();
+    }
+    this._lastUserMessageAt = nowMs;
 
-    const [stateSnapshot, relState, memoryResult, weather, worldSnapshot, storySnapshot, dueItems, sceneType, lastUserMessageAt] = await Promise.all([
+    // 先并行拉状态/场景；记忆召回用 turnPlan 增强 query，故分两段（状态极快，不显著增延迟）
+    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot, dueItems, sceneType] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
-      this.memory.recall(userMessage, { debug: Boolean(opts.debug) }).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
       this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
       typeof this.memory.checkProspective === 'function' ? this.memory.checkProspective({ query: userMessage }).catch(() => []) : Promise.resolve([]),
-      // 场景分类 (旁白系统): 用最近历史 + 这句话判断当前场景, 决定这一轮用哪条旁白指令。
-      // 带上上一轮场景做连续性提示, 减少单轮误判导致的场景来回跳变。
       this.narration ? this.narration.classify({ userMessage, history: this.history, previousScene: this._lastSceneType, signal: opts.signal }).catch(() => 'daily') : Promise.resolve('daily'),
-      // 时间跳跃感: 取"对方上次说话"的时间(早于本轮, 因为本轮还没 recordHistory) -> 距今多久。
-      this.historyStore && typeof this.historyStore.lastUserMessageAt === 'function'
-        ? this.historyStore.lastUserMessageAt({ userId: this.userId, companionId: this.companionId }).catch(() => null)
-        : Promise.resolve(null),
     ]);
-    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
-    const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
-    const gapHours = lastUserMessageAt != null ? hoursSince(lastUserMessageAt) : null;
-    const emotionLabel = inferEmotionLabel(
+    const recoverBias =
+      emotionDecayOverridesFromConfig(this._config)?.recoverBias ??
+      this.stateLayer?.stateLayer?.emotionDecayOverrides?.recoverBias;
+    const emotionInferred = inferEmotionLabel(
       { ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} },
       stateSnapshot?.desires,
-      [...this.history.slice(-4), { role: 'user', content: userMessage }]
+      [...this.history.slice(-4), { role: 'user', content: userMessage }],
+      {
+        previousResidual: this._emotionResidue,
+        userMessage,
+        recoverBias,
+        withResidual: true,
+        now: nowMs,
+      },
     );
-    const behavior = behaviorPolicy(emotionLabel, { relationship: relState?.relationship ?? relState ?? {}, ...(opts.behaviorState ?? {}) });
-    const goals = buildConversationGoals({ dueItems, desires: stateSnapshot?.desires, storyBeat: storySnapshot?.today });
-    if (this.narration) this._lastSceneType = sceneType; // 供下一轮连续性提示; 未启用旁白则不维护
+    const emotionLabel = typeof emotionInferred === 'string' ? emotionInferred : emotionInferred.label;
+    if (emotionInferred && typeof emotionInferred === 'object' && emotionInferred.residual) {
+      const prevRes = this._emotionResidue;
+      this.applyEmotionSideEffects(prevRes, emotionInferred.residual, { userMessage, source: 'turn' });
+    }
+    this._lastEmotionLabel = emotionLabel;
+    // I2: 回复前预演亲密阶段（不写库），驱动旁白细分与 prompt 指引
+    const intimacyLive =
+      PARAMS.intimacy?.enabled !== false
+        ? prepareIntimacyForTurn(
+            stateSnapshot?.intimacy ?? defaultIntimacy(),
+            {
+              userMessage,
+              sceneType,
+              relationship: relState?.relationship ?? relState ?? stateSnapshot?.relationship,
+              life: stateSnapshot?.life,
+              desires: stateSnapshot?.desires,
+            },
+            this.stateLayer?.stateLayer?.intimacy?.config ?? PARAMS.intimacy
+          )
+        : stateSnapshot?.intimacy ?? null;
+    const stateForPrompt = stateSnapshot ? { ...stateSnapshot, intimacy: intimacyLive ?? stateSnapshot.intimacy } : stateSnapshot;
+    const rel = relState?.relationship ?? relState ?? {};
+    const relStage = inferRelationshipStage(rel);
+    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual, nowMs);
+    let behavior = behaviorPolicy(emotionLabel, { relationship: rel, ...(opts.behaviorState ?? {}) });
+    behavior = applyStageToBehavior(behavior, relStage);
+    behavior = applyBodyToBehavior(behavior, bodySit);
+    // 场景连贯锁（纯逻辑）：从历史+本轮+亲密阶段推断，注入最高优先级 prompt
+    const sceneLocks = detectSceneLocks(userMessage, this.history, intimacyLive?.scene_phase);
+    this._lastSceneLocks = sceneLocks;
+    // 会话线 peek：仅用户句预览（不写回），合并历史未完钩子 + 本场问题/约定
+    const sessionPeek =
+      PARAMS.orchestrator?.sessionThread === false
+        ? null
+        : updateSessionThread(this._sessionThread, {
+            userMessage,
+            sceneLocks,
+            now: nowMs,
+          });
+    const unfinished = [
+      ...extractUnfinishedHooks(this.history),
+      ...(sessionPeek ? sessionHooksToUnfinished(sessionPeek) : []),
+    ].slice(0, 4);
+    // 故事 beat：今日 + 未分享的 pending 都可作内容源
+    let storyBeat = storySnapshot?.today ?? null;
+    if (!storyBeat && typeof this.story?.pendingShare === 'function') {
+      storyBeat = await this.story.pendingShare().catch(() => null);
+    }
+    // dueItems (如周年纪念日) 一旦被喂进 goals 就标记 fired——checkProspective 的注释写着
+    // "决定提起后用 dismissProspective 标记", 但这一步在对话回复链路里从来没人调用过,
+    // 只有独立的主动推送(scheduler.js)会标记。结果是同一条到期提醒(比如"记得我们
+    // 第一次聊天吗")每一轮都重新判定成 due, 在对话里被反复提起, 哪怕已经问过、对方
+    // 也已经回答过。这里补上这一步; annual 类型标记后 markFired 会把它顺延到明年,
+    // 不是永久消失。
+    if (dueItems?.length) {
+      this.memory.dismissProspective?.(dueItems.map((item) => item?.id).filter(Boolean)).catch(() => {});
+    }
+    const goals = buildConversationGoals({
+      dueItems,
+      desires: stateSnapshot?.desires,
+      storyBeat,
+      intimacy: intimacyLive ?? stateSnapshot?.intimacy,
+      intimacyPolicy: this.stateLayer?.stateLayer?.intimacy?.config?.proactive,
+      unfinished,
+      outfit: stateSnapshot?.outfit,
+      userMessage,
+      sceneLocks,
+    });
+    // 身体门控：病中/经期时砍掉高主动亲密意图
+    const bodyGate = bodyIntimacyGate(bodySit);
+    if (!bodyGate.allowIntimateInit) {
+      for (const g of goals) {
+        if (g.kind === 'intimacy' && g.canInitiate) {
+          g.canInitiate = false;
+          g.text = '身体不适：可黏可要抱抱，别主动推高热；对方坚持也温柔设限。';
+          g.priority = Math.min(g.priority, 0.35);
+        }
+      }
+      goals.sort((a, b) => b.priority - a.priority);
+    }
+    // 产品安全门：停止词 / 亲密关闭（来自 Telegram/飞书/UI 的 gateIncomingMessage）
+    if (opts.stopIntimate || opts.intimacyAllowed === false) {
+      for (const g of goals) {
+        if (g.kind === 'intimacy') {
+          g.canInitiate = false;
+          g.text = opts.stopIntimate
+            ? '对方已表示停止/冷静：立刻降热，先确认边界，不继续身体推进。'
+            : '当前亲密内容策略关闭：保持情感陪伴，不进入高热描写。';
+          g.priority = 0.95;
+        }
+      }
+      goals.unshift({
+        kind: 'safety',
+        priority: 1,
+        text: opts.stopIntimate
+          ? '安全停止：承认并停下亲密推进，语气稳、给台阶，别质问。'
+          : '亲密策略限制中：正常聊天即可。',
+      });
+      goals.sort((a, b) => b.priority - a.priority);
+    }
+
+    // 本轮计划：历史深度 / 独白 / 召回 query / parts 预算 / 简报
+    let turn = planTurn({
+      userMessage,
+      sceneLocks,
+      behavior,
+      goals,
+      intimacyPhase: intimacyLive?.scene_phase,
+      bodySit,
+      gapHours,
+      historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
+      useMonologueDefault: this.options.useMonologue,
+    });
+    // 两阶段：结构化决策（启发式 + 可选便宜模型）
+    let structured = planStructuredHeuristic({
+      userMessage,
+      sceneLocks,
+      goals,
+      behavior,
+      storyBeat,
+      unfinished,
+      intimacyPhase: intimacyLive?.scene_phase,
+      bodySit,
+    });
+    // enrich：仅真实 LLM 客户端（OpenAI 兼容）才二次规划；DefaultLLM mock / 无 client 跳过
+    const planClient = this.llm?.client || this.llm?.openai || null;
+    if (PARAMS.orchestrator?.structuredPlanLlm !== false && planClient) {
+      structured = await enrichStructuredPlan(
+        structured,
+        {
+          userMessage,
+          sceneLocks,
+          goals,
+          storyBeat,
+          unfinished,
+          intimacyPhase: intimacyLive?.scene_phase,
+        },
+        { client: planClient, signal: opts.signal },
+      ).catch(() => structured);
+    }
+    turn = applyStructuredToTurn(turn, structured, behavior);
+    if (turn._lengthHintOverride) {
+      behavior = { ...behavior, lengthHint: turn._lengthHintOverride, partsBudget: turn.partsBudget };
+    }
+    if (turn.replyFormat) opts = { ...opts, replyFormat: opts.replyFormat || turn.replyFormat };
+    this._lastTurnPlan = turn;
+    this._lastStructured = structured;
+    this._lastIntimacyPhase = intimacyLive?.scene_phase ?? null;
+    if (turn && typeof turn === 'object') turn.intimacyPhase = intimacyLive?.scene_phase ?? null;
+
+    if (this.narration) this._lastSceneType = sceneType;
+    this._lastSceneTypeForObserve = sceneType;
+    if (typeof this.memory.setSceneType === 'function') this.memory.setSceneType(sceneType);
 
     // B3: Telegram 明确要求执行 stonewall 时，不生成一条永远不会送达的假回复，也不把它写进历史。
     if (opts.executeStonewall && behavior.stonewall) {
-      this.recordHistory([{ role: 'user', content: userMessage }], { eventId: opts.eventId });
-      this._lastAfterReply = this.afterReply(userMessage, '');
+      this.recordHistory([{ role: 'user', content: historyUserMessage }], { eventId: opts.eventId });
+      this._lastAfterReply = this.afterReply(historyUserMessage, '');
       return { text: '', parts: [], emotionLabel, behaviorPolicy: behavior };
     }
 
-    const promptParts = {
-      timePrompt: buildTimePrompt(new Date(), { weather, gapHours }),
+    const askAboutDay = /(今天|最近|最近在忙|怎么样|过得|忙什么)/.test(userMessage);
+    // 先拼「无记忆」上下文，独白与召回并行（降延迟突破）
+    const promptBase = {
+      timePrompt: buildTimePrompt(new Date(nowMs), {
+        timeZone: this.options.timeZone,
+        place: this.options.place,
+        weather,
+        gapHours,
+        userMessage,
+      }),
       personaPrompt: this.persona.toPrompt() ?? '',
+      companyPrompt: companyToPrompt(this._config?.company, {
+        storySnapshot,
+        currentActivity: stateSnapshot?.life?.current_activity,
+        userMessage,
+        now: nowMs,
+      }),
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
-      storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
+      storyPrompt: this.story
+        ? this.story.toPrompt(storySnapshot, { forceToday: Boolean(storyBeat) || askAboutDay })
+        : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
-      statePrompt: [this.stateLayer.toPrompt(stateSnapshot), behaviorToPrompt(behavior)].filter(Boolean).join('\n\n'),
+      relationshipStagePrompt: relationshipStageToPrompt(relStage, rel),
+      coherencePrompt: sceneCoherenceToPrompt(sceneLocks, {
+        intimacyPhase: intimacyLive?.scene_phase,
+        topGoalText: goals[0]?.text,
+        gapHours,
+        currentActivity: stateSnapshot?.life?.current_activity,
+        userMessage,
+      }),
+      turnBriefPrompt: turn.turnBrief || '',
+      structuredPlanPrompt: structuredPlanToPrompt(structured),
+      relationshipNarrativePrompt:
+        PARAMS.orchestrator?.residentSlots === false
+          ? ''
+          : relationshipNarrativeToPrompt(this._relationshipNarrative || ''),
+      userProfilePrompt: PARAMS.orchestrator?.residentSlots === false ? '' : this._userProfilePrompt || '',
+      sessionThreadPrompt: sessionPeek ? sessionThreadToPrompt(sessionPeek) : '',
+      statePrompt: [
+        // 标量温度（StateLayer）+ 离散【情绪表现】（始终注入，不因 adapter 形态跳过）
+        this.stateLayer.toPrompt(stateForPrompt, {
+          relationship: rel,
+          hardBoundaries: this._config?.intimacyHardBoundaries,
+          intimacyConfig: this.stateLayer?.stateLayer?.intimacy?.config,
+        }),
+        emotionLabelToPrompt(emotionLabel, this._emotionResidue),
+        PARAMS.emotion?.journal?.enabled !== false
+          ? emotionJournalToPrompt(this._emotionJournal, PARAMS.emotion?.journal?.promptLimit ?? 2)
+          : '',
+        bodyStateToPrompt(bodySit, intimacyLive ?? stateSnapshot?.intimacy),
+        behaviorToPrompt(behavior),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       goalsPrompt: goalsToPrompt(goals),
-      memoryBlock: memoryBlock ?? '',
-      // 旁白指令: 角色人设的按场景覆盖优先 (companions/<id>/narration.json), 缺省用通用默认;
-      // 叠加本轮离散情绪 (emotionLabel) 的细节层, 让委屈/吃醋/撒娇/心疼在旁白里有区分。
-      narrationPrompt: this.narration ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel) : '',
+      narrationPrompt: this.narration
+        ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive?.scene_phase)
+        : intimacyLive && ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyLive.scene_phase)
+          ? buildNarrationPrompt(sceneType === 'daily' ? 'intimate' : sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive.scene_phase)
+        : '',
+      replyStylePrompt: buildReplyStylePrompt(this._config?.replyStyle),
     };
 
-    let monologue = '';
-    if (this.options.useMonologue) {
-      const ctx = buildMonologueContext({ userMessage, ...promptParts });
-      monologue = await this.llm.think(ctx, { signal: opts.signal }).catch(() => '');
+    // 短轮可对 prompt 做轻量瘦身（少塞世界线/长故事）
+    const compact = PARAMS.orchestrator?.compactShortTurns !== false && userMessage.trim().length <= 12 && !sceneLocks.length;
+    if (compact) {
+      if (promptBase.worldPrompt && promptBase.worldPrompt.length > 200) promptBase.worldPrompt = '';
+      if (promptBase.storyPrompt && !askAboutDay) promptBase.storyPrompt = promptBase.storyPrompt.slice(0, 180);
     }
+
+    const monologuePromise = turn.useMonologue
+      ? this.llm
+          .think(
+            buildMonologueContext({
+              userMessage,
+              ...promptBase,
+              memoryBlock: '',
+              emotionLabel,
+              emotionResidual: this._emotionResidue,
+            }),
+            {
+              signal: opts.signal,
+              maxTokens: PARAMS.orchestrator.monologueMaxTokens,
+            },
+          )
+          .catch(() => '')
+      : Promise.resolve('');
+
+    const memoryPromise = this.memory
+      .recall(turn.recallQuery || userMessage, { debug: Boolean(opts.debug) })
+      .catch(() => '');
+
+    const [monologue, memoryResult] = await Promise.all([monologuePromise, memoryPromise]);
+    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
+    const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
+    const episodeTexts = extractEpisodeTexts(memoryHits);
+    const recallExplain = explainRecallHits(memoryHits, turn.recallQuery || userMessage);
+
+    // E4 触景生情：只扰动本轮展示 emotion，重写 statePrompt 中的情绪段
+    const resonance = resonateFromMemoryHits(memoryHits, stateSnapshot?.emotion);
+    if (resonance && promptBase.statePrompt) {
+      const emoShow = applyResonanceToEmotion(stateSnapshot?.emotion || {}, resonance);
+      const fused = fuseEmotionPrompt(emoShow, emotionLabel, this._emotionResidue, emotionLabelToPrompt);
+      // 用融合段替换原 toEmotionPrompt 开头（简单：前缀注入触景提示）
+      promptBase.statePrompt = [
+        fused,
+        resonance.reasons?.length
+          ? `【触景余味】想起了：${resonance.reasons[0]}。只让语气轻轻偏一点，别说「我想起了某条记忆」。`
+          : '',
+        promptBase.statePrompt,
+      ]
+        .filter(Boolean)
+        .join('\n\n');
+      this._lastResonance = resonance;
+    }
+
+    const promptParts = {
+      ...promptBase,
+      episodePrompt: episodesToPrompt(episodeTexts),
+      memoryBlock: memoryBlock ?? '',
+    };
 
     const messages = assemble({
       userMessage,
       history: this.history,
-      historyTurns: this.options.historyTurns,
+      historyTurns: turn.historyTurns,
       ...promptParts,
       monologue,
     });
 
-    const samplingHints =
+    const baseSampling =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
-    const { text: reply, parts } = normalizeReplyResult(await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal }));
+    const samplingHints = applyBehaviorSampling(baseSampling, behavior, bodySit);
+    // 日常 plain 更快首包；亲密/车内/有旁白指令 → json
+    const replyFormat = pickReplyFormat({
+      sceneLocks,
+      intimacyPhase: intimacyLive?.scene_phase,
+      needNarration: Boolean(promptParts.narrationPrompt && promptParts.narrationPrompt.trim()),
+      forceFormat: opts.replyFormat,
+    });
+    samplingHints.format = replyFormat;
+    // json 格式要装下 narration part(亲密场景旁白宜短) + 多条 dialogue part +
+    // JSON 语法本身的括号/引号/键名开销，比纯文本重得多。health/behavior 那两层压缩
+    // (turnPlan.applyBehaviorSampling、life.lifeSamplingHints) 是为了让人在委屈/生病时
+    // 话短一点，压到 260~380 对纯文本没问题，但对 json 会在结构写完前就被截断——
+    // JSON.parse 失败后 parseReplyParts 的兜底是把整段原始 JSON 原文当成一条台词发出去，
+    // 于是聊天里会看到裸露的 {"parts":[{"type":"narration"... 这种半截 JSON。给 json 格式
+    // 单独设一个不受那两层压缩影响的下限。
+    if (replyFormat === 'json') {
+      // 亲密也要像真人：给 JSON 结构留余量，但禁止 700+ 鼓励写成长篇网文
+      const base = Number(samplingHints.maxTokens) || 380;
+      const phase = intimacyLive?.scene_phase;
+      const intimatePhase = ['foreplay', 'peak', 'aftercare', 'flirting'].includes(phase);
+      samplingHints.maxTokens = intimatePhase
+        ? Math.min(Math.max(base, 280), 420)
+        : Math.min(Math.max(base, 360), 560);
+      samplingHints.intimateStyleLock = intimatePhase || Boolean(promptParts.narrationPrompt?.includes?.('亲密'));
+    }
+
+    // 流式路径：调用方 for await 消费；非流式保持原语义
+    if (opts.stream && typeof this.llm.generateReplyStream === 'function') {
+      return this._replyStreaming({
+        userMessage,
+        opts,
+        messages,
+        samplingHints,
+        turn,
+        structured,
+        sceneLocks,
+        stateSnapshot,
+        stateForPrompt,
+        relState,
+        relStage,
+        bodySit,
+        unfinished,
+        worldSnapshot,
+        storySnapshot,
+        storyBeat,
+        sceneType,
+        emotionLabel,
+        behavior,
+        goals,
+        memoryHits,
+        recallExplain,
+        promptParts,
+        monologue,
+        intimacyLive,
+        gapHours,
+        nowMs,
+        historyUserMessage,
+      });
+    }
+
+    let { text: reply, parts } = normalizeReplyResult(
+      await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal })
+    );
+
+    // 一致性检改：默认开启（params.orchestrator.coherenceRetry）
+    const allowRetry = opts.skipCoherenceRetry !== true && PARAMS.orchestrator?.coherenceRetry !== false;
+    const temporalCoherence = {
+      gapHours,
+      userMessage,
+      currentActivity: stateSnapshot?.life?.current_activity,
+    };
+    const repair = nonSequiturRepairHint(reply, sceneLocks, temporalCoherence);
+    if (repair.needsRetry && allowRetry) {
+      try {
+        const retryMessages = [
+          ...messages,
+          { role: 'assistant', content: reply },
+          { role: 'user', content: repair.hint },
+        ];
+        const retried = normalizeReplyResult(
+          await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
+        );
+        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks, temporalCoherence).needsRetry) {
+          reply = retried.text;
+          parts = retried.parts;
+        }
+      } catch {
+        /* 保持原稿 */
+      }
+    }
+
+    // 复读/空嗯重试：连续「嗯…」或同一套拽衣襟模板时强制换新
+    if (allowRetry && isRepetitiveReply(reply, this.history)) {
+      try {
+        const retryMessages = [
+          ...messages,
+          { role: 'assistant', content: reply },
+          {
+            role: 'user',
+            content:
+              '（系统）你刚才在复读上一轮：同一套动作或只回「嗯…」。请完全换新的身体细节和台词，禁止拽衣襟/膝盖贴腿/半跪/腿软模板，禁止空省略号。像真人接住对方刚说的话。',
+          },
+        ];
+        const retried = normalizeReplyResult(
+          await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
+        );
+        if (retried?.text && !isRepetitiveReply(retried.text, this.history)) {
+          reply = retried.text;
+          parts = retried.parts;
+        }
+      } catch {
+        /* 保持原稿 */
+      }
+    }
+
+    ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
+
+    // 会话线落盘：用户句 + 她的回复（含她的承诺）→ 持久化
+    if (PARAMS.orchestrator?.sessionThread !== false) {
+      this._sessionThread = updateSessionThread(this._sessionThread, {
+        userMessage: historyUserMessage,
+        reply,
+        sceneLocks,
+        now: nowMs,
+      });
+      this.persistSessionThread();
+    }
+    this.persistEmotionResidue();
 
     this.recordHistory([
-      { role: 'user', content: userMessage },
+      { role: 'user', content: historyUserMessage },
       { role: 'assistant', content: reply },
     ], { eventId: opts.eventId });
 
-    // fire-and-forget; 暴露在 _lastAfterReply 上仅供测试 await。
-    this._lastAfterReply = this.afterReply(userMessage, reply);
+    this._lastAfterReply = this.afterReply(historyUserMessage, reply, {
+      history: this.history,
+      sceneLocks,
+      relationshipStage: relStage,
+    });
 
-    // A1: 用户要看她样子时, 后台生成一张自拍 (fire-and-forget, 经 onPhoto 投递, 不阻塞文字)。
-    if (PHOTO_REQUEST_RE.test(userMessage)) this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: true });
+    // 每日穿搭成片（后台，不阻塞）
+    this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
 
-    // parts 给调用方(bot.js)按 narration/dialogue 分开发多条消息; text 是拼好的整段, 供日志/兼容用。
-    const debug = opts.debug ? {
-      stateSnapshot,
+    // 动作计划：对方要看 / structured 决策 wantPhoto
+    if (PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto) {
+      this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto });
+    }
+
+    const sessionDrift = detectSessionDrift(reply, this._sessionThread);
+    const debug = opts.debug
+      ? this._buildDebug({
+          stateForPrompt,
+          intimacyLive,
+          relState,
+          relStage,
+          bodySit,
+          sceneLocks,
+          unfinished,
+          turn,
+          structured,
+          repair,
+          sessionDrift,
+          worldSnapshot,
+          storySnapshot,
+          storyBeat,
+          sceneType,
+          emotionLabel,
+          behavior,
+          goals,
+          memoryHits,
+          recallExplain,
+          promptParts,
+          monologue,
+          messages,
+          samplingHints,
+        })
+      : undefined;
+    return {
+      text: reply,
+      parts,
+      emotionLabel,
+      behaviorPolicy: behavior,
+      goals,
+      intimacyPhase: intimacyLive?.scene_phase ?? null,
+      relationshipStage: relStage?.id ?? null,
+      sceneLocks: sceneLocks.map((l) => l.id),
+      bodySituation: bodySit,
+      recallExplain,
+      turnPlan: summarizeTurnPlan(turn),
+      structuredPlan: summarizeStructured(structured),
+      sessionThread: summarizeSessionThread(this._sessionThread),
+      emotionResidue: this._emotionResidue
+        ? { label: this._emotionResidue.label, intensity: this._emotionResidue.intensity }
+        : null,
+      ...(debug ? { debug } : {}),
+    };
+  }
+
+  /**
+   * 流式回复：async generator。yield 与 llm.generateReplyStream 相同事件，最后附带完整 result 字段。
+   * for await (const ev of orch.replyStream(msg)) { if (ev.event==='preview') ... if (ev.event==='done') ... }
+   */
+  async *replyStream(userMessage, opts = {}) {
+    // async reply() 在 stream:true 时 resolve 为一个 async generator
+    const gen = await this.reply(userMessage, { ...opts, stream: true });
+    if (gen && typeof gen[Symbol.asyncIterator] === 'function') {
+      yield* gen;
+      return;
+    }
+    // 降级：非流式结果
+    const result = gen;
+    yield { event: 'preview', text: result?.text || '' };
+    yield { event: 'done', ...result, streamed: false };
+  }
+
+  async *_replyStreaming(ctx) {
+    const {
+      userMessage, opts, messages, samplingHints, turn, structured, sceneLocks, stateSnapshot,
+      emotionLabel, behavior, goals, intimacyLive, relStage, bodySit, recallExplain, gapHours, nowMs,
+      historyUserMessage = userMessage,
+    } = ctx;
+    let lastPreview = '';
+    let finalParts = [];
+    let finalText = '';
+    let streamed = true;
+    let repair = { needsRetry: false, reasons: [] };
+
+    try {
+      for await (const ev of this.llm.generateReplyStream(messages, { ...samplingHints, signal: opts.signal })) {
+        if (ev.event === 'delta' || ev.event === 'preview') {
+          if (ev.event === 'preview') lastPreview = ev.text || lastPreview;
+          yield ev;
+        } else if (ev.event === 'done') {
+          finalParts = ev.parts || [];
+          finalText = ev.text || joinReplyParts(finalParts);
+          streamed = ev.streamed !== false;
+        }
+      }
+    } catch {
+      const full = normalizeReplyResult(
+        await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal })
+      );
+      finalParts = full.parts;
+      finalText = full.text;
+      streamed = false;
+      yield { event: 'preview', text: finalText };
+    }
+
+    let reply = finalText;
+    let parts = finalParts;
+
+    // 流式完成后一致性检改（默认同非流式）
+    const allowRetry = opts.skipCoherenceRetry !== true && PARAMS.orchestrator?.coherenceRetry !== false;
+    const temporalCoherence = {
+      gapHours,
+      userMessage,
+      currentActivity: stateSnapshot?.life?.current_activity,
+    };
+    repair = nonSequiturRepairHint(reply, sceneLocks, temporalCoherence);
+    if (repair.needsRetry && allowRetry) {
+      try {
+        const retryMessages = [
+          ...messages,
+          { role: 'assistant', content: reply },
+          { role: 'user', content: repair.hint },
+        ];
+        const retried = normalizeReplyResult(
+          await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
+        );
+        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks, temporalCoherence).needsRetry) {
+          reply = retried.text;
+          parts = retried.parts;
+          yield { event: 'preview', text: reply };
+        }
+      } catch {
+        /* 保持原稿 */
+      }
+    }
+
+    ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
+
+    if (PARAMS.orchestrator?.sessionThread !== false) {
+      this._sessionThread = updateSessionThread(this._sessionThread, {
+        userMessage: historyUserMessage,
+        reply,
+        sceneLocks,
+        now: nowMs,
+      });
+      this.persistSessionThread();
+    }
+    this.persistEmotionResidue();
+
+    this.recordHistory(
+      [
+        { role: 'user', content: historyUserMessage },
+        { role: 'assistant', content: reply },
+      ],
+      { eventId: opts.eventId },
+    );
+    this._lastAfterReply = this.afterReply(historyUserMessage, reply, {
+      history: this.history,
+      sceneLocks,
+      relationshipStage: relStage,
+    });
+    this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
+    if (PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto) {
+      this._lastPhoto = this.maybePhoto(stateSnapshot, {
+        requested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
+      });
+    }
+
+    const result = {
+      text: reply,
+      parts,
+      emotionLabel,
+      behaviorPolicy: behavior,
+      goals,
+      intimacyPhase: intimacyLive?.scene_phase ?? null,
+      relationshipStage: relStage?.id ?? null,
+      sceneLocks: sceneLocks.map((l) => l.id),
+      bodySituation: bodySit,
+      recallExplain,
+      turnPlan: summarizeTurnPlan(turn),
+      structuredPlan: summarizeStructured(structured),
+      sessionThread: summarizeSessionThread(this._sessionThread),
+      emotionResidue: this._emotionResidue
+        ? { label: this._emotionResidue.label, intensity: this._emotionResidue.intensity }
+        : null,
+      streamed,
+    };
+    if (opts.debug) {
+      result.debug = this._buildDebug({
+        ...ctx,
+        structured,
+        repair,
+        messages,
+        monologue: ctx.monologue,
+        samplingHints,
+      });
+    }
+    yield { event: 'done', ...result };
+  }
+
+  _postProcessParts(reply, parts, turn, sceneLocks) {
+    let p = parts;
+    let r = reply;
+    if (PARAMS.orchestrator?.enforcePartsBudget !== false) {
+      p = enforcePartsBudget(p, turn.partsBudget);
+      r = joinReplyParts(p);
+    }
+    if (PARAMS.orchestrator?.stripStockEndings !== false) {
+      const stripped = stripStockEndingsFromParts(p, sceneLocks);
+      if (stripped !== p) {
+        p = stripped;
+        r = joinReplyParts(p);
+      }
+    }
+    // 硬后处理：压网文腔、姓名开场、睡衣头发清单、复读收尾、去空气泡
+    if (PARAMS.orchestrator?.humanizeReply !== false) {
+      const phase =
+        turn?.intimacyPhase ||
+        turn?._intimacyPhase ||
+        this._lastIntimacyPhase ||
+        null;
+      const humanized = humanizeReplyParts(p, {
+        intimacyPhase: phase,
+        history: this.history,
+      });
+      if (humanized?.length) {
+        p = humanized;
+        r = joinReplyParts(p);
+      }
+      const stripped = stripRepeatedParts(p, this.history);
+      if (stripped?.length) {
+        p = stripped;
+        r = joinReplyParts(p);
+      }
+    }
+    return { reply: r, parts: p };
+  }
+
+  _buildDebug({
+    stateForPrompt,
+    intimacyLive,
+    relState,
+    relStage,
+    bodySit,
+    sceneLocks,
+    unfinished,
+    turn,
+    structured,
+    repair,
+    sessionDrift,
+    worldSnapshot,
+    storySnapshot,
+    storyBeat,
+    sceneType,
+    emotionLabel,
+    behavior,
+    goals,
+    memoryHits,
+    recallExplain,
+    promptParts,
+    monologue,
+    messages,
+    samplingHints,
+  }) {
+    return {
+      stateSnapshot: stateForPrompt,
+      intimacyPhase: intimacyLive?.scene_phase ?? null,
       relationshipState: relState,
+      relationshipStage: relStage,
+      bodySituation: bodySit,
+      sceneLocks: (sceneLocks || []).map((l) => l.id),
+      unfinished,
+      turnPlan: summarizeTurnPlan(turn),
+      structuredPlan: summarizeStructured(structured ?? this._lastStructured),
+      sessionThread: summarizeSessionThread(this._sessionThread),
+      sessionDrift: sessionDrift?.drift ? sessionDrift.reasons : [],
+      emotionResidue: this._emotionResidue,
+      emotionJournal: this._emotionJournal?.slice?.(-5) || [],
+      emotionResonance: this._lastResonance || null,
+      relationshipNarrative: this._relationshipNarrative || '',
+      userProfilePrompt: this._userProfilePrompt || '',
+      recallExplain: recallExplain || [],
+      recallExplainText: formatRecallExplanation(recallExplain || [], turn?.recallQuery),
+      coherenceRepair: repair?.needsRetry ? repair.reasons : [],
       worldSnapshot,
       storySnapshot,
+      storyBeat,
       sceneType,
       emotionLabel,
       behaviorPolicy: behavior,
       goals,
-      memoryHits: memoryHits.map(({ embedding, media_embedding, ...m }) => m),
+      memoryHits: (memoryHits || []).map(({ embedding, media_embedding, ...m }) => m),
       promptParts,
       monologue,
       messages,
       samplingHints,
-      historyTurns: this.options.historyTurns,
-    } : undefined;
-    return { text: reply, parts, emotionLabel, behaviorPolicy: behavior, goals, ...(debug ? { debug } : {}) };
+      historyTurns: turn?.historyTurns,
+    };
   }
 
   /**
@@ -286,6 +1260,7 @@ export class Orchestrator {
    */
   async proactiveTick(ctx = {}) {
     await this.init();
+    const nowMs = this.now();
 
     const shouldSend =
       typeof ctx.shouldSend === 'function'
@@ -293,54 +1268,150 @@ export class Orchestrator {
         : ctx.shouldSend ?? true;
     if (!shouldSend) return null;
 
-    const seed = ctx.query ?? ctx.memoryQuery ?? ctx.reason ?? '想主动找对方聊一句';
-    const [stateSnapshot, relState, memoryBlock, weather, worldSnapshot, storySnapshot] = await Promise.all([
+    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
-      this.memory.recall(seed).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
       this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
     ]);
 
+    const pack =
+      ctx.contentPack ||
+      buildProactiveContentPack({
+        dueItems: ctx.dueItems,
+        urgency: ctx.urgency,
+        intimacyUrg: ctx.intimacyUrg,
+        storyBeat: ctx.storyBeat ?? storySnapshot?.today,
+        outfit: stateSnapshot?.outfit,
+        unfinished: ctx.unfinished ?? extractUnfinishedHooks(this.history),
+        silenceTier: ctx.silenceTier,
+        bedtimeTier: ctx.bedtimeTier,
+        lifeActivity: stateSnapshot?.life?.current_activity,
+        life: stateSnapshot?.life,
+        defaultReason: ctx.reason ?? activityReason(stateSnapshot?.life) ?? '想主动找对方聊一句',
+        emotionLabel: this._emotionResidue?.label || this._lastEmotionLabel || null,
+        emotionResidue: this._emotionResidue,
+      });
+    const effCtx = {
+      ...ctx,
+      reason: ctx.reason ?? pack.reason,
+      query: ctx.query ?? pack.query,
+      style: ctx.style ?? pack.style,
+      contentPack: pack,
+    };
+
+    const rel = relState?.relationship ?? relState ?? {};
+    const relStage = inferRelationshipStage(rel);
+    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual, nowMs);
+    const emotionLabel = inferEmotionLabel(
+      { ...(stateSnapshot ?? {}), relationship: rel },
+      stateSnapshot?.desires,
+      this.history.slice(-4),
+    );
+    let behavior = behaviorPolicy(emotionLabel, { relationship: rel });
+    behavior = applyStageToBehavior(behavior, relStage);
+    behavior = applyBodyToBehavior(behavior, bodySit);
+
+    // 与 reply 同一套 turnPlan（主动消息用内容包 reason 当「用户句」）
+    const pseudoUser = String(effCtx.query || effCtx.reason || '想找你聊一句');
+    const turn = planTurn({
+      userMessage: pseudoUser,
+      sceneLocks: [],
+      behavior,
+      goals: [{ kind: 'proactive', text: pack.reason, priority: 1 }],
+      bodySit,
+      historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
+      useMonologueDefault: ctx.useMonologue ?? this.options.useMonologue,
+    });
+    // 主动消息默认更短
+    turn.partsBudget = Math.min(turn.partsBudget, 2);
+    turn.historyTurns = Math.min(turn.historyTurns, 4);
+    this._lastTurnPlan = turn;
+
+    const seed = turn.recallQuery || effCtx.query || effCtx.reason || '想主动找对方聊一句';
+    const memoryResult = await this.memory.recall(seed, { debug: false }).catch(() => '');
+    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
+
     const promptParts = {
-      timePrompt: buildTimePrompt(new Date(), { weather }),
+      timePrompt: buildTimePrompt(new Date(nowMs), {
+        timeZone: this.options.timeZone,
+        place: this.options.place,
+        weather,
+      }),
       personaPrompt: this.persona.toPrompt() ?? '',
+      companyPrompt: companyToPrompt(this._config?.company, {
+        storySnapshot,
+        currentActivity: stateSnapshot?.life?.current_activity,
+        userMessage: pseudoUser,
+        now: nowMs,
+      }),
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
       storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
-      statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
+      relationshipStagePrompt: relationshipStageToPrompt(relStage, rel),
+      relationshipNarrativePrompt:
+        PARAMS.orchestrator?.residentSlots === false
+          ? ''
+          : relationshipNarrativeToPrompt(this._relationshipNarrative || ''),
+      userProfilePrompt: PARAMS.orchestrator?.residentSlots === false ? '' : this._userProfilePrompt || '',
+      sessionThreadPrompt:
+        PARAMS.orchestrator?.sessionThread === false
+          ? ''
+          : sessionThreadToPrompt(this._sessionThread),
+      turnBriefPrompt: turn.turnBrief || '',
+      statePrompt: [
+        this.stateLayer.toPrompt(stateSnapshot) ?? '',
+        bodyStateToPrompt(bodySit, stateSnapshot?.intimacy),
+        behaviorToPrompt(behavior),
+      ]
+        .filter(Boolean)
+        .join('\n\n'),
       memoryBlock: memoryBlock ?? '',
     };
 
-    // L3: 没显式给触发原因时, 用她此刻的生活活动作主动开场的由头 (忙完想起你 / 做某事分享)。
-    const effCtx = { ...ctx, reason: ctx.reason ?? activityReason(stateSnapshot?.life) };
-
     let monologue = '';
-    if (ctx.useMonologue ?? this.options.useMonologue) {
+    if (turn.useMonologue) {
       const situation = buildProactiveSituation(effCtx);
-      monologue = await this.llm.think(buildMonologueContext({ situation, ...promptParts })).catch(() => '');
+      monologue = await this.llm
+        .think(buildMonologueContext({ situation, ...promptParts }), {
+          maxTokens: PARAMS.orchestrator.monologueMaxTokens,
+        })
+        .catch(() => '');
     }
 
     const messages = assemble({
       userMessage: buildProactiveInstruction(effCtx),
       history: this.history,
-      historyTurns: this.options.historyTurns,
+      historyTurns: turn.historyTurns,
       ...promptParts,
       monologue,
     });
 
-    const samplingHints =
+    const baseSampling =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
-    const { text: proactive, parts } = normalizeReplyResult(await this.llm.generateReply(messages, samplingHints));
+    const samplingHints = applyBehaviorSampling(baseSampling, behavior, bodySit);
+    let { text: proactive, parts } = normalizeReplyResult(await this.llm.generateReply(messages, samplingHints));
+    ({ reply: proactive, parts } = this._postProcessParts(proactive, parts, turn, []));
 
     if (ctx.recordHistory !== false) this.recordHistory([{ role: 'assistant', content: proactive }]);
 
-    // A1: 主动找你时也可能顺手分享一张照片 (在外面看到风景/猫狗的随手拍, 或心情好的自拍)。
+    this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
     this._lastPhoto = this.maybePhoto(stateSnapshot, {});
 
-    return { text: proactive, parts };
+    return {
+      text: proactive,
+      parts,
+      contentPack: pack,
+      relationshipStage: relStage?.id ?? null,
+      turnPlan: {
+        historyTurns: turn.historyTurns,
+        useMonologue: turn.useMonologue,
+        recallQuery: turn.recallQuery,
+        partsBudget: turn.partsBudget,
+      },
+    };
   }
 
   /**
@@ -362,6 +1433,74 @@ export class Orchestrator {
   }
 
   /**
+   * 今日穿搭成片：从 life outfit（已由 OutfitDimension 日更组合）生成 lookbook，
+   * 写入相册/图库；shareInChat 且冷却 OK 时 onPhoto 分享一次。
+   */
+  async maybeDailyLookPhoto(snapshot) {
+    const dl = PARAMS.outfit?.dailyLook;
+    if (!dl || dl.enabled === false) return null;
+    const outfit = clampOutfitState(snapshot?.outfit);
+    if (!outfit.current?.summary || !outfit.daily_key) return null;
+
+    const userId = this.userId || this.photo?.userId;
+    const companionId = this.companionId || this.photo?.companionId || 'default';
+    if (!userId) return null;
+
+    let result = null;
+    if (dl.autoPhoto !== false && shouldGenerateDailyPhoto(outfit).ok) {
+      result = await generateDailyLookPhoto({
+        outfit,
+        appearance: this._config?.appearance ?? '',
+        snapshot,
+        provider: this.photo?.provider,
+        getReferences: () => {
+          try {
+            const refs = listReferenceImages(userId, companionId);
+            return [...refs]
+              .sort((a, b) => Number(Boolean(b.isAvatar)) - Number(Boolean(a.isAvatar)))
+              .slice(0, 4)
+              .map((x) => ({ path: referenceFilePath(x), mime: x.mime, name: x.name }));
+          } catch {
+            return [];
+          }
+        },
+        writeAppearance: (asset) => this.photo?.write?.(userId, companionId, asset),
+        writeOutfit: (o) => writeOutfit(userId, companionId, o),
+        config: PARAMS.outfit,
+      }).catch((e) => {
+        console.error('[generateDailyLookPhoto]', e);
+        return null;
+      });
+    }
+
+    const latest = result?.outfit || outfit;
+    if (dl.shareInChat === false || !this.onPhoto) return result;
+
+    const share = shouldShareDailyPhoto(latest);
+    if (!share.ok) return result;
+
+    const rateState = await this.photo.rateState().catch(() => ({ sentAt: [] }));
+    const cool = canSendSelfie(rateState, this.now(), PARAMS.appearance?.selfie);
+    if (!cool.ok) return result;
+
+    const url = share.url || result?.url;
+    if (!url) return result;
+    await Promise.resolve(
+      this.onPhoto({
+        url,
+        kind: 'lookbook',
+        reason: 'daily_look',
+        tags: ['daily', 'lookbook', latest.daily_key].filter(Boolean),
+        cached: Boolean(result?.skipped),
+      }),
+    ).catch((e) => console.error('[onPhoto.daily]', e));
+
+    const marked = markDailyPhotoShared(latest);
+    await writeOutfit(userId, companionId, marked).catch(() => {});
+    return { ...(result || {}), shared: true, url, outfit: marked };
+  }
+
+  /**
    * 维护期 (后台定时, 无对话时也跑): 让她的内在自行演变/沉淀。
    * - 常规: settle(心情随时间回落) + tickActivity(作息活动派生 + 自动生病判定)。
    * - nightly: 额外 reflect(归纳印象) + story(我们的故事) + dedupe(合并近义重复) + train(M9 每日训练)。
@@ -377,14 +1516,79 @@ export class Orchestrator {
       if (typeof this.memory.story === 'function') tasks.push(this.memory.story());
       if (typeof this.memory.dedupe === 'function') tasks.push(this.memory.dedupe());
       if (typeof this.memory.train === 'function') tasks.push(this.trainNightly());
+      // Episode 夜间：把当日缓冲篇章合成关系故事链
+      tasks.push(this.synthesizeEpisodesNightly(now));
+      // 关系周记常驻槽刷新
+      if (PARAMS.orchestrator?.residentSlots !== false) {
+        tasks.push(this.refreshRelationshipNarrativeNightly(now));
+      }
     }
     const results = await Promise.allSettled(tasks);
     // S2 故事拍在基础 settle 完成后再推进，避免两条 affect 写路径并发覆盖。
     if (nightly && typeof this.story?.tick === 'function') {
       results.push(...await Promise.allSettled([this.story.tick({ now })]));
     }
+    // 夜间后强制刷新常驻槽缓存（画像可能已被 updateUserProfile 更新）
+    if (nightly && PARAMS.orchestrator?.residentSlots !== false) {
+      results.push(...await Promise.allSettled([this.loadResidentSlots({ force: true })]));
+    }
     for (const r of results) if (r.status === 'rejected') console.error('[maintain]', r.reason);
     return results;
+  }
+
+  /**
+   * 夜间启发式合成关系周记并落库；失败静默。
+   */
+  async refreshRelationshipNarrativeNightly(now = Date.now()) {
+    const [relState, stateSnapshot, storySnapshot] = await Promise.all([
+      this.relationship.current().catch(() => null),
+      this.stateLayer.snapshot().catch(() => null),
+      this.story?.current?.().catch(() => null) ?? Promise.resolve(null),
+    ]);
+    const rel = relState?.relationship ?? relState ?? {};
+    const stage = inferRelationshipStage(rel);
+    const episodes = (this._episodeBuffer || []).slice(-3);
+    const text = synthesizeRelationshipNarrative({
+      stage,
+      relationship: rel,
+      storyBeat: storySnapshot?.today,
+      episodes,
+      life: stateSnapshot?.life,
+    });
+    if (!text) return null;
+    this._relationshipNarrative = text;
+    // 真实 persona 适配器才落库；mock 测试只更新内存槽
+    const canHitDb =
+      this.options.forceResidentSlots === true || typeof this.persona?.setExtra === 'function';
+    if (canHitDb) {
+      const saved = await saveRelationshipNarrative(this.userId, this.companionId, text).catch(() => null);
+      if (!saved && typeof this.memory.recordSelfEvent === 'function') {
+        await this.memory.recordSelfEvent(`【关系周记】${text}`, { importance: 8, narrative: text }).catch(() => null);
+      }
+    }
+    return text;
+  }
+
+  /**
+   * 夜间把缓冲的篇章启发式合成「关系故事链」写入 dyad episode。
+   * 无缓冲则从近期 history 抽一条。
+   */
+  async synthesizeEpisodesNightly(now = Date.now()) {
+    const buffer = this._episodeBuffer || [];
+    this._episodeBuffer = [];
+    let chain = null;
+    if (buffer.length >= 1) {
+      chain = synthesizeEpisodeChain(buffer, { label: new Date(now).toISOString().slice(0, 10) });
+    } else if (this.history?.length >= 4) {
+      const ep = buildEpisodeHeuristic(this.history.slice(-16), { now });
+      if (ep) chain = synthesizeEpisodeChain([ep], { label: new Date(now).toISOString().slice(0, 10) });
+    }
+    if (!chain) return null;
+    if (typeof this.memory.recordEpisode === 'function') return this.memory.recordEpisode(chain);
+    if (typeof this.memory.recordSelfEvent === 'function') {
+      return this.memory.recordSelfEvent(chain.content, { narrative: chain.title, importance: chain.importance });
+    }
+    return null;
   }
 
   /**
@@ -409,19 +1613,19 @@ export class Orchestrator {
   }
 
   /** 回复返回后触发的后台状态更新, 任一失败只记日志, 不影响已发出的回复。 */
-  afterReply(userMessage, reply) {
+  afterReply(userMessage, reply, meta = {}) {
     if (this.afterReplyEnqueue) {
-      return Promise.resolve(this.afterReplyEnqueue({ userMessage, reply }))
+      return Promise.resolve(this.afterReplyEnqueue({ userMessage, reply, ...meta }))
         .catch((error) => {
           console.error('[afterReply.enqueue]', error);
-          return this.runAfterReply(userMessage, reply);
+          return this.runAfterReply(userMessage, reply, meta);
         });
     }
-    return this.runAfterReply(userMessage, reply);
+    return this.runAfterReply(userMessage, reply, meta);
   }
 
   /** 真正执行回复后状态更新，供持久队列 worker 调用。 */
-  runAfterReply(userMessage, reply) {
+  runAfterReply(userMessage, reply, meta = {}) {
     const turns = [
       { role: 'user', content: userMessage },
       { role: 'assistant', content: reply },
@@ -429,9 +1633,40 @@ export class Orchestrator {
     const tasks = [this.stateLayer.evolve(turns), this.memory.observe(turns), this.relationship.bump()];
     // 世界观系统: 后台判断这一轮要不要推进世界线 (大多数寻常对话不推进, 见 WorldDimension.evolve)。
     if (this.world) tasks.push(this.world.evolve(turns));
+    // Episode · 会话篇章：历史够长时落一条 dyad 叙事记忆（启发式，不改 fact_core）
+    if (typeof this.memory.recordEpisode === 'function' || typeof this.memory.recordSelfEvent === 'function') {
+      tasks.push(this.maybeRecordEpisode(meta.history ?? this.history, turns));
+    }
     return Promise.allSettled(tasks).then((results) => {
       for (const r of results) if (r.status === 'rejected') console.error('[afterReply]', r.reason);
       return results;
+    });
+  }
+
+  /**
+   * 从最近对话抽篇章；每 N 轮最多落一条，避免刷屏。
+   */
+  async maybeRecordEpisode(history = [], extraTurns = []) {
+    const now = this.now();
+    const last = this._lastEpisodeAt || 0;
+    // 至少间隔 8 分钟，且历史至少 4 条消息
+    if (now - last < 8 * 60 * 1000) return null;
+    const turns = [...(history || []).slice(-12), ...extraTurns];
+    if (turns.filter((t) => t?.role === 'user').length < 2) return null;
+    const ep = buildEpisodeHeuristic(turns, { now });
+    if (!ep) return null;
+    this._lastEpisodeAt = now;
+    // 缓冲供夜间合成故事链；同时落一条即时篇章
+    this._episodeBuffer = [...(this._episodeBuffer || []), ep].slice(-8);
+    if (typeof this.memory.recordEpisode === 'function') {
+      return this.memory.recordEpisode(ep);
+    }
+    // 降级：记为 self 事件也能被召回
+    return this.memory.recordSelfEvent(ep.content, {
+      narrative: ep.title,
+      importance: ep.importance,
+      valence: ep.emotion > 0.5 ? 0.2 : 0.1,
+      intensity: ep.emotion,
     });
   }
 }
@@ -477,7 +1712,11 @@ function buildPersonaExtra(config) {
 function buildIdentityConstraints(config) {
   if (!config?.identityConstraints?.length) return '';
   const bullets = config.identityConstraints.map((s) => `- ${s}`).join('\n');
-  return `【身份设定·硬约束】以下是关于对方身份的确定事实, 任何时候都不能编造/推测出与之矛盾的内容:\n${bullets}`;
+  return [
+    '【身份设定·硬约束】以下是关于对方身份的确定事实, 任何时候都不能编造/推测出与之矛盾的内容:',
+    bullets,
+    '用法: 只用于避免身份穿帮(如别问公司/加班/回宿舍)。不要每轮主动念这些约束, 更不要在亲密话题里突然跳到「明天上课困了别怪我」当万能结尾。',
+  ].join('\n');
 }
 
 function normalizeHistory(turns = []) {
@@ -486,10 +1725,29 @@ function normalizeHistory(turns = []) {
     .map((t) => ({ role: t.role, content: String(t.content) }));
 }
 
+function mergeStoryCast(...groups) {
+  const out = [];
+  const seen = new Set();
+  for (const member of groups.flat()) {
+    const name = String(member?.name || '').trim();
+    if (!name || seen.has(name)) continue;
+    seen.add(name);
+    out.push(member);
+  }
+  return out;
+}
+
+/** 取已知间隔中的较大值：进程内时钟与持久历史任一发现跨时段，都必须结束旧物理场景。 */
+function maxKnown(...values) {
+  const known = values.map(Number).filter(Number.isFinite).filter((n) => n >= 0);
+  return known.length ? Math.max(...known) : null;
+}
+
 function buildProactiveInstruction(ctx = {}) {
   const reason = ctx.reason ? `触发原因: ${ctx.reason}\n` : '';
   const style = ctx.style ? `风格要求: ${ctx.style}\n` : '';
-  return `${reason}${style}现在不是用户刚发来消息, 而是你想主动找对方说一句话。生成一条自然、简短、不打扰人的主动开场, 不要解释你在执行任务。`;
+  const guide = ctx.contentPack?.styleGuide || PROACTIVE_STYLE_GUIDE;
+  return `${reason}${style}${guide}\n现在不是用户刚发来消息, 而是你想主动找对方说一句话。生成一条自然、简短、有生活信息、不打扰人的主动开场；禁止空「在吗」；不要解释你在执行任务。`;
 }
 
 /** L3: 把她此刻的生活活动转成一句主动开场的由头。无活动则返回 undefined (退回默认 reason)。 */
@@ -503,4 +1761,58 @@ function activityReason(life) {
 function buildProactiveSituation(ctx = {}) {
   const reason = ctx.reason ? ` (${ctx.reason})` : '';
   return `这一刻不是对方发消息过来, 是你自己想主动找对方说点什么${reason}。`;
+}
+
+/** 从召回 hits 里抽出 episode/篇章类记忆文本，供 prompt 注入。 */
+function extractEpisodeTexts(hits = []) {
+  return (hits || [])
+    .filter((h) => h && (h.type === 'episode' || /【篇章】|篇章/.test(String(h.fact_core || h.content || h.narrative || ''))))
+    .map((h) => h.narrative || h.content || h.fact_core)
+    .filter(Boolean)
+    .slice(0, 3);
+}
+
+/** 对外暴露的本轮计划摘要（debug / API） */
+function summarizeTurnPlan(turn) {
+  if (!turn) return null;
+  return {
+    historyTurns: turn.historyTurns,
+    useMonologue: turn.useMonologue,
+    recallQuery: turn.recallQuery,
+    partsBudget: turn.partsBudget,
+    replyFormat: turn.replyFormat ?? null,
+    turnBrief: turn.turnBrief ?? null,
+  };
+}
+
+/** 对外暴露的结构化决策摘要 */
+function summarizeStructured(structured) {
+  if (!structured) return null;
+  return {
+    attitude: structured.attitude,
+    lengthHint: structured.lengthHint,
+    mentionStory: structured.mentionStory,
+    mentionUnfinished: structured.mentionUnfinished,
+    wantPhoto: structured.wantPhoto,
+    bubbleCount: structured.bubbleCount,
+    replyFormat: structured.replyFormat,
+    actions: structured.actions || [],
+    note: structured.note || '',
+    source: structured.source,
+  };
+}
+
+/** 对外暴露的本场会话线摘要 */
+function summarizeSessionThread(thread) {
+  if (!thread || !thread.turnCount) return null;
+  return {
+    turnCount: thread.turnCount,
+    primaryTopic: thread.primaryTopic,
+    topics: thread.topics || [],
+    emotionalTone: thread.emotionalTone,
+    openQuestions: (thread.openQuestions || []).map((q) => q.text),
+    openCommitments: (thread.commitments || [])
+      .filter((c) => c.status === 'open')
+      .map((c) => ({ who: c.who, text: c.text })),
+  };
 }

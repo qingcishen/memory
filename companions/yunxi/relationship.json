@@ -1,0 +1,10 @@
+{
+  "emotion_baseline": {
+    "valence": 0.1,
+    "warmth": 0.55,
+    "half_life_hours": 6
+  },
+  "relationship": {
+    "start_stage": "暧昧"
+  }
+}

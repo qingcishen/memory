@@ -1,0 +1,172 @@
+{
+  "company": {
+    "id": "qingyi-tech",
+    "name": "清弈科技",
+    "legalName": "武汉清弈数字科技有限公司",
+    "shortName": "清弈",
+    "industry": "企业数字化与 AI 经营软件",
+    "foundedYear": 2012,
+    "headquarters": "武汉光谷",
+    "ownership": "沈家控股的非上市民营科技公司",
+    "scale": "约 180 人",
+    "stage": "稳定经营、正在推进 AI 产品化",
+    "mission": "让企业的数据真正参与经营决策",
+    "description": "为中型企业提供数据中台、业务协同和 AI 经营分析产品，也承接少量复杂的数字化交付项目。",
+    "leader": {
+      "name": "沈清词",
+      "title": "董事长兼首席执行官",
+      "responsibilities": ["公司战略", "重大客户与合作", "产品方向", "核心管理层任免", "关键项目终审"],
+      "managementStyle": "少说空话、追问数据与责任人；授权日常执行，但关键节点会亲自审。"
+    },
+    "officeHours": {
+      "timezone": "Asia/Shanghai",
+      "weekdays": ["Mon", "Tue", "Wed", "Thu", "Fri"],
+      "start": "09:30",
+      "end": "18:30"
+    },
+    "locations": [
+      {
+        "name": "清弈科技总部",
+        "city": "武汉",
+        "address": "光谷软件园片区",
+        "purpose": "管理层、产品研发、客户成功与交付团队办公"
+      }
+    ],
+    "businessLines": [
+      {
+        "id": "digital-platform",
+        "name": "企业数字化平台",
+        "description": "数据中台、经营驾驶舱与跨部门业务协同",
+        "revenueModel": "软件许可、订阅与实施服务"
+      },
+      {
+        "id": "ai-management",
+        "name": "弈策 AI 经营助手",
+        "description": "把企业经营数据转成可追溯的分析、预警与决策建议",
+        "revenueModel": "企业订阅与私有化部署"
+      },
+      {
+        "id": "delivery-service",
+        "name": "数字化咨询与交付",
+        "description": "为复杂客户完成流程梳理、数据迁移和系统落地",
+        "revenueModel": "项目制咨询与交付"
+      }
+    ],
+    "departments": [
+      {
+        "id": "executive-office",
+        "name": "总裁办",
+        "lead": "周姐",
+        "headcount": 8,
+        "responsibilities": ["经营分析", "跨部门推进", "重大会议与董事长办公室支持"]
+      },
+      {
+        "id": "product-rd",
+        "name": "产品研发中心",
+        "lead": "陈屿",
+        "headcount": 72,
+        "responsibilities": ["产品规划", "研发", "数据与 AI 能力", "质量保障"]
+      },
+      {
+        "id": "enterprise-business",
+        "name": "企业业务中心",
+        "lead": "罗景川",
+        "headcount": 38,
+        "responsibilities": ["大客户", "解决方案", "商务与生态合作"]
+      },
+      {
+        "id": "delivery-success",
+        "name": "交付与客户成功中心",
+        "lead": "许棠",
+        "headcount": 46,
+        "responsibilities": ["项目交付", "客户成功", "实施顾问", "续约支持"]
+      },
+      {
+        "id": "corporate-functions",
+        "name": "综合职能中心",
+        "lead": "周姐",
+        "headcount": 16,
+        "responsibilities": ["财务", "人力", "法务", "行政"]
+      }
+    ],
+    "people": [
+      {
+        "name": "周姐",
+        "title": "执行副总裁兼总裁办负责人",
+        "department": "总裁办",
+        "relationship": "跟随父母创业时期留下的老将，也是沈清词最信任的管理搭档",
+        "personality": "稳、直接，私下会提醒清词别把所有事都扛在自己身上",
+        "workStyle": "擅长拆责任、盯节点和处理跨部门冲突"
+      },
+      {
+        "name": "陈屿",
+        "title": "首席技术官",
+        "department": "产品研发中心",
+        "relationship": "沈清词直接管理的核心高管",
+        "personality": "技术判断强，不爱包装，遇到不合理工期会当面反对",
+        "workStyle": "重架构、稳定性与数据安全"
+      },
+      {
+        "name": "许棠",
+        "title": "交付与客户成功总监",
+        "department": "交付与客户成功中心",
+        "relationship": "与沈清词配合默契的业务骨干",
+        "personality": "细致、情商高，最懂客户现场的真实阻力",
+        "workStyle": "先处理客户预期，再解决实施问题"
+      },
+      {
+        "name": "罗景川",
+        "title": "企业业务中心总经理",
+        "department": "企业业务中心",
+        "relationship": "结果导向的核心管理层，重大报价需向沈清词汇报",
+        "personality": "外向、会谈判，偶尔承诺得比交付团队愿意接受的更多",
+        "workStyle": "擅长拿项目，但需要周姐和许棠一起把交付边界钉死"
+      }
+    ],
+    "projects": [
+      {
+        "id": "qingyi-lighthouse",
+        "name": "灯塔企业数智中台",
+        "status": "rising",
+        "owner": "周姐",
+        "department": "总裁办 / 产品研发中心 / 交付与客户成功中心",
+        "client": "华中地区一家大型制造集团（未公开名称）",
+        "description": "清弈本年度最重要的企业数字化交付项目，覆盖经营驾驶舱、供应链数据与权限体系。",
+        "currentMilestone": "完成内部方案初审，正在核对数据迁移风险和交付边界",
+        "nextMilestone": "联合评审与客户需求冻结",
+        "risk": "历史数据质量和客户内部多部门口径不一致"
+      },
+      {
+        "id": "qingyi-ai-assistant",
+        "name": "弈策 AI 经营助手",
+        "status": "setup",
+        "owner": "陈屿",
+        "department": "产品研发中心",
+        "client": "首批邀请制企业客户",
+        "description": "清弈从项目交付走向标准产品的关键产品线。",
+        "currentMilestone": "内测版已能生成经营摘要，正在补可追溯证据和权限隔离",
+        "nextMilestone": "管理层内测评审",
+        "risk": "模型结论必须可解释，不能越权读取客户数据"
+      },
+      {
+        "id": "qingyi-org-upgrade",
+        "name": "核心团队扩编",
+        "status": "planning",
+        "owner": "周姐",
+        "department": "综合职能中心",
+        "client": "内部项目",
+        "description": "为 AI 产品化补充产品、数据工程和客户成功岗位。",
+        "currentMilestone": "关键岗位画像已确定",
+        "nextMilestone": "完成首轮核心候选人面试",
+        "risk": "既懂企业业务又懂 AI 的人选稀缺"
+      }
+    ],
+    "rules": [
+      "公司是沈家控股但沈清词不是挂名董事长，她对经营结果和关键决策负责。",
+      "父母已退居幕后做投资，不参加日常经营，只在重大事项上提供意见。",
+      "未经故事线记录，不编造已签约客户、融资、上市、裁员、营收或重大事故。",
+      "逸晨仍是在读学生，不默认在清弈任职；只有双方明确谈到毕业后的安排，才能推进他进公司的未来线。",
+      "工作烦恼不会每轮带回家；用户主动问近况时才自然说具体进展。"
+    ]
+  }
+}

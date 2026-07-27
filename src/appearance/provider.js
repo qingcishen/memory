@@ -93,28 +93,34 @@ export class OpenAIImageProvider {
         ? { output_compression: Math.max(0, Math.min(100, settings.output_compression)) }
         : {}),
     };
-    const res = await this.fetchImpl(`${this.baseURL}/images/generations`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
-      body: JSON.stringify(body),
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(`图片生成失败: ${data?.error?.message || `HTTP ${res.status}`}`);
-    const item = data?.data?.[0];
-    const mime = settings.output_format === 'jpeg' ? 'image/jpeg' : settings.output_format === 'webp' ? 'image/webp' : 'image/png';
-    const url = item?.url || (item?.b64_json ? `data:${mime};base64,${item.b64_json}` : '');
-    if (!url) throw new Error('图片生成成功但响应里没有 url 或 b64_json');
-    return {
-      url,
-      seed: item?.seed ?? opts.seed ?? null,
-      meta: { provider: 'openai-compatible', model: this.model, prompt: finalPrompt, settings, lora: loraMeta(settings) },
-    };
+    const timeoutMs = Math.max(30_000, Number(settings.timeoutMs) || 240_000);
+    try {
+      const res = await this.fetchImpl(`${this.baseURL}/images/generations`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },
+        body: JSON.stringify(body),
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(`图片生成失败: ${data?.error?.message || `HTTP ${res.status}`}`);
+      const item = data?.data?.[0];
+      const mime = settings.output_format === 'jpeg' ? 'image/jpeg' : settings.output_format === 'webp' ? 'image/webp' : 'image/png';
+      const url = item?.url || (item?.b64_json ? `data:${mime};base64,${item.b64_json}` : '');
+      if (!url) throw new Error('图片生成成功但响应里没有 url 或 b64_json');
+      return {
+        url,
+        seed: item?.seed ?? opts.seed ?? null,
+        meta: { provider: 'openai-compatible', model: this.model, prompt: finalPrompt, settings, lora: loraMeta(settings) },
+      };
+    } catch (error) {
+      throw wrapImageFetchError('图片生成', error, timeoutMs);
+    }
   }
 
   async edit(prompt, referenceImages = [], opts = {}) {
     if (!this.baseURL || !this.apiKey || !this.model || !referenceImages.length) return this.generate(prompt, opts);
     const settings = { ...this.defaults, ...opts };
-    const finalPrompt = withLoraTrigger(prompt, settings);
+    const finalPrompt = withLoraTrigger(withReferenceIdentityPrefix(prompt, { hasReferences: true }), settings);
     const form = new FormData();
     form.set('model', this.model);
     form.set('prompt', finalPrompt);
@@ -123,7 +129,10 @@ export class OpenAIImageProvider {
     if (!/^gpt-image-2(?:$|-)/i.test(this.model) && settings.input_fidelity) {
       form.set('input_fidelity', settings.input_fidelity);
     }
-    for (const ref of referenceImages.slice(0, 16)) {
+    // 默认最多 2 张核心脸图：4 张×2MB 易导致链路 fetch failed / 极慢
+    const maxRefs = Math.max(1, Math.min(4, Number(settings.maxReferences) || 2));
+    const refs = referenceImages.slice(0, maxRefs);
+    for (const ref of refs) {
       const bytes = ref.buffer ?? await import('node:fs/promises').then((m) => m.readFile(ref.path));
       form.append('image[]', new Blob([bytes], { type: ref.mime || 'image/png' }), ref.name || 'reference.png');
     }
@@ -136,23 +145,75 @@ export class OpenAIImageProvider {
     if (settings.output_format !== 'png' && Number.isFinite(settings.output_compression)) {
       form.set('output_compression', String(Math.max(0, Math.min(100, settings.output_compression))));
     }
-    const res = await this.fetchImpl(`${this.baseURL}/images/edits`, {
-      method: 'POST', headers: { authorization: `Bearer ${this.apiKey}` }, body: form,
-    });
-    const data = await res.json().catch(() => null);
-    if (!res.ok) throw new Error(`参考图生成失败: ${data?.error?.message || `HTTP ${res.status}`}`);
-    const item = data?.data?.[0];
-    const mime = settings.output_format === 'jpeg' ? 'image/jpeg' : settings.output_format === 'webp' ? 'image/webp' : 'image/png';
-    const url = item?.url || (item?.b64_json ? `data:${mime};base64,${item.b64_json}` : '');
-    if (!url) throw new Error('参考图生成成功但响应里没有图片');
-    return { url, seed: item?.seed ?? null, meta: { provider: 'openai-compatible-edit', model: this.model, prompt: finalPrompt, settings, referenceCount: referenceImages.length, usage: data?.usage, lora: loraMeta(settings) } };
+    const timeoutMs = Math.max(30_000, Number(settings.timeoutMs) || 240_000);
+    try {
+      const res = await this.fetchImpl(`${this.baseURL}/images/edits`, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${this.apiKey}` },
+        body: form,
+        signal: AbortSignal.timeout(timeoutMs),
+      });
+      const data = await res.json().catch(() => null);
+      if (!res.ok) throw new Error(`参考图生成失败: ${data?.error?.message || `HTTP ${res.status}`}`);
+      const item = data?.data?.[0];
+      const mime = settings.output_format === 'jpeg' ? 'image/jpeg' : settings.output_format === 'webp' ? 'image/webp' : 'image/png';
+      const url = item?.url || (item?.b64_json ? `data:${mime};base64,${item.b64_json}` : '');
+      if (!url) throw new Error('参考图生成成功但响应里没有图片');
+      return {
+        url,
+        seed: item?.seed ?? null,
+        meta: {
+          provider: 'openai-compatible-edit',
+          model: this.model,
+          prompt: finalPrompt,
+          settings,
+          referenceCount: refs.length,
+          usage: data?.usage,
+          lora: loraMeta(settings),
+        },
+      };
+    } catch (error) {
+      throw wrapImageFetchError('参考图编辑', error, timeoutMs);
+    }
   }
+}
+
+function wrapImageFetchError(kind, error, timeoutMs) {
+  if (
+    error?.name === 'TimeoutError'
+    || error?.name === 'AbortError'
+    || /aborted|timeout/i.test(String(error?.message || ''))
+  ) {
+    return new Error(`${kind}超时（>${Math.round(timeoutMs / 1000)}s）。可减少参考图或稍后重试`);
+  }
+  const cause = error?.cause?.message || error?.cause?.code || '';
+  const msg = error?.message || String(error);
+  if (/fetch failed/i.test(msg)) {
+    return new Error(
+      `${kind}网络失败: fetch failed${cause ? ` (${cause})` : ''}。参考图过大或链路不稳时常见，将尝试降级或请重试`,
+    );
+  }
+  return error instanceof Error ? error : new Error(String(error));
 }
 
 export function withLoraTrigger(prompt, opts = {}) {
   const trigger = String(opts.loraTrigger ?? IMAGE_LORA_TRIGGER ?? '').trim();
   if (!trigger || String(prompt).includes(trigger)) return prompt;
   return `${trigger}, ${prompt}`;
+}
+
+/** 参考图 edit：强制身份锁作用域前缀 */
+export function withReferenceIdentityPrefix(prompt, { hasReferences = true } = {}) {
+  if (!hasReferences) return prompt;
+  const p = String(prompt || '');
+  if (/face shape|facial (feature )?proportion|ONLY for face/i.test(p)) return p;
+  // 动态 import 避免循环
+  const ban =
+    'Use reference image ONLY for face shape contour and facial feature proportions. ' +
+    'Do not copy expression, gaze, pose, hairstyle, outfit, or mood from the reference. ';
+  const lock =
+    'Same woman identity: East Asian adult face proportions consistent. ';
+  return `${ban}${lock}${p}`;
 }
 
 export function loraMeta(opts = {}) {

@@ -69,6 +69,16 @@ console.log('toLifePrompt / lifeSamplingHints');
   ok('低 health prompt 提醒身体不舒服', lowPrompt.includes('身体有点不舒服'));
   ok('高 satiety prompt 提醒刚吃饱', toLifePrompt({ energy: 0.6, satiety: 0.9, health: 1 }).includes('刚吃饱很满足'));
 
+  // 回归：sick_until 已过但仍在场——避免对话历史里"还病着"的叙事惯性一直续下去，
+  // 哪怕只是亲一下也被当成要被劝退的邀请（见 docs 里 stop_signal 那个真实案例）。
+  const justRecovered = { energy: 0.7, satiety: 0.5, health: 0.75, sick_until: '2020-01-01T00:00:00.000Z' };
+  const recoveredPrompt = toLifePrompt(justRecovered, Date.now());
+  ok('sick_until 已过 → 不再是硬性"生病"措辞', !recoveredPrompt.includes('你现在生病了'));
+  ok('sick_until 已过 → 显式纠正"还难受"的叙事惯性', recoveredPrompt.includes('不是还在生病'));
+  const stillSick = { energy: 0.7, satiety: 0.5, health: 0.75, sick_until: '2099-01-01T00:00:00.000Z' };
+  ok('sick_until 未到 → 仍是硬性"生病"措辞，不误伤', toLifePrompt(stillSick, Date.now()).includes('你现在生病了'));
+  ok('从没生病过 (sick_until 为空) → 不触发纠正', !toLifePrompt({ energy: 0.7, satiety: 0.5, health: 0.75 }, Date.now()).includes('不是还在生病'));
+
   const healthyHigh = lifeSamplingHints({ energy: 0.9, satiety: 0.6, health: 1 });
   const sickHigh = lifeSamplingHints({ energy: 0.9, satiety: 0.6, health: 0.4 });
   ok('高 energy 放宽 maxTokens', healthyHigh.maxTokens === 650);
@@ -139,10 +149,29 @@ console.log('StateLayer snapshot/toPrompt/samplingHints/evolve');
     },
   };
   const desire = { async snapshot() { return { attention: 0.8, sharing: 0, comfort: 0, security: 0 }; }, async evolve() {} };
+  const intimacy = {
+    async snapshot() {
+      return {
+        arousal: 0, engagement: 0, aftercare_need: 0, sexual_tension: 0,
+        sexual_openness: 0.35, satisfaction: 0.5, scene_phase: 'none',
+        last_intimate_at: null, consent: { active: false, pace: 'normal', stop_signal: false }, body_focus: null,
+      };
+    },
+    async evolve() {},
+    hardBoundaries: null,
+  };
+  const outfit = {
+    async snapshot() {
+      return { current: { id: 'home', summary: '居家针织', context: 'home', pieces: {} }, context: 'home', changed_at: null, updated_at: null };
+    },
+    async evolve() {},
+  };
   const layer = new StateLayer({
     userId: 'u_state_layer',
     life,
     desire,
+    intimacy,
+    outfit,
     read: async () => ({
       mood: { valence: 0.8, arousal: 0.1 },
       relationship: { closeness: 0.5 },
@@ -150,15 +179,21 @@ console.log('StateLayer snapshot/toPrompt/samplingHints/evolve');
     }),
   });
   const snapshot = await layer.snapshot();
-  ok('snapshot() 返回三个状态维度', Object.keys(snapshot).sort().join(',') === 'desires,emotion,life');
+  ok(
+    'snapshot() 含 emotion/life/desires/intimacy/outfit',
+    snapshot.emotion && snapshot.life && snapshot.desires && snapshot.intimacy && snapshot.outfit && snapshot.relationship
+  );
   ok('desires 维度进入状态快照', snapshot.desires.attention === 0.8);
+  ok('intimacy 维度进入状态快照', snapshot.intimacy.scene_phase === 'none');
+  ok('outfit 维度进入状态快照', snapshot.outfit.current?.summary === '居家针织');
   ok('emotion 维度只有 valence/warmth', Object.keys(snapshot.emotion).sort().join(',') === 'valence,warmth');
   ok('life 维度返回 energy/satiety/health', snapshot.life.energy === 0.9 && snapshot.life.satiety === 0.1 && snapshot.life.health === 0.4);
 
   const prompt = layer.toPrompt(snapshot);
   ok('toPrompt() 拼接 emotion 指引', prompt.includes('心情不错'));
   ok('toPrompt() 拼接 life 饥饿/健康指引', prompt.includes('有点饿了') && prompt.includes('身体有点不舒服'));
-  ok('toPrompt() 拼接高需求表现指引', prompt.includes('求关注但嘴硬'));
+  ok('toPrompt() 拼接高需求表现指引', prompt.includes('求关注') || prompt.includes('关注'));
+  ok('toPrompt() 拼接穿搭', prompt.includes('居家针织') || prompt.includes('穿搭'));
   ok('samplingHints() 使用 life 维度并受 health 收紧', layer.samplingHints(snapshot).maxTokens === 260);
 
   await layer.evolve([{ role: 'user', content: '你好' }]);

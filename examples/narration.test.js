@@ -4,6 +4,7 @@ import {
   SCENE_TYPES,
   NARRATION_DIRECTIVES,
   EMOTION_NUANCE,
+  NO_REPEAT_HINT,
   buildNarrationPrompt,
   parseSceneLabel,
   composeClassifyInput,
@@ -21,29 +22,32 @@ const ok = (name, cond) => {
 console.log('buildNarrationPrompt / NARRATION_DIRECTIVES (纯逻辑)');
 {
   ok('daily 没有额外旁白指令', buildNarrationPrompt('daily') === '');
-  ok('romantic 有旁白提示', buildNarrationPrompt('romantic').includes('【旁白提示】'));
-  ok('tense 有旁白提示', buildNarrationPrompt('tense').includes('【旁白提示】'));
-  ok('conflict 有旁白提示', buildNarrationPrompt('conflict').includes('【旁白提示】'));
-  ok('intimate 是硬性规则', buildNarrationPrompt('intimate').includes('【性爱/亲密场景·硬性规则】'));
+  ok('romantic 有旁白提示', buildNarrationPrompt('romantic').includes('【旁白'));
+  ok('tense 有旁白提示', buildNarrationPrompt('tense').includes('【旁白'));
+  ok('conflict 有旁白提示', buildNarrationPrompt('conflict').includes('【旁白'));
+  ok('intimate 强调像真人而非网文', buildNarrationPrompt('intimate').includes('【亲密场景·像真人'));
+  ok('intimate 要求旁白短', buildNarrationPrompt('intimate').includes('1～3 句'));
   ok('未知场景类型 -> 空串', buildNarrationPrompt('not-a-scene') === '');
   ok('每种场景类型在映射表里都有一条(可能为空)', SCENE_TYPES.every((t) => typeof NARRATION_DIRECTIVES[t] === 'string'));
   ok('通用默认不含角色专属名字', !Object.values(NARRATION_DIRECTIVES).some((d) => /清词|逸晨/.test(d)));
 
   // 角色人设覆盖 (companions/<id>/narration.json -> CompanionConfig.narrationDirectives)
   const overrides = { romantic: '角色专属的暧昧旁白写法', intimate: '   ' };
-  ok('人设覆盖优先于通用默认', buildNarrationPrompt('romantic', overrides) === '角色专属的暧昧旁白写法');
-  ok('空白覆盖回退通用默认', buildNarrationPrompt('intimate', overrides).includes('【性爱/亲密场景·硬性规则】'));
-  ok('未覆盖的场景走通用默认', buildNarrationPrompt('tense', overrides).includes('【旁白提示】'));
-  ok('overrides 为 null 安全', buildNarrationPrompt('romantic', null).includes('【旁白提示】'));
+  ok('人设覆盖优先于通用默认', buildNarrationPrompt('romantic', overrides).startsWith('角色专属的暧昧旁白写法'));
+  ok('空白覆盖回退通用默认', buildNarrationPrompt('intimate', overrides).includes('【亲密场景·像真人'));
+  ok('未覆盖的场景走通用默认', buildNarrationPrompt('tense', overrides).includes('【旁白'));
+  ok('overrides 为 null 安全', buildNarrationPrompt('romantic', null).includes('【旁白'));
+  ok('只要出 narration part 就带防复读提示', buildNarrationPrompt('romantic', overrides).includes(NO_REPEAT_HINT));
+  ok('daily (不出 narration) 不带防复读提示', !buildNarrationPrompt('daily').includes(NO_REPEAT_HINT));
 }
 
 console.log('buildNarrationPrompt: emotionLabel 情绪基调叠加 (接入 B 行为策略线)');
 {
   const withNuance = buildNarrationPrompt('tense', null, '委屈');
-  ok('场景本有旁白 + 情绪标签有细节 -> 叠加基调段', withNuance.includes('【旁白提示】') && withNuance.includes('【情绪基调】') && withNuance.includes(EMOTION_NUANCE.委屈));
+  ok('场景本有旁白 + 情绪标签有细节 -> 叠加基调段', withNuance.includes('【旁白') && withNuance.includes('【情绪基调】') && withNuance.includes(EMOTION_NUANCE.委屈));
   ok('daily 场景即使情绪标签有细节也不强加旁白', buildNarrationPrompt('daily', null, '委屈') === '');
-  ok('情绪标签为空不叠加', buildNarrationPrompt('tense', null, null) === NARRATION_DIRECTIVES.tense);
-  ok('情绪标签不在细节表里 (如 平静/开心) 不叠加', buildNarrationPrompt('romantic', null, '开心') === NARRATION_DIRECTIVES.romantic);
+  ok('情绪标签为空不叠加', buildNarrationPrompt('tense', null, null) === `${NARRATION_DIRECTIVES.tense}\n${NO_REPEAT_HINT}`);
+  ok('情绪标签不在细节表里 (如 平静/开心) 不叠加', buildNarrationPrompt('romantic', null, '开心') === `${NARRATION_DIRECTIVES.romantic}\n${NO_REPEAT_HINT}`);
   ok('吃醋/撒娇/心疼都在细节表里', ['吃醋', '撒娇', '心疼'].every((k) => typeof EMOTION_NUANCE[k] === 'string' && EMOTION_NUANCE[k]));
   const overridden = buildNarrationPrompt('romantic', { romantic: '角色专属写法' }, '撒娇');
   ok('人设覆盖之上依然能叠加情绪基调', overridden.startsWith('角色专属写法') && overridden.includes(EMOTION_NUANCE.撒娇));

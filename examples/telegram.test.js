@@ -4,7 +4,7 @@ import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { LocalJsonHistoryStore } from '../src/orchestrator/historyStore.js';
-import { TelegramMemoryBot, parseAllowedChatIds, isAllowedChat, telegramUserId, chunkMessage, buildOutgoingMessages, ensureReplyParts, typingDelayMs, parseDataUrl, pickPolicyDelay, applyPartsBudget, simulateBehaviorDelay, startTypingHeartbeat } from '../src/telegram/bot.js';
+import { TelegramMemoryBot, PendingTurnStore, parseAllowedChatIds, isAllowedChat, telegramUserId, chunkMessage, buildOutgoingMessages, ensureReplyParts, typingDelayMs, parseDataUrl, pickPolicyDelay, applyPartsBudget, simulateBehaviorDelay, startTypingHeartbeat, pollRetryDelayMs, isRetryableReplyError, buildPendingResumeInput } from '../src/telegram/bot.js';
 
 let passed = 0;
 const ok = (name, cond) => {
@@ -58,12 +58,93 @@ console.log('buildOutgoingMessages / typingDelayMs (parts -> Telegram 消息)');
   ok('typingDelayMs 有上下限', typingDelayMs('短') >= 600 && typingDelayMs('a'.repeat(1000)) <= 4000);
 }
 
+console.log('pollRetryDelayMs (轮询失败退避, 代理/网络抖动时别刷爆日志和连接)');
+{
+  ok('退避指数增长', pollRetryDelayMs(1) < pollRetryDelayMs(2) && pollRetryDelayMs(2) < pollRetryDelayMs(3));
+  ok('退避有上限', pollRetryDelayMs(100) === 60000);
+  ok('第 1 次退避等于 base', pollRetryDelayMs(1) === 3000);
+  ok('0 次和 1 次一样 (至少退避一次)', pollRetryDelayMs(0) === pollRetryDelayMs(1));
+}
+
 console.log('ensureReplyParts (结构化 parts 为空时不静默)');
 {
   const existing = [{ type: 'dialogue', text: '原结构' }];
   ok('已有 parts 原样保留', ensureReplyParts('回退文字', existing) === existing);
   ok('parts 为空时使用 reply text', ensureReplyParts('  兜底回复  ', [])[0]?.text === '兜底回复');
   ok('reply 也为空时保持空数组', ensureReplyParts('', []).length === 0);
+}
+
+console.log('待续回合 (超时自动重试 + 持久化续接)');
+{
+  ok('超时/网络错误可重试，普通逻辑错误不盲目重试',
+    isRetryableReplyError(new Error('reply timed out after 90000ms')) &&
+    isRetryableReplyError(new Error('fetch failed')) &&
+    !isRetryableReplyError(new Error('invalid payload')));
+  const resume = buildPendingResumeInput('我把她抱到床上，替她换好睡衣。', '继续');
+  ok('续接输入同时保留原消息与新补充', resume.includes('抱到床上') && resume.includes('继续') && resume.includes('不要要求对方复述'));
+
+  const dir = await fs.mkdtemp(path.join(os.tmpdir(), 'telegram-pending-'));
+  const file = path.join(dir, 'pending.json');
+  const disk = new PendingTurnStore({ file });
+  await disk.set(42, { text: '不能丢的完整场景', eventId: 'telegram:7', attempts: 1 });
+  const reloaded = await new PendingTurnStore({ file }).get(42);
+  ok('待续回合落盘后可跨实例读回', reloaded.text === '不能丢的完整场景' && reloaded.attempts === 1);
+  ok('启动扫描能列出待续回合', (await disk.list())[0]?.chatId === '42');
+  await disk.clear(42);
+  ok('成功回复后删除待续回合', await disk.get(42) === null);
+  await fs.rm(dir, { recursive: true, force: true });
+
+  const makePending = (initial = null) => {
+    let value = initial;
+    return {
+      async get() { return value; },
+      async list() { return value ? [{ chatId: '42', ...value }] : []; },
+      async set(_chatId, next) { value = { ...next }; return value; },
+      async clear() { value = null; return true; },
+      current() { return value; },
+    };
+  };
+  const sent = [];
+  const api = { sendChatAction: async () => {}, sendMessage: async (_id, text) => { sent.push(text); } };
+  const behaviorStore = { load: async () => ({ stonewallAt: [] }) };
+  const pending = makePending();
+  let attempts = 0;
+  const telegram = new TelegramMemoryBot({
+    api, behaviorStore, pendingStore: pending, allowedChatIds: new Set(), personaFile: '/not-found.json',
+    // withTimeout() 内部用真实 setTimeout 和 mock 的 microtask-resolve 赛跑；50ms 在 CI/共享机器负载高时
+    // 会被系统调度抖动吃掉，导致真实超时抢在 mock 的 reject 前触发而误判——这里只需要"远大于 mock 的
+    // 近瞬时 resolve"，不测超时路径本身 (那部分由 isRetryableReplyError 的专门用例覆盖)，调大即可消除竞态。
+    replyTimeoutMs: 3000, replyRetryCount: 1, replyRetryDelayMs: 0, sleepFn: async () => {},
+  });
+  telegram.botForChat = () => ({
+    async reply() {
+      attempts++;
+      if (attempts === 1) throw new Error('fetch failed');
+      return { text: '接住了。', parts: [{ type: 'dialogue', text: '接住了。' }] };
+    },
+  });
+  telegram.deliverReply = async (_chatId, parts) => { sent.push(parts[0].text); return parts; };
+  await telegram.handleUpdate({ update_id: 10, message: { chat: { id: 42 }, text: '抱着她继续睡' } });
+  ok('首次网络失败会自动重试原消息', attempts === 2 && sent.some(text => text.includes('自动接着回')));
+  ok('重试成功才清除待续回合并投递答案', pending.current() === null && sent.includes('接住了。'));
+
+  const pendingResume = makePending({ text: '我把她抱到床上，替她换好睡衣。', eventId: 'telegram:old', createdAt: '2026-07-13T00:00:00Z' });
+  let resumedInput = '';
+  let historyInput = '';
+  const resumeBot = new TelegramMemoryBot({
+    api, behaviorStore, pendingStore: pendingResume, allowedChatIds: new Set(), personaFile: '/not-found.json',
+    replyRetryCount: 0, sleepFn: async () => {},
+  });
+  resumeBot.botForChat = () => ({ async reply(input, opts) {
+    resumedInput = input;
+    historyInput = opts.historyUserMessage;
+    return { text: '那就这样抱着睡。', parts: [{ type: 'dialogue', text: '那就这样抱着睡。' }] };
+  } });
+  resumeBot.deliverReply = async () => [];
+  const queued = await resumeBot.resumePendingTurns();
+  await resumeBot.chatQueues.get('42');
+  ok('Bot 启动会自动排队待续回合，不要求用户发继续', queued === 1 && resumedInput.includes('替她换好睡衣'));
+  ok('自动续答写入历史的是干净原文而非内部续接指令', historyInput.includes('替她换好睡衣') && !historyInput.includes('硬规则'));
 }
 
 console.log('startTypingHeartbeat (生成期间持续显示正在输入)');
@@ -124,7 +205,11 @@ console.log('TelegramMemoryBot.deliverReply B3 完整发送/合并');
   await delivery.deliverReply(42, [{ type: 'dialogue', text: '给你一个台阶' }, { type: 'dialogue', text: '多余第二条' }], {
     policy: { replyDelayMs: [0, 0], partsBudget: 1, stonewall: false }, behaviorState: saved.at(-1), bot: memoryBot,
   });
-  ok('下一轮完整发送全部台词并合并为一条', sent.at(-1) === '给你一个台阶\n\n多余第二条');
+  // 默认多气泡连发（非 MERGE=1）；两条台词都会发出
+  ok(
+    '下一轮完整发送全部台词（多气泡）',
+    sent.includes('给你一个台阶') && sent.includes('多余第二条'),
+  );
   ok('正常回复后清除强制台阶标志', saved.length === 0);
 }
 

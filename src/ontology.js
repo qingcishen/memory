@@ -5,6 +5,8 @@
 //   任何写路径都【禁止】改写已存在记忆的 fact_core —— 这是红线, 不是功能。
 //   情感层 (valence/intensity/narrative) 才允许被情绪状态机重构, 且漂移有界。
 
+import { attachPreferenceTier } from './product/preferenceTier.js';
+
 export const SUBJECT_KINDS = ['user', 'self', 'dyad'];
 export const MEMORY_TYPES = ['fact', 'episode', 'preference', 'relationship', 'reflection'];
 export const MODALITIES = ['text', 'image', 'audio'];
@@ -22,7 +24,7 @@ export function normalizeMemory(raw = {}) {
   const affect_valence = clamp(numOr(affect.valence ?? raw.affect_valence, 0), -1, 1);
   const affect_intensity = clamp(numOr(affect.intensity ?? raw.affect_intensity ?? raw.emotion, 0), 0, 1);
 
-  return {
+  const base = {
     type: MEMORY_TYPES.includes(raw.type) ? raw.type : 'fact',
     fact_core,
     // content 兼容旧字段: 默认等于 fact_core, 注入 prompt 时用 narrative ?? fact_core
@@ -39,6 +41,8 @@ export function normalizeMemory(raw = {}) {
     importance: clamp(numOr(raw.importance, 5), 1, 10),
     emotion: affect_intensity,
   };
+  // 偏好分层 locked/soft/whim（推断字段，不依赖新表列）
+  return attachPreferenceTier(base);
 }
 
 /**

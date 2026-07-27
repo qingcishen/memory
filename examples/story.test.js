@@ -57,7 +57,9 @@ console.log('StoryEngine.tick S2 每日推进闭环');
     worldRead: async () => ({ atmosphere: '忙碌' }), worldWrite: async (_u, _c, world) => effects.world.push(world),
   });
   const now = Date.parse('2026-07-11T04:00:00Z');
-  const beat = await engine.tick({ now });
+  const ignored = await engine.tick({ now, storylineIds: ['another-project'] });
+  ok('指定项目 ID 时不会误推进其他遗留故事线', ignored === null && generated === 0);
+  const beat = await engine.tick({ now, storylineIds: ['project'] });
   ok('tick 生成一拍并推进到 rising', beat?.stage === 'rising' && row.stage === 'rising');
   ok('拍子落 self 记忆', effects.memory[0].includes('周姐'));
   ok('负面拍子增加 sharing/comfort 需求', effects.desires[0].sharing === 0.7 && effects.desires[0].comfort > 0);

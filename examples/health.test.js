@@ -28,11 +28,11 @@ console.log('maybeFallSick (低频自动发病, 熬夜抬概率)');
   const sickState = { ...healthy, sick_until: new Date(now + 10 * HOUR).toISOString() };
   ok('已在病中 → 不重复发病', maybeFallSick(sickState, now, () => 0).sick === false);
 
-  // 熬夜抬概率: rng=0.04 在基础概率(0.02)之上但在熬夜倍率(0.06)之下
+  // 熬夜抬概率: rng=0.005 在基础概率(0.004)之上但在熬夜倍率(0.0064)之下
   const wellRested = { ...healthy, last_slept_at: new Date(now - 6 * HOUR).toISOString() };
   const sleepDeprived = { ...healthy, last_slept_at: new Date(now - 30 * HOUR).toISOString() };
-  ok('睡眠充足 + rng=0.04 → 不发病', maybeFallSick(wellRested, now, () => 0.04).sick === false);
-  ok('熬夜(>20h没睡) + rng=0.04 → 发病', maybeFallSick(sleepDeprived, now, () => 0.04).sick === true);
+  ok('睡眠充足 + rng=0.005 → 不发病', maybeFallSick(wellRested, now, () => 0.005).sick === false);
+  ok('熬夜(>20h没睡) + rng=0.005 → 发病', maybeFallSick(sleepDeprived, now, () => 0.005).sick === true);
 }
 
 console.log('detectCare (从对方的话里嗅关心)');
@@ -94,15 +94,15 @@ console.log('isLateNight / updateLateNightStreak (P2 身体专属参数: 熬夜�
   ok('非熬夜时段不改变 streak/日期', unchanged.late_night_streak === second.late_night_streak && unchanged.last_late_night_day === second.last_late_night_day);
 }
 
-console.log('maybeFallSick: sickProbability 覆盖 + 连续熬夜翻倍 (P2 身体专属参数)');
+console.log('maybeFallSick: sickProbability 覆盖 + 连续熬夜小幅抬升 (P2 身体专属参数)');
 {
   const highProb = maybeFallSick(healthy, now, () => 0.5, 24, { sickProbability: 0.6 });
   ok('sickProbability 覆盖后命中更高概率', highProb.sick === true);
   ok('不覆盖时同样的 rng 不命中(基础概率很低)', maybeFallSick(healthy, now, () => 0.5).sick === false);
 
   const streaked = { ...healthy, late_night_streak: PARAMS.health.lateNightStreakForDouble };
-  ok('未达标连续熬夜 + rng=0.03 → 不发病', maybeFallSick(healthy, now, () => 0.03).sick === false);
-  ok('连续熬夜达标(概率翻倍) + rng=0.03 → 发病', maybeFallSick(streaked, now, () => 0.03).sick === true);
+  ok('未达标连续熬夜 + rng=0.005 → 不发病', maybeFallSick(healthy, now, () => 0.005).sick === false);
+  ok('连续熬夜达标(概率抬升) + rng=0.005 → 发病', maybeFallSick(streaked, now, () => 0.005).sick === true);
 }
 
 console.log(`\nL4 健康闭环 全部 ${passed} 条断言通过`);

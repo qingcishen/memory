@@ -1,0 +1,18 @@
+[Unit]
+Description=Memory System Feishu Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/memory-system
+EnvironmentFile=/root/memory-system/.env
+Environment=NODE_ENV=production
+ExecStart=/usr/bin/node /root/memory-system/src/feishu/bot.js
+Restart=always
+RestartSec=8
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target

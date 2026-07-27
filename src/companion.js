@@ -1,7 +1,11 @@
 // 多角色 (multi-companion) · 人设配置。
 //
 // 同一 user 可拥有多个伴侣角色, 数据按 (userId, companionId) 隔离 (见 sql/schema.sql)。
-// 这里只管"角色的定义"——名字/性格/说话风格/外貌/初始 self 记忆——存进 companions 表;
+// 这里只管"角色的定义"——名字/性格/说话风格/外貌/初始 self 记忆——两条并行的存取路径:
+// - 文件: companions/<id>/ 目录式人设 (见 loadPersonaConfig), telegram/飞书/Discord bot 和控制台都走这条,
+//   由调用方显式 loadPersonaConfig() 后传给 Orchestrator({ config })。
+// - DB: companions 表 (见 upsertCompanion/getCompanion/listCompanions), Orchestrator 在没有显式传 config
+//   时会 fallback 去查; 本仓库目前的入口都显式传了文件人设, 这条路径留给以后接入 DB 管理角色的场景。
 // 角色的运行时记忆/状态仍走 memories / affective_state / life_state 等表, 按 companion_id 隔离。
 //
 // 校验用 zod (项目里第一个外部校验依赖; params.js 仍保持零依赖, 故 schema 单独放这里)。
@@ -56,6 +60,44 @@ export function normalizeCompanionProfile(input = {}) {
   return CompanionProfileSchema.parse(input);
 }
 
+const CompanyItemSchema = z.object({
+  id: z.string().optional(),
+  name: z.string().optional(),
+}).passthrough();
+
+export const CompanionCompanySchema = z.object({
+  id: z.string().min(1).default('company'),
+  name: z.string().min(1),
+  legalName: z.string().default(''),
+  shortName: z.string().default(''),
+  industry: z.string().default(''),
+  foundedYear: z.number().int().min(1800).max(2200).nullable().optional(),
+  headquarters: z.string().default(''),
+  ownership: z.string().default(''),
+  scale: z.string().default(''),
+  stage: z.string().default(''),
+  mission: z.string().default(''),
+  description: z.string().default(''),
+  leader: z.object({
+    name: z.string().default(''),
+    title: z.string().default(''),
+    responsibilities: z.array(z.string()).default([]),
+    managementStyle: z.string().default(''),
+  }).default({}),
+  officeHours: z.object({
+    timezone: z.string().default('Asia/Shanghai'),
+    weekdays: z.array(z.string()).default(['Mon', 'Tue', 'Wed', 'Thu', 'Fri']),
+    start: z.string().default('09:30'),
+    end: z.string().default('18:00'),
+  }).default({}),
+  businessLines: z.array(CompanyItemSchema).default([]),
+  departments: z.array(CompanyItemSchema).default([]),
+  people: z.array(CompanyItemSchema).default([]),
+  projects: z.array(CompanyItemSchema).default([]),
+  locations: z.array(CompanyItemSchema).default([]),
+  rules: z.array(z.string()).default([]),
+}).passthrough();
+
 export const CompanionConfigSchema = z.object({
   companionId: z.string().min(1).default('default'), // 隔离键, 默认 'default'
   name: z.string().min(1),                            // 她的名字 / 称呼 (= orchestrator companionName)
@@ -73,12 +115,89 @@ export const CompanionConfigSchema = z.object({
   relationshipStartStage: z.string().min(1).nullable().default(null),
   // 情绪基线: 目前只用 valence (mood 的初始正负向); 同样只在首次建档时生效一次。
   emotionBaseline: z.object({ valence: z.number().min(-1).max(1) }).nullable().default(null),
+  // E3 人设气质：半衰期 / 敏感度 / 消气速度（可选）
+  emotionProfile: z
+    .object({
+      baselineValence: z.number().min(-1).max(1).optional(),
+      valenceHalfLifeHours: z.number().min(0.5).max(72).optional(),
+      arousalHalfLifeHours: z.number().min(0.5).max(48).optional(),
+      sensitivity: z.number().min(0).max(1).optional(),
+      recoverBias: z.number().min(0.4).max(2).optional(),
+    })
+    .nullable()
+    .default(null),
   // 旁白指令按场景覆盖 (romantic/tense/conflict/intimate/daily -> 指令文本)。
   // 角色专属的旁白写法 (含尺度/称呼) 属于人设, 不属于库代码; 缺省回退 src/narration.js 的通用默认。
   narrationDirectives: z.record(z.string(), z.string()).nullable().default(null),
+  replyStyle: z.object({
+    nameAliases: z.array(z.string().min(1)).default([]),
+    bannedNarrationPhrases: z.array(z.string().min(1)).default([]),
+    bannedDialogueTails: z.array(z.string().min(1)).default([]),
+    promptRules: z.array(z.string().min(1)).default([]),
+  }).default({}),
   storyCast: z.array(z.object({ name: z.string().min(1), role: z.string().min(1), closeness: z.number().min(0).max(1).default(0.5) })).default([]),
   storylines: z.array(z.object({ id: z.string().min(1), title: z.string().min(1), stage: z.enum(['setup','rising','climax','cooldown','closed']).default('setup'), mood_link: z.number().min(-1).max(1).default(0), last_beat: z.string().default(''), next_beat_hint: z.string().default('') })).default([]),
+  company: CompanionCompanySchema.nullable().default(null),
   profile: CompanionProfileSchema.default({}),
+  // I 线人设: companions/<id>/intimacy.json
+  intimacyEnabled: z.boolean().nullable().default(null),
+  intimacyBaseline: z
+    .object({
+      sexual_openness: z.number().min(0).max(1).optional(),
+      satisfaction: z.number().min(0).max(1).optional(),
+      pace: z.enum(['slow', 'normal', 'eager']).optional(),
+    })
+    .nullable()
+    .default(null),
+  intimacyHardBoundaries: z.array(z.string().min(1)).default([]),
+  intimacySoftPreferences: z.array(z.string().min(1)).default([]),
+  intimacyStyleHints: z.array(z.string().min(1)).default([]),
+  // 角色欲望/驱力：高 libido 姐姐会更快攒张力、更早主动
+  intimacyDrive: z
+    .object({
+      libido: z.number().min(0).max(1).optional(),
+      tensionGrowthPerHour: z.number().min(0).max(0.1).optional(),
+      satisfactionDecayPerHour: z.number().min(0).max(0.05).optional(),
+      satisfactionFloor: z.number().min(0).max(0.6).optional(),
+      initiateThreshold: z.number().min(0.4).max(0.95).optional(),
+      highTensionThreshold: z.number().min(0.3).max(0.95).optional(),
+      promptTensionThreshold: z.number().min(0.2).max(0.9).optional(),
+      sisterLead: z.boolean().optional(),
+    })
+    .nullable()
+    .default(null),
+  // 姿势/前戏/敏感点知识库（结构宽松，运行时 normalize）
+  intimacyKnowledge: z
+    .object({
+      positions: z.array(z.any()).optional(),
+      foreplay: z.array(z.any()).optional(),
+      hotspots: z.array(z.any()).optional(),
+      pacing: z.array(z.any()).optional(),
+      switches: z.array(z.string()).optional(),
+    })
+    .nullable()
+    .default(null),
+  // O 线穿搭衣橱 + 包柜 + 妆台
+  outfitWardrobe: z
+    .object({
+      style: z.string().optional(),
+      defaults: z.record(z.string(), z.string()).optional(),
+      wardrobe: z.array(z.any()).optional(),
+      bags: z.array(z.any()).optional(),
+      beauty: z.record(z.string(), z.any()).optional(),
+      cosmetics: z.record(z.string(), z.any()).optional(),
+      lingerie: z.array(z.any()).optional(),
+      underwear: z.array(z.any()).optional(),
+      shoes: z.array(z.any()).optional(),
+      jewelry: z.array(z.any()).optional(),
+      watches: z.array(z.any()).optional(),
+      accessories: z.array(z.any()).optional(),
+      outerwear: z.array(z.any()).optional(),
+      travel: z.array(z.any()).optional(),
+      seasonal: z.record(z.string(), z.string()).optional(),
+    })
+    .nullable()
+    .default(null),
 });
 
 /** 校验/解析任意输入 -> 合法 CompanionConfig (缺字段补默认, 非法抛 ZodError)。 */
@@ -94,8 +213,15 @@ export function safeCompanionConfig(input = {}) {
 
 /**
  * 把"富人设 JSON"(persona/appearance/life/runtime 那种, 见 companions/*.json) 映射成本系统的 CompanionConfig。
- * 把 background/values/likes/dislikes/称呼 全折进 personality —— persona prompt 只注入
- * 外貌/说话风格/性格, 所以这些细节要进 personality 才会进 system prompt。
+ *
+ * 人设分两层, 不是一坨都无条件塞进每轮 prompt:
+ * - 核心层 (personality/speechStyle): 只放"她是谁+怎么称呼你"这种任何一轮都用得上的东西,
+ *   每轮无条件注入, 必须短。
+ * - 检索层 (background/values/likes/dislikes): 这些是"背景故事/处世价值观/具体喜好"，跟当前
+ *   这句话是否相关取决于聊什么, 不该无条件带满每轮——全部改走 seedFacts, 靠 topK 相关性检索
+ *   按需浮现 (和 knowledgeBank 的 M9 滴灌是同一个思路)。之前 background 会同时进 personality
+ *   散文和 seedFacts, 同一段内容有概率在一次 prompt 里出现两遍; values/likes/dislikes 则只进
+ *   散文、完全不可检索、且每轮都在——这次一并改过来。
  * @returns { config, options } —— options 给 Orchestrator (useMonologue/historyTurns)
  */
 export function personaJsonToConfig(json = {}) {
@@ -103,15 +229,18 @@ export function personaJsonToConfig(json = {}) {
   const speechStyle = Array.isArray(p.speech) ? p.speech.join('；') : String(p.speech ?? '');
   const parts = [];
   if (p.personality) parts.push(p.personality);
-  if (p.background) parts.push(`【背景】${p.background}`);
-  if (p.values) parts.push(`【处世】${p.values}`);
   if (p.address_user) parts.push(`她平时称呼对方为「${p.address_user}」。`);
-  if (Array.isArray(p.likes) && p.likes.length) parts.push(`【喜欢】${p.likes.join('、')}`);
-  if (Array.isArray(p.dislikes) && p.dislikes.length) parts.push(`【不喜欢】${p.dislikes.join('、')}`);
   const seedFacts = [];
   if (p.background) seedFacts.push({ fact_core: p.background, importance: 8 });
+  if (p.values) seedFacts.push({ fact_core: p.values, importance: 7 });
+  if (Array.isArray(p.likes)) {
+    for (const item of p.likes) if (item) seedFacts.push({ fact_core: `她喜欢的事: ${item}`, importance: 5 });
+  }
+  if (Array.isArray(p.dislikes)) {
+    for (const item of p.dislikes) if (item) seedFacts.push({ fact_core: `她不喜欢的事: ${item}`, importance: 5 });
+  }
 
-  const config = normalizeCompanionConfig({
+  let config = normalizeCompanionConfig({
     companionId: 'default',
     name: p.name ?? json.meta?.display_name ?? '她',
     personality: parts.join('\n'),
@@ -123,15 +252,66 @@ export function personaJsonToConfig(json = {}) {
     identityConstraints: Array.isArray(p.identity_constraints) ? p.identity_constraints : [],
     relationshipStartStage: json.relationship?.start_stage ?? null,
     emotionBaseline: typeof json.emotion_baseline?.valence === 'number' ? { valence: json.emotion_baseline.valence } : null,
+    emotionProfile:
+      json.emotion_profile && typeof json.emotion_profile === 'object'
+        ? {
+            baselineValence: json.emotion_profile.baseline_valence ?? json.emotion_profile.baselineValence,
+            valenceHalfLifeHours: json.emotion_profile.valence_half_life_hours ?? json.emotion_profile.valenceHalfLifeHours,
+            arousalHalfLifeHours: json.emotion_profile.arousal_half_life_hours ?? json.emotion_profile.arousalHalfLifeHours,
+            sensitivity: json.emotion_profile.sensitivity,
+            recoverBias: json.emotion_profile.recover_bias ?? json.emotion_profile.recoverBias,
+          }
+        : null,
     // 旁白指令覆盖 (companions/<id>/narration.json 的 narration.directives): 只收字符串值
     narrationDirectives:
       json.narration?.directives && typeof json.narration.directives === 'object'
         ? Object.fromEntries(Object.entries(json.narration.directives).filter(([, v]) => typeof v === 'string' && v.trim()))
         : null,
+    replyStyle: {
+      ...(json.reply_style ?? {}),
+      nameAliases: [
+        p.name,
+        ...(Array.isArray(json.profile?.nicknames) ? json.profile.nicknames : []),
+        ...(Array.isArray(json.reply_style?.nameAliases) ? json.reply_style.nameAliases : []),
+      ].filter(Boolean),
+    },
     storyCast: Array.isArray(json.story?.cast) ? json.story.cast : [],
     storylines: Array.isArray(json.story?.lines) ? json.story.lines : [],
+    company: json.company && typeof json.company === 'object' ? json.company : null,
     profile: json.profile ?? {},
+    intimacyEnabled: typeof json.intimacy?.enabled === 'boolean' ? json.intimacy.enabled : null,
+    intimacyBaseline: json.intimacy?.baseline && typeof json.intimacy.baseline === 'object' ? json.intimacy.baseline : null,
+    intimacyHardBoundaries: Array.isArray(json.intimacy?.hard_boundaries) ? json.intimacy.hard_boundaries : [],
+    intimacySoftPreferences: Array.isArray(json.intimacy?.soft_preferences_seed) ? json.intimacy.soft_preferences_seed : [],
+    intimacyStyleHints: Array.isArray(json.intimacy?.style_hints) ? json.intimacy.style_hints : [],
+    intimacyDrive: json.intimacy?.drive && typeof json.intimacy.drive === 'object' ? json.intimacy.drive : null,
+    intimacyKnowledge: json.intimacy?.knowledge && typeof json.intimacy.knowledge === 'object' ? json.intimacy.knowledge : null,
+    outfitWardrobe: json.outfit && typeof json.outfit === 'object' ? json.outfit : null,
   });
+  // 软偏好/风格并入 personality，让未进记忆库时也有底色；硬边界进 identity 高显著位
+  if (config.intimacyStyleHints?.length) {
+    config = normalizeCompanionConfig({
+      ...config,
+      personality: [config.personality, `【亲密风格】${config.intimacyStyleHints.join('；')}`].filter(Boolean).join('\n'),
+    });
+  }
+  if (config.intimacySoftPreferences?.length) {
+    const extraSeeds = config.intimacySoftPreferences.map((t) => ({ fact_core: t, importance: 6 }));
+    config = normalizeCompanionConfig({
+      ...config,
+      seedFacts: [...(config.seedFacts ?? []), ...extraSeeds],
+    });
+  }
+  if (config.intimacyHardBoundaries?.length) {
+    config = normalizeCompanionConfig({
+      ...config,
+      seedFacts: [
+        ...(config.seedFacts ?? []),
+        ...config.intimacyHardBoundaries.map((t) => ({ fact_core: t, importance: 9, fact_locked: true })),
+      ],
+      identityConstraints: [...(config.identityConstraints ?? []), ...config.intimacyHardBoundaries.map((b) => `亲密边界：${b}`)],
+    });
+  }
   const options = {
     useMonologue: json.runtime?.use_monologue ?? true,
     historyTurns: json.runtime?.history_turns ?? 6,
@@ -173,20 +353,32 @@ function readPersonaDir(dir) {
 }
 
 /**
- * 从人设文件读富人设并映射成 { config, options, life }; 不存在/损坏返回 null (不抛)。
+ * 从人设文件读富人设并映射成 { config, options, life }; 不存在返回 null (正常情况, 不报错)。
  * 支持两种格式:
  * - 单文件: companions/<id>.json (旧格式, 全部塞一个文件)
  * - 目录式: companions/<id>/ 按功能分文件 —— 目录存在时优先于同名单文件生效
+ * 抛出 ZodError/JSON 解析错误, 供调用方决定处理方式 (loadPersonaConfig 会吞掉并打日志, 校验脚本会直接冒泡)。
+ */
+export function loadPersonaConfigOrThrow(filePath) {
+  if (!filePath) return null;
+  const dir = String(filePath).replace(/\.json$/i, '');
+  if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) return personaJsonToConfig(readPersonaDir(dir));
+  if (!fs.existsSync(filePath)) return null;
+  if (fs.statSync(filePath).isDirectory()) return personaJsonToConfig(readPersonaDir(filePath));
+  return personaJsonToConfig(JSON.parse(fs.readFileSync(filePath, 'utf8')));
+}
+
+/**
+ * loadPersonaConfigOrThrow 的容错版: 文件不存在返回 null (正常); 文件存在但损坏/不合规也返回 null,
+ * 但会打印清晰的错误日志——之前这里是静默 catch, 分片文件写错一个逗号人设会悄悄退化成空人设, 且没有任何提示。
+ * 生产入口 (telegram/飞书/Discord bot、控制台) 用这个; 想在写人设时马上看到字段级报错用 loadPersonaConfigOrThrow
+ * 或 `npm run companion:validate <id>`。
  */
 export function loadPersonaConfig(filePath) {
   try {
-    if (!filePath) return null;
-    const dir = String(filePath).replace(/\.json$/i, '');
-    if (fs.existsSync(dir) && fs.statSync(dir).isDirectory()) return personaJsonToConfig(readPersonaDir(dir));
-    if (!fs.existsSync(filePath)) return null;
-    if (fs.statSync(filePath).isDirectory()) return personaJsonToConfig(readPersonaDir(filePath));
-    return personaJsonToConfig(JSON.parse(fs.readFileSync(filePath, 'utf8')));
-  } catch {
+    return loadPersonaConfigOrThrow(filePath);
+  } catch (error) {
+    console.error(`[companion] 人设文件加载失败 (${filePath}): ${error.message}`);
     return null;
   }
 }
@@ -200,7 +392,7 @@ export function rowToConfig(row) {
     companionId: row.companion_id,
     name: row.name,
     appearance: row.appearance ?? '',
-    ...(row.config ?? {}), // personality / traits / speechStyle / seedFacts
+    ...(row.config ?? {}),
   });
 }
 
@@ -221,10 +413,21 @@ export function configToRow(userId, config) {
       identityConstraints: c.identityConstraints,
       relationshipStartStage: c.relationshipStartStage,
       emotionBaseline: c.emotionBaseline,
+      emotionProfile: c.emotionProfile,
       narrationDirectives: c.narrationDirectives,
+      replyStyle: c.replyStyle,
       storyCast: c.storyCast,
       storylines: c.storylines,
+      company: c.company,
       profile: c.profile,
+      intimacyEnabled: c.intimacyEnabled,
+      intimacyBaseline: c.intimacyBaseline,
+      intimacyHardBoundaries: c.intimacyHardBoundaries,
+      intimacySoftPreferences: c.intimacySoftPreferences,
+      intimacyStyleHints: c.intimacyStyleHints,
+      intimacyDrive: c.intimacyDrive,
+      intimacyKnowledge: c.intimacyKnowledge,
+      outfitWardrobe: c.outfitWardrobe,
     },
     updated_at: new Date().toISOString(),
   };

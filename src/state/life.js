@@ -114,13 +114,18 @@ export function toLifePrompt(state, now = Date.now()) {
   const parts = [`你现在${energy}`];
   if (satiety) parts.push(satiety);
   if (health) parts.push(health);
-  let line = `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的身体状态。`;
+  let line = `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的身体状态（禁止「我现在没精神/很有兴致」自我播报）。`;
   // L4: 生病态(sick_until 未到)措辞升级, 盖过普通的"状态一般"。
   if (isSick(s, now)) {
-    line = '你现在生病了, 有点难受、没力气, 说话也提不起劲、容易撒娇想被照顾。让它自然影响语气和话量, 别报数值。';
+    line = '你现在生病了, 有点难受、没力气, 话会少一点、想被照顾；用语气和反应表现即可, 别报数值, 也别反复强调「我病了」。';
+  } else if (s.sick_until) {
+    // 刚过 sick_until: 状态已经不是"生病"了, 但最近几轮的对话历史里她大概率还在说
+    // "还难受着/还没力气"——这条是纯叙事惯性, 不是当前真实状态, 不然会一直卡在
+    // "还病着、要有所保留"的线上, 哪怕只是亲一下也会被当成要被劝退的邀请。
+    line += '\n你已经好得差不多了, 不是还在生病——哪怕最近几轮你自己说过"还难受/还没力气"，那是刚才的状态，现在已经翻篇，别继续用"还病着、需要放缓"当理由，正常互动即可，不用继续演虚弱。';
   }
   // L3: 自然带上"此刻在做什么"(她有自己的一天, 可顺口提一句), 别报数值。
-  if (s.current_activity) line += `\n你这会儿${s.current_activity}, 聊起来可以自然带一句你在忙的事, 但别硬凑。`;
+  if (s.current_activity) line += `\n你这会儿大概在${s.current_activity}；聊到相关时可以顺口提一句, 别每轮硬报行程。`;
   return line;
 }
 
@@ -190,8 +195,20 @@ export class LifeDimension {
     const lateNightNow = turns.length > 0 && isLateNight(now, this.sleepWindow);
     state = { ...state, ...updateLateNightStreak(state, now, lateNightNow) };
 
-    // 自动发病(熬夜抬概率; P2: sickProbability 按角色覆盖、连续熬夜达标翻倍)
-    const fell = maybeFallSick(state, now, this.rng, 24, { sickProbability: this.sickProbability });
+    // 自动发病：按「距上次写入」折算步长，绝不能写死 24h
+    // （旧 bug：每条消息都按整天 2% 掷骰 → 聊几十句就必然反复生病，极不合常理）
+    const rawHours = state.updated_at
+      ? Math.max(0, (now - new Date(state.updated_at).getTime()) / HOUR)
+      : 1;
+    // 单次最多按 12h 计（防久未上线一次掷出过高概率）；最少 0（同秒连发不计）
+    const stepHours = Math.min(12, rawHours);
+    // 亲密正戏/前戏中不要突然发病打断（身体钩子留给日常时段）
+    const intimateBusy = Array.isArray(turns) && turns.some((t) =>
+      /(做爱|插入|顶|操|日我|高潮|射|湿|进来|别停)/u.test(String(t?.content ?? '')),
+    );
+    const fell = intimateBusy
+      ? { sick: false, state, moodDelta: null }
+      : maybeFallSick(state, now, this.rng, stepHours, { sickProbability: this.sickProbability });
     if (fell.sick) {
       state = fell.state;
       moodDelta = mergeMood(moodDelta, fell.moodDelta);

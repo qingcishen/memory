@@ -24,6 +24,15 @@ async function main() {
   console.log(`心情: ${moodLabel(state)}  (valence=${f(state.mood.valence)}, arousal=${f(state.mood.arousal)})`);
   console.log(`关系: 亲密 ${f(r.closeness)} | 紧张 ${f(r.tension)} | 信任 ${f(r.trust)} | 待和好 ${f(r.repair_debt)}`);
   console.log(`更新于: ${state.updated_at ?? '(从未, 用基线)'}`);
+  try {
+    const { readIntimacy } = await import('../src/state/intimacy.js');
+    const intimacy = await readIntimacy(userId);
+    console.log(
+      `亲密: phase=${intimacy.scene_phase} | 唤起 ${f(intimacy.arousal)} | 张力 ${f(intimacy.sexual_tension)} | 满足 ${f(intimacy.satisfaction)} | 事后需 ${f(intimacy.aftercare_need)} | consent=${intimacy.consent?.active}`
+    );
+  } catch {
+    /* 列未迁移时忽略 */
+  }
 
   hr('记忆 (按主体分组, 含激活明细)');
   const { data: mems, error } = await supabase

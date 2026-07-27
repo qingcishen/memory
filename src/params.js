@@ -49,6 +49,12 @@ export const DEFAULT_PARAMS = {
     snapshotMinDelta: 0.08,
     // #5 情绪指向性: tension 衰减回这个值以下时, 视为"这桩紧张消了", 清空 tension_target/tension_topic。
     tensionTargetClearBelow: 0.08,
+    // L2 非对称衰减：大负向 valence 回落更慢
+    asymmetricDecay: {
+      enabled: true,
+      negativeThreshold: 0.35, // |baseline-value| 超过才加长半衰期
+      negativeHalfLifeFactor: 1.75,
+    },
   },
 
   // ---- 情绪 → 记忆重要性 (emotion-design.md §8) ----
@@ -70,6 +76,51 @@ export const DEFAULT_PARAMS = {
     // #5 情绪指向性: tension 指向"外部话题"(为考试焦虑) 而非"用户"时, 只用这个比例的力度拉冷对你的温度。
     // = 1 时退化为旧行为(不区分指向); 越小越体现"她为别的事烦, 但对你还是温柔的"。
     externalTensionWarmthFactor: 0.25,
+    // E1 标签惯性 / 残留
+    residue: {
+      maxStickyTurns: 8,
+      minHoldIntensity: 0.22,
+      intensityHalfLifeHours: 3,
+    },
+    // E4 触景生情（默认只扰动本轮展示，不写库）
+    resonate: {
+      enabled: true,
+      minIntensity: 0.45,
+      maxAbsDelta: 0.12,
+      contrastGain: 0.25,
+      warmthCoupling: 0.15,
+    },
+    // L1 residual → desire
+    desireBridge: {
+      enabled: true,
+      minIntensity: 0.4,
+      scale: 0.22,
+      comfortFactor: 1,
+      securityFactor: 0.7,
+      angrySecurityFactor: 0.9,
+      angryAttentionFactor: 0.5,
+      jealousSecurityFactor: 0.6,
+    },
+    // L3 journal prompt
+    journal: {
+      enabled: true,
+      promptLimit: 2,
+    },
+    // L5 story → residual
+    storySeed: {
+      enabled: true,
+      negativeMoodLink: -0.3,
+      positiveMoodLink: 0.4,
+      seedIntensity: 0.42,
+    },
+    // P3 residual → 主动冷却
+    proactiveResidual: {
+      enabled: true,
+      minIntensity: 0.45,
+      hurtFactor: 0.75,
+      angryIntensity: 0.6,
+      angryFactor: 1.15,
+    },
   },
 
   // ---- D1 需求驱力 ----
@@ -87,9 +138,68 @@ export const DEFAULT_PARAMS = {
     dismissiveSecurityGain: 0.06,
   },
 
+  // ---- I 线 亲密/性爱 (docs/intimacy-design.md) ----
+  intimacy: {
+    enabled: true,
+    halfLifeHours: {
+      arousal: 3,
+      engagement: 2,
+      aftercare_need: 6,
+      sexual_tension: 72,
+      sexual_openness: null,
+      satisfaction: null,
+    },
+    growthPerHour: { sexual_tension: 0.006 },
+    // 默认中等欲望；高欲望角色用 companions/*/intimacy.json 的 drive.libido 覆盖
+    libido: 0.5,
+    satisfactionDecayPerHour: 0,
+    satisfactionFloor: 0.25,
+    // 开放度达到该值后，沉默期间也会累积性张力（同居/恋人角色默认能攒）
+    tensionAccumulateMinOpenness: 0.45,
+    maxStepPerTurn: 0.35,
+    promptThreshold: {
+      arousal: 0.45,
+      aftercare_need: 0.4,
+      sexual_tension: 0.55,
+      satisfactionLow: 0.35,
+    },
+    gates: {
+      minCloseness: 0.55,
+      minTrust: 0.45,
+      minOpennessForPeak: 0.4,
+      maxTensionForIntimate: 0.7,
+      maxRepairDebtForIntimate: 0.55,
+      minEnergy: 0.25,
+      requireConsentForPeak: true,
+    },
+    feedback: {
+      goodPeak: { closeness: 0.02, trust: 0.01, valence: 0.08 },
+      goodAftercare: { closeness: 0.03, valence: 0.05 },
+      stopOrBad: { valence: -0.06, tension: 0.05 },
+    },
+    proactive: {
+      enabled: true,
+      highTensionThreshold: 0.65,
+      // 达到该张力：允许主动发起亲密（仍受关系/身体门控）
+      initiateThreshold: 0.78,
+      lowSatisfactionThreshold: 0.35,
+      minCooldownFactor: 0.45,
+    },
+    // romantic/intimate 场景 recall 时对 preference 记忆的额外权重（I4）
+    preferenceRecallBoost: 0.15,
+    // 姐系亲密风格：懂暗示、偏主动带节奏（人设可关）
+    style: {
+      sisterLead: true,
+    },
+    bodyFocus: { enabled: false },
+  },
+
   // ---- B2 情绪行为策略 ----
   behavior: {
     maxReplyDelayMs: 10 * 60 * 1000,
+    // 试聊/本地 UI 首条延迟上限（ms），避免等太久；Telegram 用更高 cap
+    uiDeliveryCapMs: 5000,
+    channelDeliveryCapMs: 60000,
     stonewallPerDay: 1,
     stonewallTensionThreshold: 0.85,
     stonewallRepairDebtThreshold: 0.65,
@@ -97,12 +207,13 @@ export const DEFAULT_PARAMS = {
     repairedTensionThreshold: 0.1,
     repairedMaxDelayMs: 1500,
     policies: {
-      平静: { replyDelayMs: [200, 1200], partsBudget: 2, lengthHint: 'normal', proactiveBias: 0 },
+      // partsBudget = 台词气泡条数上限；默认 ≥2 鼓励微信式连发
+      平静: { replyDelayMs: [200, 900], partsBudget: 3, lengthHint: 'normal', proactiveBias: 0 },
       开心: { replyDelayMs: [0, 500], partsBudget: 4, lengthHint: 'chatty', proactiveBias: 0.2 },
-      委屈: { replyDelayMs: [1000, 15000], partsBudget: 1, lengthHint: 'terse', proactiveBias: -0.1 },
+      委屈: { replyDelayMs: [1000, 15000], partsBudget: 2, lengthHint: 'terse', proactiveBias: -0.1 },
       吃醋: { replyDelayMs: [500, 6000], partsBudget: 2, lengthHint: 'terse', proactiveBias: 0.05 },
-      生气: { replyDelayMs: [30000, 600000], partsBudget: 1, lengthHint: 'terse', proactiveBias: -0.35 },
-      失落: { replyDelayMs: [3000, 20000], partsBudget: 1, lengthHint: 'terse', proactiveBias: -0.15 },
+      生气: { replyDelayMs: [30000, 600000], partsBudget: 2, lengthHint: 'terse', proactiveBias: -0.35 },
+      失落: { replyDelayMs: [3000, 20000], partsBudget: 2, lengthHint: 'terse', proactiveBias: -0.15 },
       撒娇: { replyDelayMs: [0, 800], partsBudget: 3, lengthHint: 'chatty', proactiveBias: 0.15 },
       心疼: { replyDelayMs: [0, 800], partsBudget: 3, lengthHint: 'normal', proactiveBias: 0.2 },
     },
@@ -199,22 +310,40 @@ export const DEFAULT_PARAMS = {
   // 生病是强情感钩子: 低频自动发病(熬夜抬概率), 表现成行为(虚弱/话少/想被照顾),
   // 你的关心能加速恢复并加关系分, 整段经历进 dyad 共同记忆。
   health: {
-    baseDailySickProb: 0.02, // 基础日发病概率(很低, 偶尔病)
-    sleepDeprivationHours: 20, // 距上次睡觉超过它视为熬夜
-    staleupMultiplier: 3, // 熬夜时发病概率的倍率
-    sickDurationHours: 36, // 一次病程基准时长
-    sickDurationJitterHours: 12, // 病程随机抖动(±)
-    onsetHealthDrop: 0.4, // 发病瞬间 health 的下跌
-    onsetValenceDrop: 0.25, // 发病带来的心情下跌(耦合进 affect)
-    onsetArousalDrop: 0.15, // 发病带来的唤起下降(蔫)
-    careRecoverHours: 8, // 一次"被关心"提前多少病程
-    careHealthGain: 0.15, // 一次"被关心" health 的回升
-    careValenceGain: 0.2, // 被照顾的暖意(耦合进 affect)
-    careClosenessGain: 0.06, // 被照顾拉近的亲密
-    careTrustGain: 0.04, // 被照顾增加的信任
-    // P2 身体专属参数: 连续"熬夜"(对话发生在角色专属睡眠时段内)达到这个天数后, 发病概率翻倍。
-    lateNightStreakForDouble: 3,
-    lateNightStreakMultiplier: 2,
+    // 正常人大约一年感冒 1～2 次：日概率 ≈ 1.5/365 ≈ 0.4%/天（健康体质，不是体弱）
+    baseDailySickProb: 0.004,
+    sleepDeprivationHours: 28, // 很久不睡才算熬夜抬风险（原 20 太松）
+    staleupMultiplier: 1.6, // 熬夜只略抬，不至于「熬两次就病」
+    sickDurationHours: 24, // 一次普通感冒量级
+    sickDurationJitterHours: 8,
+    onsetHealthDrop: 0.2,
+    onsetValenceDrop: 0.15,
+    onsetArousalDrop: 0.1,
+    careRecoverHours: 12, // 被好好照顾时明显加快好
+    careHealthGain: 0.2,
+    careValenceGain: 0.2,
+    careClosenessGain: 0.06,
+    careTrustGain: 0.04,
+    // 连续很多天深夜还在聊才略抬概率
+    lateNightStreakForDouble: 7,
+    lateNightStreakMultiplier: 1.4,
+    recoveryCooldownHours: 168, // 病好后 7 天冷却，一年不会连病
+  },
+
+  // ---- O 线 穿搭 (当前穿着 + 衣橱 + 随场景切换) ----
+  outfit: {
+    enabled: true,
+    minHoursBeforeSwitch: 0.5, // 情境变了至少过多久才自动换
+    maxHoursSameOutfit: 16, // 同一套最多穿多久（跨情境时）
+    // 每日从衣橱+抽屉自动组合，并可生成「今日成片」
+    dailyLook: {
+      enabled: true,
+      autoCompose: true, // 跨日自动 compose
+      autoPhoto: true, // 后台生成 lookbook 进相册
+      shareInChat: true, // 冷却允许时当作照片分享
+      rotateAccessories: true, // 包/鞋等从抽屉轮换
+      timezoneOffsetMinutes: 480, // 默认东八区日界
+    },
   },
 
   // ---- A1 外貌/自拍 (appearance-life-design.md 第二部分; 出图为仓库外基建, 这里只搭骨架) ----
@@ -225,6 +354,13 @@ export const DEFAULT_PARAMS = {
       minIntervalMinutes: 720, // 自拍冷却比闲聊更克制 (12h)
       maxPerDay: 2, // 每天最多主动发几张
     },
+    // 出图提示词套件（脸锁 / 人妻感 / 全身鞋履）
+    prompt: {
+      appendNegativeInPrompt: true,
+      forceFullBodyLookbook: true,
+      forceShoes: true,
+      matureAura: true,
+    },
   },
 
   // ---- 编排器 ----
@@ -232,6 +368,29 @@ export const DEFAULT_PARAMS = {
     // persona 段缓存多久后在下一次 init() 时重新加载。长期运行的实例 (如 ProactiveScheduler
     // 反复调用同一个 Orchestrator) 需要这个值让"自我认知"反思等 self 记忆更新能体现到 prompt 里。
     personaRefreshMs: 30 * 60 * 1000, // 30 分钟
+    // 内心独白 (think()) 本来只要"一两句话", 之前没封顶, 模型话痨起来会白白拉长回复延迟
+    // (独白是串行 await 的, 生成得越久, 用户等得越久)。
+    monologueMaxTokens: 120,
+    // 默认短期历史轮数（可被 turnPlan 按场景调高/调低）
+    historyTurnsDefault: 6,
+    // 寒暄/极短句跳过内心独白，降低首包延迟
+    skipMonologueOnShort: true,
+    // 生成后按 behavior.partsBudget 截断 dialogue parts
+    enforcePartsBudget: true,
+    // 跳戏重试失败后，仍尝试从 dialogue 里抠掉库存结尾
+    stripStockEndings: true,
+    // 硬后处理：压网文腔旁白/姓名开场/复读收尾（humanizeReply.js）
+    humanizeReply: true,
+    // 超短用户句时瘦身 world/story 段，减 prompt 体积
+    compactShortTurns: true,
+    // 结构化两阶段计划（启发式 + 可选便宜模型 enrich）
+    structuredPlanLlm: true,
+    // 生成后一致性检改：默认开启（坏回复最多再生成一次）
+    coherenceRetry: true,
+    // 关系周记 / 用户画像常驻槽
+    residentSlots: true,
+    // 本场会话线（主话题 / 开放问题 / 约定）
+    sessionThread: true,
   },
 
   // ---- P1 双向关系触发规则 ----
@@ -268,6 +427,7 @@ export const DEFAULT_PARAMS = {
     baseBackoffMs: 1000, // 重试退避基数 (指数: base * 2^attempts)
     maxBackoffMs: 5 * 60 * 1000, // 退避上限 5min
     batchSize: 10, // 一次 tick 最多 claim 几个 job
+    handlerTimeoutMs: 60 * 1000, // 单个 job 执行上限; 卡死的 handler (如 LLM 调用挂起) 不能冻结整个 worker
   },
 
   // ---- M9 每日训练: 知识滴灌 + 自我日记 (src/training.js) ----

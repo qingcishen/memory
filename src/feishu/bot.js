@@ -1,8 +1,10 @@
 import dotenv from 'dotenv';
 import * as lark from '@larksuiteoapi/node-sdk';
-import { MemoryChannel, mergedOutgoingTexts } from '../channels/memory-channel.js';
+import { MemoryChannel } from '../channels/memory-channel.js';
 import { ChannelEventStore } from '../channels/idempotency.js';
 import { acquireProcessLock } from '../channels/process-lock.js';
+import { gateIncomingMessage } from '../product/gate.js';
+import { deliverHumanBubbles } from '../channels/humanSend.js';
 
 dotenv.config();
 
@@ -128,9 +130,33 @@ export class FeishuMemoryBot {
       }
     }
     if (!text) return;
+    const companionId = process.env.FEISHU_COMPANION_ID || process.env.TELEGRAM_COMPANION_ID || 'default';
+    const gate = gateIncomingMessage({
+      text,
+      userId: `feishu:${senderId}`,
+      companionId,
+      channel: 'feishu',
+    });
+    if (!gate.allow) {
+      await this.send(message.chat_id, gate.replyText || '这条消息我这边接不了。');
+      console.log(`[feishu] gated sender=${senderId} reasons=${(gate.reasons || []).join(',')}`);
+      return;
+    }
     try {
-      const result = await this.memory.reply(senderId, text, { eventId: message.message_id });
-      for (const part of mergedOutgoingTexts(result.parts, 3800)) await this.send(message.chat_id, part);
+      const result = await this.memory.reply(senderId, text, {
+        eventId: message.message_id,
+        stopIntimate: gate.stopIntimate,
+        intimacyAllowed: gate.intimacyAllowed,
+      });
+      // 像真人连发：多条短气泡 + 打字间隔（CHANNEL_MERGE_MESSAGES=1 可关）
+      await deliverHumanBubbles(result.parts, (bubble) => this.send(message.chat_id, bubble), {
+        chunkLimit: 3800,
+        maxDialogueBubbles: 3,
+        minSplitLen: 10,
+        behaviorPolicy: result.behaviorPolicy,
+        policyCapMs: Number(process.env.CHANNEL_DELIVERY_CAP_MS) || 8000,
+        typing: { min: 280, max: 1100, perChar: 14 },
+      });
     } catch (error) {
       console.error('[feishu] reply failed:', error);
       await this.send(message.chat_id, '我这边刚才卡了一下，你再说一遍，我接着听。').catch(() => {});

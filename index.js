@@ -133,7 +133,9 @@ export {
 export { filterBySubject, formatPersonaBlock, seedPersona, personaBlock } from './src/persona.js';
 export {
   CompanionConfigSchema,
+  CompanionProfileSchema,
   normalizeCompanionConfig,
+  normalizeCompanionProfile,
   safeCompanionConfig,
   rowToConfig,
   configToRow,
@@ -141,7 +143,9 @@ export {
   getCompanion,
   listCompanions,
   personaJsonToConfig,
+  mergePersonaSections,
   loadPersonaConfig,
+  loadPersonaConfigOrThrow,
 } from './src/companion.js';
 export { pickDyadBackdrop, composeNarrativeInput, dyadBackdrop, synthesizeNarrative } from './src/narrative.js';
 export {

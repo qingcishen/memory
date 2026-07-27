@@ -2,6 +2,7 @@ import { supabase, PARAMS } from './config.js';
 import { embed } from './embeddings.js';
 import { rerank } from './decay.js';
 import { sanitizeForPrompt } from './promptSafety.js';
+import { formatMemoryLine } from './product/preferenceTier.js';
 
 /**
  * 按当前 query 检索最相关的记忆。
@@ -134,13 +135,20 @@ export function formatForPrompt(mems, subjectName = '对方') {
   // 注入时优先用 narrative(她当下的解读), 没有才退回 fact_core/content
   // sanitizeForPrompt: 记忆文本来自用户输入/LLM 提取, 不可信, 过滤可疑的 prompt 注入话术
   // _lowConfidence (#4 不确定性表达): 相关度低/很久没强化/同话题情绪冲突 → "我记得好像..."
+  // 偏好分层：硬边界 / 稳定偏好 / 一时兴起 在行首标注，避免把 whim 当铁律
   const lines = mems
     .map((m) => {
       const text = sanitizeForPrompt(m.narrative || m.fact_core || m.content);
-      return m._lowConfidence ? `- 我记得好像${text}` : `- ${text}`;
+      if (!text) return '';
+      const tiered = formatMemoryLine(
+        { ...m, narrative: text, fact_core: text },
+        { lowConfidence: Boolean(m._lowConfidence) },
+      );
+      return tiered || (m._lowConfidence ? `- 我记得好像${text}` : `- ${text}`);
     })
+    .filter(Boolean)
     .join('\n');
-  return `你记得关于${subjectName}的事:\n${lines}`;
+  return `你记得关于${subjectName}的事:\n${lines}\n（标「硬边界」的绝不当玩笑改写；「一时兴起」别当成永久设定。）`;
 }
 
 /** 把"旧版本 → 当前版本"拼成可注入的历史偏好块。 */

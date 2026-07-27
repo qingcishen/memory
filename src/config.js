@@ -23,6 +23,12 @@ export const LLM_MODEL = process.env.LLM_MODEL || 'deepseek-chat';
 // 编排器回复模型 (好模型, 可与 LLM_MODEL 不同 provider); 未配置时退回 LLM_MODEL。
 export const REPLY_MODEL = process.env.REPLY_MODEL || LLM_MODEL;
 export const REPLY_PROXY_URL = process.env.REPLY_PROXY_URL || '';
+// 部分回复模型 (如 grok-4.5) 默认带隐藏推理链, 哪怕一句"哈哈"也会烧几千 reasoning
+// tokens、拖到 20~30s+ 才吐第一个字——闲聊场景用不上这么重的推理。默认调低,
+// 需要更强推理时可在 .env 设 REPLY_REASONING_EFFORT=high/medium 覆盖；
+// 设为空字符串则完全不传该字段 (给不支持这个参数、传了会报错的供应商用)。
+export const REPLY_REASONING_EFFORT =
+  process.env.REPLY_REASONING_EFFORT === '' ? '' : process.env.REPLY_REASONING_EFFORT || 'low';
 const replyHttpAgent = REPLY_PROXY_URL ? new HttpsProxyAgent(REPLY_PROXY_URL) : undefined;
 
 // ---- 回复模型独立供应商 (可选) ----

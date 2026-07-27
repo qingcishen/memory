@@ -32,6 +32,9 @@ console.log('buildSystemPrompt (纯拼接, 跳过空段落; 结尾恒定追加�
   const bare = buildSystemPrompt({});
   ok('全部业务段为空时, 只剩恒定的事实/格式规则', bare.includes('【禁止编造事实】') && bare.includes('【输出格式】'));
   ok('没有场景旁白指令(narrationPrompt 未传)时不追加旁白段', !bare.includes('【旁白提示】') && !bare.includes('【性爱'));
+  // 回归: "抱紧点/别松手"这类收尾在亲密场景里每轮都被重复使用, 是全局问题
+  // (不止发生在 narration part)，防复读指令要在恒定的全局段落里，每次回复都带上。
+  ok('恒定段落带收尾防复读指令(每轮回复都有, 不止亲密场景)', bare.includes('【收尾防复读】'));
 
   const withParts = buildSystemPrompt({ personaPrompt: 'A', statePrompt: 'B' });
   ok('非空段落用空行分隔, 排在恒定规则前面', withParts.startsWith('A\n\nB\n\n【禁止编造事实】'));
@@ -41,6 +44,9 @@ console.log('buildSystemPrompt (纯拼接, 跳过空段落; 结尾恒定追加�
 
   const withWorld = buildSystemPrompt({ personaPrompt: 'A', worldPrompt: 'W', statePrompt: 'B' });
   ok('世界观段排在 persona 之后、relationship/state 之前', withWorld.startsWith('A\n\nW\n\nB'));
+
+  const withCompany = buildSystemPrompt({ personaPrompt: 'A', companyPrompt: 'C', worldPrompt: 'W', statePrompt: 'B' });
+  ok('公司事实是独立高显著度槽，排在人设之后、世界状态之前', withCompany.startsWith('A\n\nC\n\nW\n\nB'));
 
   const withMono = buildSystemPrompt({ personaPrompt: 'A', monologue: '想法' });
   ok(
@@ -71,21 +77,24 @@ console.log('buildTimePrompt (真实时间上下文)');
   ok('包含中国/武汉时区', prompt.includes('武汉') && prompt.includes('Asia/Shanghai'));
   ok('包含换算后的本地时间', prompt.includes('2026-06-15 16:33'));
   ok('要求问时间时直接回答', prompt.includes('问现在几点'));
+  ok('明确与用户现实时间等速同步', prompt.includes('现实经过1分钟') && prompt.includes('时间不得冻结'));
   ok('未传 gapHours 不带时间跳跃感提示', !prompt.includes('才回'));
 
   const withGap = buildTimePrompt(new Date('2026-06-15T08:33:00Z'), { gapHours: 5 });
-  ok('gapHours 够大时追加时间跳跃感提示', withGap.includes('才回来'));
+  ok('gapHours 够大时追加时间推进与旧场景失效提示', withGap.includes('时间已推进') && withGap.includes('旧活动与道具'));
 }
 
 console.log('buildGapHint (时间跳跃感: 距上次说话过了多久, 分级软提示)');
 {
   ok('null -> 不提', buildGapHint(null) === '');
   ok('刚聊过 (0.5h) -> 不提', buildGapHint(0.5) === '');
-  ok('excuse 档 (2-4h) -> 轻描淡写接上', buildGapHint(2.5).includes('才回'));
-  ok('direct 档 (4-6h) -> 惦记, 问问刚才在干嘛', buildGapHint(5).includes('惦记'));
-  ok('miss 档 (>6h) -> 小情绪/失落', buildGapHint(8).includes('失落'));
-  ok('跨天 (>=24h) -> 好久没理我/想你, 按天数', buildGapHint(50).includes('2 天') && buildGapHint(50).includes('想你'));
-  ok('所有分级提示都要求别报数字', [2.5, 5, 8, 50].every((h) => buildGapHint(h).includes('别报数字')));
+  ok('excuse 档 (2-4h) -> 轻描淡写意识到空档', buildGapHint(2.5).includes('现实中已过去'));
+  ok('direct 档 (4-6h) -> 旧活动与道具失效', buildGapHint(5).includes('旧活动与道具'));
+  ok('miss 档 (>6h) -> 旧物理场景全部失效', buildGapHint(8).includes('旧活动、地点、姿势、餐食和手中道具全部失效'));
+  ok('跨天 (>=24h) -> 旧场景结束, 按天数', buildGapHint(50).includes('2 天') && buildGapHint(50).includes('旧物理场景已经结束'));
+  ok('空档本身不等于晚归/冷落', [2.5, 5, 8, 50].every((h) => /不等于晚归|不要把沉默时长自动解释成晚归/.test(buildGapHint(h))));
+  ok('亲密重逢优先接住爱意', buildGapHint(8, undefined, { userMessage: '亲吻她，我今天太想她了' }).includes('先接住当下的爱意'));
+  ok('所有分级提示都要求不报精确数字', [2.5, 5, 8, 50].every((h) => buildGapHint(h).includes('别报精确数字')));
 }
 
 console.log('assemble (system + 短期历史裁剪 + 当前消息)');
@@ -104,8 +113,8 @@ console.log('assemble (system + 短期历史裁剪 + 当前消息)');
     { role: 'assistant', content: '4' },
   ];
   const trimmed = assemble({ userMessage: '5', history, historyTurns: 1, personaPrompt: 'A' });
-  ok('history 裁剪到最近 1 轮 (2条)', trimmed.length === 4);
-  ok('裁剪后保留最近的两条历史', trimmed[1].content === '3' && trimmed[2].content === '4');
+  ok('history 裁剪到最近 1 轮，并追加防复读 system', trimmed.length === 5);
+  ok('裁剪后保留最近的两条历史', trimmed[2].content === '3' && trimmed[3].content === '4');
 }
 
 console.log('buildMonologueContext (拼内心独白输入)');
@@ -292,7 +301,12 @@ console.log('Orchestrator.reply 完整管线 (deps 全 mock)');
   ok('reply 返回 text + parts', reply1.text === '嗯嗯, 我记得呀!' && reply1.parts[0].type === 'dialogue');
   ok('debug 模式返回最终 messages 和状态快照', Array.isArray(reply1.debug?.messages) && reply1.debug?.stateSnapshot?.life?.energy === 0.4);
   ok('persona.load 只在首轮调用一次', deps.persona.loadCalls === 1);
-  ok('memory.recall 收到当前用户消息', deps.memory.recallCalls[0] === '诗雅最近怎么样?');
+  // turnPlan 会增强 recallQuery（可拼 unfinished/故事种子），至少应覆盖用户原话关键词
+  ok(
+    'memory.recall 覆盖用户消息关键词',
+    typeof deps.memory.recallCalls[0] === 'string' &&
+      (deps.memory.recallCalls[0].includes('诗雅') || deps.memory.recallCalls[0].includes('最近怎么样')),
+  );
   ok('stateLayer.snapshot 被调用', deps.stateLayer.snapshotCalls === 1);
   ok('relationship.current 被调用', deps.relationship.currentCalls === 1);
   ok('useMonologue 默认开启, llm.think 被调用一次', deps.llm.thinkCalls.length === 1);
@@ -321,7 +335,7 @@ console.log('Orchestrator.reply 完整管线 (deps 全 mock)');
   ok('history 仍裁剪在 2 条以内', orch.history.length === 2);
 
   const { messages: messages2 } = deps.llm.generateCalls[1];
-  ok('第二轮带上第一轮的对话作为短期历史', messages2[1].content === '诗雅最近怎么样?' && messages2[2].content === '嗯嗯, 我记得呀!');
+  ok('第二轮带上第一轮的对话作为短期历史', messages2.some((m) => m.role === 'user' && m.content === '诗雅最近怎么样?') && messages2.some((m) => m.role === 'assistant' && m.content === '嗯嗯, 我记得呀!'));
   ok('第二轮最后一条是新的用户消息', messages2.at(-1).content === '那她现在心情怎么样?');
 }
 
@@ -333,6 +347,49 @@ console.log('Orchestrator.reply (useMonologue: false 时跳过内心独白)');
   ok('llm.think 未被调用', deps.llm.thinkCalls.length === 0);
   const { messages } = deps.llm.generateCalls[0];
   ok('system 不含内心独白标记', !messages[0].content.includes('你此刻的想法'));
+}
+
+console.log('Orchestrator.reply json 格式保留结构余量且限制网文长度');
+{
+  // json 格式要装下 narration + 多条 dialogue + JSON 语法开销，比纯文本重得多。
+  // health/behavior 那两层压缩是为了让人在委屈/生病时话短一点，压到两三百 token 对纯
+  // 文本没问题，但会在 json 结构写完前就截断——JSON.parse 失败后原始半截 JSON 会被当
+  // 成一条台词原样发出去，聊天里就会看到裸露的 {"parts":[{"type":"narration"...。
+  const deps = makeMocks(); // mock stateLayer.samplingHints 固定返回 maxTokens: 333，模拟压缩后的低值
+  const orch = new Orchestrator({ userId: 'u_json_tokens', deps, options: { useMonologue: false } });
+  await orch.reply('抱紧一点', { replyFormat: 'json' });
+  const { opts } = deps.llm.generateCalls[0];
+  ok('json 格式下 maxTokens 保留结构余量且不鼓励长文', opts.format === 'json' && opts.maxTokens >= 360 && opts.maxTokens <= 560);
+
+  const deps2 = makeMocks();
+  const orch2 = new Orchestrator({ userId: 'u_plain_tokens', deps: deps2, options: { useMonologue: false } });
+  await orch2.reply('在干嘛', { replyFormat: 'plain' });
+  const { opts: opts2 } = deps2.llm.generateCalls[0];
+  ok('plain 格式不受这条下限影响，维持原压缩值', opts2.format === 'plain' && opts2.maxTokens === 333);
+}
+
+console.log('Orchestrator.reply 把 dueItems 标记 fired (回归: 到期提醒被反复带进对话)');
+{
+  // checkProspective 的注释写着"决定提起后用 dismissProspective 标记"，但 reply() 里
+  // 从没调用过——同一条到期提醒(比如周年纪念日)会一直判定成 due，每轮都被塞进 goals
+  // 影响回复，哪怕已经在对话里问过、对方也已经回答过。这里验证 reply() 真的会调用
+  // dismissProspective，不会一直让同一条提醒反复出现。
+  const deps = makeMocks();
+  const dismissedCalls = [];
+  deps.memory.checkProspective = async () => [{ id: 'anniv-1', content: '周年纪念日' }];
+  deps.memory.dismissProspective = async (ids) => { dismissedCalls.push(ids); };
+  const orch = new Orchestrator({ userId: 'u_prospective', deps, options: { useMonologue: false } });
+  await orch.reply('你好');
+  ok('到期项被喂进 goals 后调用了 dismissProspective', dismissedCalls.length === 1);
+  ok('dismissProspective 收到对应的 id', dismissedCalls[0].includes('anniv-1'));
+
+  const deps2 = makeMocks();
+  const dismissedCalls2 = [];
+  deps2.memory.checkProspective = async () => [];
+  deps2.memory.dismissProspective = async (ids) => { dismissedCalls2.push(ids); };
+  const orch2 = new Orchestrator({ userId: 'u_prospective_none', deps: deps2, options: { useMonologue: false } });
+  await orch2.reply('你好');
+  ok('没有到期项时不调用 dismissProspective', dismissedCalls2.length === 0);
 }
 
 console.log('Orchestrator 可注入 historyStore (启动加载 + 回复后异步追加)');
@@ -348,23 +405,23 @@ console.log('Orchestrator 可注入 historyStore (启动加载 + 回复后异步
 
   ok('historyStore.load 收到 userId 和 limit', deps.historyStore.loadCalls[0].userId === 'u_history' && deps.historyStore.loadCalls[0].limit === 2);
   const { messages } = deps.llm.generateCalls[0];
-  ok('生成前注入加载到的最近一轮历史', messages[1].content === '上一句' && messages[2].content === '上一句的回复');
+  ok('生成前注入加载到的最近一轮历史', messages.some((m) => m.role === 'user' && m.content === '上一句') && messages.some((m) => m.role === 'assistant' && m.content === '上一句的回复'));
   ok('回复后实例历史仍按 historyTurns 裁剪', orch.history.length === 2);
   await orch._lastHistoryPersist;
   ok('historyStore.append 收到本轮 user+assistant', deps.historyStore.appendCalls[0].turns.length === 2);
 }
 
-console.log('Orchestrator.reply 时间跳跃感 (historyStore.lastUserMessageAt -> gapHours -> system 软提示)');
+console.log('Orchestrator.reply 时间同步 (historyStore.lastUserMessageAt -> gapHours -> 场景重置)');
 {
-  // 8 小时前说过话 -> miss 档 ("失落")
+  // 8 小时前说过话 -> 旧物理场景失效，但空档本身不制造负面情绪
   const deps = makeMocks();
   const longAgo = new Date(Date.now() - 8 * 60 * 60 * 1000).toISOString();
   deps.historyStore = makeHistoryStore([], longAgo);
   const orch = new Orchestrator({ userId: 'u_gap', deps, options: { useMonologue: false } });
   await orch.reply('在吗');
   const { messages } = deps.llm.generateCalls[0];
-  ok('距上次说话 8h -> system 带"失落"软提示', messages[0].content.includes('失落'));
-  ok('软提示带"别报数字"', messages[0].content.includes('别报数字'));
+  ok('距上次说话 8h -> system 明确旧现场失效', messages[0].content.includes('旧活动、地点、姿势、餐食和手中道具全部失效'));
+  ok('仅凭空档不生成晚归/冷落结论', messages[0].content.includes('不等于晚归、冷落或失约'));
 
   // 没有上次说话记录 (lastUserMessageAt 返回 null) -> 不带提示
   const deps2 = makeMocks();
@@ -372,7 +429,28 @@ console.log('Orchestrator.reply 时间跳跃感 (historyStore.lastUserMessageAt 
   const orch2 = new Orchestrator({ userId: 'u_gap2', deps: deps2, options: { useMonologue: false } });
   await orch2.reply('在吗');
   const { messages: messages2 } = deps2.llm.generateCalls[0];
-  ok('没有上次说话记录 -> 不带时间跳跃感提示', !messages2[0].content.includes('别报数字'));
+  ok('没有上次说话记录 -> 不带时间跳跃感提示', !messages2[0].content.includes('时间已推进'));
+}
+
+console.log('Orchestrator 重启后仍按持久时间清除过期现场');
+{
+  const nowMs = Date.parse('2026-07-13T11:12:00Z'); // 北京时间 19:12
+  const deps = makeMocks();
+  deps.now = () => nowMs;
+  deps.historyStore = makeHistoryStore(
+    [
+      { role: 'user', content: '老婆午好呀' },
+      { role: 'assistant', content: '我在餐桌边吃午饭，勺子还在碗里。' },
+    ],
+    new Date(nowMs - 6.5 * 60 * 60 * 1000).toISOString(),
+  );
+  const orch = new Orchestrator({ userId: 'u_restart_clock', deps, options: { useMonologue: false } });
+  await orch.reply('亲吻她的嘴唇，他今天实在太想她了');
+  const { messages } = deps.llm.generateCalls[0];
+  ok('实例刚创建也会使用持久时间识别 6.5h 空档', messages[0].content.includes('时间已推进'));
+  ok('过期午饭历史不会送进回复模型', !messages.some((m) => m.role !== 'system' && /午饭|勺子|碗里/.test(m.content)));
+  ok('亲密重逢明确优先接住当前爱意', messages[0].content.includes('先接住当下的爱意'));
+  ok('系统时钟与注入固定现实时间一致', messages[0].content.includes('2026-07-13 19:12'));
 }
 
 console.log('Orchestrator persona 缓存按 personaRefreshMs 刷新 (长期运行实例感知 self 记忆更新)');

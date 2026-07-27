@@ -136,10 +136,11 @@ console.log('buildSelfiePrompt (状态修饰 + tags 命中)');
 {
   const happy = buildSelfiePrompt({ emotion: { valence: 0.5 }, life: { current_activity: '在追剧' } }, '齐肩黑发, 米色毛衣', now);
   ok('prompt 含角色外貌描述', happy.prompt.includes('齐肩黑发'));
-  ok('心情好 → happy tag + 笑容', happy.tags.includes('happy') && happy.prompt.includes('笑容'));
+  ok('心情好 → happy tag + 成熟温柔神态', happy.tags.includes('happy') && /soft warm|married-woman|mature/i.test(happy.prompt));
+  ok('含身份锁 face shape/proportions', /face shape|facial|identity lock/i.test(happy.prompt));
 
   const sick = buildSelfiePrompt({ emotion: {}, life: { sick_until: new Date(now + 3600000).toISOString() } }, '银发', now);
-  ok('生病 → sick tag + 憔悴', sick.tags.includes('sick') && sick.prompt.includes('憔悴'));
+  ok('生病 → sick tag + 柔和憔悴', sick.tags.includes('sick') && /tired|soft|elegant|gentle/i.test(sick.prompt));
 }
 
 console.log('Selfie 门面 (图库命中复用; miss 则出图入库)');

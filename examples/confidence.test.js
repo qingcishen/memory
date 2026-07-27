@@ -91,9 +91,9 @@ console.log('formatForPrompt 接入 _lowConfidence');
   const high = { id: 'a', fact_core: '诗雅讨厌香菜', _lowConfidence: false };
   const low = { id: 'b', fact_core: '诗雅小时候学过钢琴', _lowConfidence: true };
 
-  ok('高置信记忆正常表述', formatForPrompt([high]).includes('- 诗雅讨厌香菜'));
-  ok('低置信记忆前缀"我记得好像"', formatForPrompt([low]).includes('- 我记得好像诗雅小时候学过钢琴'));
-  ok('未标记 _lowConfidence 时按高置信处理', formatForPrompt([{ fact_core: '诗雅在备考' }]).includes('- 诗雅在备考'));
+  ok('高置信偏好带稳定偏好标签', formatForPrompt([high]).includes('- 【偏好】诗雅讨厌香菜'));
+  ok('低置信记忆用"我记得好像"降级表达', formatForPrompt([low]).includes('- 我记得好像诗雅小时候学过钢琴'));
+  ok('未标记 _lowConfidence 的普通事实按高置信处理', formatForPrompt([{ fact_core: '诗雅在备考' }]).includes('- 诗雅在备考'));
 }
 
 console.log('参数存在性');

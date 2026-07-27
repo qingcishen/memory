@@ -1,6 +1,7 @@
 import { supabase, llm, LLM_MODEL } from './config.js';
 import { embed, embedMany } from './embeddings.js';
 import { dedupHash, findNearDuplicate } from './dedup.js';
+import { canSupersedePreference } from './product/preferenceTier.js';
 
 const CONTRADICT_THRESHOLD = 0.82; // 相似度高于此才送 LLM 判断是否矛盾
 
@@ -134,7 +135,14 @@ async function supersedeContradictions(newMem, candidates) {
 
   // 交给 LLM 判断哪些旧记忆与新记忆冲突 (而非只是同话题)
   const judged = await judgeContradictions(newMem.content, close);
-  const supersededIds = judged.filter((j) => j.contradicts).map((j) => j.id);
+  // 偏好分层：一时兴起不能盖硬边界/稳定偏好；非 locked 不能盖 locked
+  const supersededIds = judged
+    .filter((j) => j.contradicts)
+    .filter((j) => {
+      const old = close.find((c) => c.id === j.id) || {};
+      return canSupersedePreference(old, newMem);
+    })
+    .map((j) => j.id);
 
   if (supersededIds.length > 0) {
     // #10 并发写入: 只在仍未被取代时落子。两个并发新记忆都判定要取代同一条旧记忆时,

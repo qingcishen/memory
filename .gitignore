@@ -12,7 +12,11 @@ pnpm-debug.log*
 .telegram-bot.lock
 .feishu-bot.lock
 logs/
+logs/product-audit.jsonl
+logs/product-billing.json
+logs/product-identity.json
 config/params.json
+config/product-policy.json
 config/reference-images/
 
 coverage/

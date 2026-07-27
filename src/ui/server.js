@@ -17,9 +17,79 @@ import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { parseEnvText, applyEnvUpdates, maskValue } from './envfile.js';
 import { DEFAULT_PARAMS } from '../params.js';
-import { normalizeCompanionProfile } from '../companion.js';
+import { loadPersonaConfig, normalizeCompanionProfile } from '../companion.js';
+import { buildCompanySnapshot } from '../company/index.js';
 import { OpenAIImageProvider } from '../appearance/provider.js';
 import { listReferenceImages, saveReferenceImage, deleteReferenceImage, referenceFilePath, readReferenceById, setReferenceAvatar } from '../appearance/references.js';
+import {
+  buildOutfitCatalog,
+  lookToOutfitState,
+  cardId as outfitCardId,
+} from '../state/outfitCards.js';
+import {
+  readCustomLooks,
+  createCustomLook,
+  updateCustomLook,
+  deleteCustomLook,
+  findCustomLook,
+  importSeriesLooks,
+} from '../state/outfitCustomLooks.js';
+import { parseLookSeries } from '../state/lookSeriesParse.js';
+import {
+  buildAlbumCatalog,
+} from '../state/album.js';
+import {
+  listAssetsPath,
+  oneAssetPath,
+  rowsToAssetMapLite,
+  rowsToAssetMap,
+  attachAssetsToCards,
+  validateImagePayload,
+  decodeImageBase64,
+  upsertAssetBody,
+  listCustomAlbumPath,
+  upsertCustomAlbumBody,
+  normalizeCardKey,
+} from '../state/cardAssetsDb.js';
+import { uploadBase64ToR2, deleteFromR2, resolveR2Config } from '../media/r2.js';
+import { normalizeWardrobe, clampOutfitState, writeOutfit, readOutfit } from '../state/outfit.js';
+import {
+  ensureDailyLookState,
+  generateDailyLookPhoto,
+  localDayKey,
+  dailyAlbumCardId,
+} from '../state/dailyLook.js';
+import { insertAppearanceAsset } from '../appearance/selfie.js';
+import {
+  listMcpCatalog,
+  installMcpToClient,
+  uninstallMcpFromClient,
+  buildClientSnippet,
+  MCP_CATALOG,
+  clientConfigPaths,
+} from './mcpCatalog.js';
+import {
+  DEFAULT_SAFETY_POLICY,
+  normalizeSafetyPolicy,
+  checkMessageSafety,
+  redactExportTables,
+  DEFAULT_QUOTA,
+  normalizeQuota,
+  checkQuota,
+  canWriteAction,
+  buildTimeline,
+  buildRelationshipView,
+  gateIncomingMessage,
+  loadProductPolicy,
+  readAuditTail,
+  appendAudit,
+  buildBillingSummary,
+  getTenantUsage,
+  affirmAdult,
+  revokeAdult,
+  getIdentity,
+  buildAlbumQuoteMessage,
+} from '../product/index.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '../..');
@@ -31,6 +101,7 @@ const HOST = '127.0.0.1';
 const PORT = Number(process.env.UI_PORT || 8787);
 const MAX_LOG_LINES = 500;
 const PARAMS_FILE = path.join(ROOT, 'config', 'params.json');
+const PRODUCT_POLICY_FILE = path.join(ROOT, 'config', 'product-policy.json');
 const BOT_STATUS_FILE = path.join(ROOT, 'logs', 'ui-bot-status.json');
 
 const PARAM_SCHEMA = [
@@ -42,6 +113,7 @@ const PARAM_SCHEMA = [
   { path: 'engine.wSpread', label: '联想扩散权重', min: 0, max: 1, step: 0.05, group: '检索' },
   { path: 'engine.graphHops', label: '联想扩散跳数', min: 0, max: 4, step: 1, group: '检索' },
   { path: 'state.maxStepPerTurn', label: '单轮状态最大变化', min: 0.05, max: 0.8, step: 0.05, group: '情绪关系' },
+  { path: 'orchestrator.monologueMaxTokens', label: '内心独白最大 token 数 (影响回复延迟)', min: 20, max: 400, step: 10, group: '情绪关系' },
   { path: 'reconsolidation.affectClamp', label: '单次重构漂移上限', min: 0.01, max: 0.5, step: 0.01, group: '重构' },
   { path: 'reconsolidation.maxDriftFromOrigin', label: '相对原始情感最大漂移', min: 0.05, max: 1, step: 0.05, group: '重构' },
   { path: 'relationship_memory.alwaysIncludeDyad', label: '固定带入共同记忆数', min: 0, max: 10, step: 1, group: '关系' },
@@ -56,6 +128,19 @@ const PARAM_SCHEMA = [
   { path: 'desire.growthPerHour.sharing', label: '分享需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
   { path: 'desire.growthPerHour.comfort', label: '安慰需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
   { path: 'desire.growthPerHour.security', label: '安全需求每小时增速', min: 0, max: 0.1, step: 0.001, group: '需求' },
+  { path: 'intimacy.enabled', label: '亲密系统总开关', type: 'bool', group: '亲密' },
+  { path: 'intimacy.promptThreshold.arousal', label: '亲密唤起进入 Prompt 门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.promptThreshold.sexual_tension', label: '性张力进入 Prompt 门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.promptThreshold.aftercare_need', label: '事后需求进入 Prompt 门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.minCloseness', label: '亲密推进最低亲密度', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.minTrust', label: '亲密推进最低信任', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.maxTensionForIntimate', label: '亲密推进最高关系紧张', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.maxRepairDebtForIntimate', label: '亲密推进最高和好债', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.gates.minEnergy', label: '亲密推进最低精力', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.growthPerHour.sexual_tension', label: '性张力每小时增速', min: 0, max: 0.05, step: 0.001, group: '亲密' },
+  { path: 'intimacy.proactive.highTensionThreshold', label: '亲密主动·张力门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.proactive.lowSatisfactionThreshold', label: '亲密主动·低满足门槛', min: 0, max: 1, step: 0.05, group: '亲密' },
+  { path: 'intimacy.preferenceRecallBoost', label: '亲密场景偏好召回加成', min: 0, max: 0.5, step: 0.05, group: '亲密' },
   { path: 'proactive.desire.triggerThreshold', label: '需求主动消息门槛', min: 0, max: 1, step: 0.05, group: '主动性' },
   { path: 'proactive.desire.highThreshold', label: '需求语气升级门槛', min: 0, max: 1, step: 0.05, group: '主动性' },
   { path: 'proactive.desire.minCooldownFactor', label: '高需求最短冷却比例', min: 0.1, max: 1, step: 0.05, group: '主动性' },
@@ -81,6 +166,7 @@ const BACKUP_TABLES = [
   'memories', 'affective_state', 'life_state', 'affective_state_history', 'prospective',
   'proactive_rate_limits', 'behavior_state', 'companions', 'appearance_assets', 'jobs', 'chat_history',
   'world_state', 'story_lines', 'knowledge_entities', 'knowledge_relations',
+  'companion_card_assets', 'album_custom_entries',
 ];
 
 // ---------------------------------------------------------------
@@ -105,6 +191,7 @@ export const CONFIG_SCHEMA = [
       { key: 'SUPABASE_URL', label: 'Project URL', placeholder: 'https://xxxx.supabase.co', link: { label: '去控制台获取', url: 'https://supabase.com/dashboard/project/_/settings/api' } },
       { key: 'SUPABASE_KEY', label: 'Service Role Key', secret: true, placeholder: 'service_role key (不是 anon key)', link: { label: '去控制台获取', url: 'https://supabase.com/dashboard/project/_/settings/api-keys' } },
       { key: 'SUPABASE_ACCESS_TOKEN', label: 'Personal Access Token (可选, 仅供下方 SQL 工具箱建表用)', secret: true, placeholder: 'sbp_... (控制台 Account → Access Tokens 生成)', link: { label: '去生成令牌', url: 'https://supabase.com/dashboard/account/tokens' } },
+      { key: 'DATABASE_URL', label: 'Postgres 连接串 (可选, MCP 只读查询用)', secret: true, placeholder: 'postgresql://postgres.xxx:密码@aws-...pooler.supabase.com:5432/postgres', link: { label: 'Database 设置', url: 'https://supabase.com/dashboard/project/_/settings/database' } },
     ],
   },
   {
@@ -210,6 +297,22 @@ export const CONFIG_SCHEMA = [
       { key: 'IMAGE_LORA_ID', label: '角色 LoRA ID', placeholder: 'lora_xxx / adapter name' },
       { key: 'IMAGE_LORA_TRIGGER', label: 'LoRA 触发词', placeholder: 'shiya_character_v2' },
       { key: 'IMAGE_LORA_STATUS', label: 'LoRA 状态', options: ['not_started', 'training', 'ready', 'paused'], placeholder: 'not_started' },
+    ],
+  },
+  {
+    id: 'r2',
+    title: 'Cloudflare R2 图床',
+    hint: '穿搭系统 / 穿搭相册的卡片成片存在 R2；提示词与图片 URL 写在 Supabase companion_card_assets。本机开发可不填 Token（自动用 wrangler login）；生产建议填长期 API Token。',
+    testable: true,
+    links: [
+      { label: 'R2 控制台', url: 'https://dash.cloudflare.com/?to=/:account/r2' },
+      { label: '创建 API Token', url: 'https://dash.cloudflare.com/profile/api-tokens' },
+    ],
+    fields: [
+      { key: 'CLOUDFLARE_ACCOUNT_ID', label: 'Account ID', placeholder: '2581ca9560b48b398983980c1668d0d2', link: { label: '在 R2 概览页复制', url: 'https://dash.cloudflare.com/?to=/:account/r2' } },
+      { key: 'R2_BUCKET', label: 'Bucket 名', placeholder: 'qingci-companion-media' },
+      { key: 'R2_PUBLIC_BASE', label: '公网访问前缀 (r2.dev 或自定义域)', placeholder: 'https://pub-xxxxx.r2.dev' },
+      { key: 'CLOUDFLARE_API_TOKEN', label: 'API Token (可选)', secret: true, placeholder: '留空则本机用 wrangler login；需 Account · R2 写权限' },
     ],
   },
   {
@@ -464,6 +567,44 @@ async function testTts(env) {
   return { ok: false, ms, message: body?.error?.message ? String(body.error.message).slice(0, 160) : `HTTP ${res.status}` };
 }
 
+async function testR2(env) {
+  const started = Date.now();
+  const { resolveR2Config, uploadToR2, deleteFromR2 } = await import('../media/r2.js');
+  const cfg = resolveR2Config(env);
+  if (!cfg.configured) {
+    return { ok: false, message: '先填 CLOUDFLARE_ACCOUNT_ID、R2_BUCKET、R2_PUBLIC_BASE' };
+  }
+  if (!cfg.canUpload) {
+    return {
+      ok: false,
+      message: '没有可用 Token：请填 CLOUDFLARE_API_TOKEN，或在本机执行 wrangler login',
+      detail: { accountId: cfg.accountId, bucket: cfg.bucket, publicBase: cfg.publicBase },
+    };
+  }
+  const key = `test/ui-ping-${Date.now()}.txt`;
+  const payload = Buffer.from(`qingci-r2-ping ${new Date().toISOString()}`);
+  const up = await uploadToR2(payload, { mime: 'text/plain', key, env });
+  if (!up.ok) return { ok: false, ms: Date.now() - started, message: up.message };
+  const get = await fetch(up.url, { signal: AbortSignal.timeout(15000) }).catch((e) => ({ ok: false, status: 0, error: e }));
+  const bodyText = get.ok ? await get.text().catch(() => '') : '';
+  // 测试文件顺手清掉，避免桶里堆垃圾
+  await deleteFromR2(key, env).catch(() => null);
+  if (!get.ok || !String(bodyText).includes('qingci-r2-ping')) {
+    return {
+      ok: false,
+      ms: Date.now() - started,
+      message: `上传成功但公网读取失败 (HTTP ${get.status || 0})，检查 R2_PUBLIC_BASE 与桶是否开启 r2.dev 公开访问`,
+      detail: { url: up.url, bucket: cfg.bucket },
+    };
+  }
+  return {
+    ok: true,
+    ms: Date.now() - started,
+    message: `R2 可用 · ${cfg.bucket} · 公网 ${cfg.publicBase}`,
+    detail: { accountId: cfg.accountId, bucket: cfg.bucket, publicBase: cfg.publicBase, sampleUrl: up.url },
+  };
+}
+
 const TESTS = {
   supabase: testSupabase,
   llm: testLlm,
@@ -474,6 +615,8 @@ const TESTS = {
   asr: (env) => testCatalogTarget('asr', env),
   tts: testTts,
   image: (env) => testCatalogTarget('image', env),
+  r2: testR2,
+  cloudflare: testR2,
   telegram: testTelegram,
   feishu: testFeishu,
   discord: testDiscord,
@@ -642,9 +785,14 @@ async function supabaseCount(env, table, filters = {}) {
   return r.ok ? r.count ?? (Array.isArray(r.data) ? r.data.length : 0) : 0;
 }
 
+/**
+ * 之前 userId 为空时直接不设 user_id 过滤条件, 查询会退化成"查这张表里所有用户的数据"——
+ * 谁调用时漏传/传空 userId (哪怕只是一次调试用的裸 curl), 读到的就是别的真实用户的私密数据。
+ * 现在没有 userId 一律给一个必然查不到东西的过滤条件, 宁可返回空也不能返回错的人的数据 (fail closed)。
+ */
 function scopeFilters({ userId = '', companionId = '' } = {}) {
   const p = new URLSearchParams();
-  if (userId) p.set('user_id', `eq.${userId}`);
+  p.set('user_id', userId ? `eq.${userId}` : 'eq.__no_scope_selected__');
   if (companionId) p.set('companion_id', `eq.${companionId}`);
   return p;
 }
@@ -731,19 +879,102 @@ async function getScopes(env) {
   return { ok: true, scopes };
 }
 
+const DEFAULT_INTIMACY = {
+  arousal: 0,
+  engagement: 0,
+  aftercare_need: 0,
+  sexual_tension: 0,
+  sexual_openness: 0.35,
+  satisfaction: 0.5,
+  scene_phase: 'none',
+  last_intimate_at: null,
+  consent: { active: false, pace: 'normal', stop_signal: false },
+  body_focus: null,
+  repertoire: { last_positions: [], focus_position: null, focus_foreplay: null },
+  updated_at: null,
+};
+
+function normalizeIntimacyRow(raw) {
+  const base = { ...DEFAULT_INTIMACY, ...(raw && typeof raw === 'object' ? raw : {}) };
+  const consent = { ...DEFAULT_INTIMACY.consent, ...(base.consent && typeof base.consent === 'object' ? base.consent : {}) };
+  const phase = ['none', 'flirting', 'foreplay', 'peak', 'aftercare', 'cooldown'].includes(base.scene_phase)
+    ? base.scene_phase
+    : 'none';
+  const clamp01 = (v, d = 0) => Math.min(1, Math.max(0, Number.isFinite(Number(v)) ? Number(v) : d));
+  return {
+    arousal: clamp01(base.arousal, 0),
+    engagement: clamp01(base.engagement, 0),
+    aftercare_need: clamp01(base.aftercare_need, 0),
+    sexual_tension: clamp01(base.sexual_tension, 0),
+    sexual_openness: clamp01(base.sexual_openness, 0.35),
+    satisfaction: clamp01(base.satisfaction, 0.5),
+    scene_phase: phase,
+    last_intimate_at: base.last_intimate_at || null,
+    consent: {
+      active: Boolean(consent.active),
+      pace: ['slow', 'normal', 'eager'].includes(consent.pace) ? consent.pace : 'normal',
+      stop_signal: Boolean(consent.stop_signal),
+    },
+    body_focus: base.body_focus ?? null,
+    repertoire: {
+      last_positions: Array.isArray(base.repertoire?.last_positions)
+        ? base.repertoire.last_positions.map(String).slice(0, 6)
+        : [],
+      focus_position: base.repertoire?.focus_position ? String(base.repertoire.focus_position).slice(0, 40) : null,
+      focus_foreplay: base.repertoire?.focus_foreplay ? String(base.repertoire.focus_foreplay).slice(0, 40) : null,
+    },
+    updated_at: base.updated_at ?? null,
+  };
+}
+
 async function getStateBundle(env, scope) {
   if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
-  const [affect, life, history] = await Promise.all([
-    supabaseRest(env, scopedPath('affective_state', { select: 'mood,relationship,desires,updated_at', limit: '1' }, scope)),
-    supabaseRest(env, scopedPath('life_state', { select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day,updated_at', limit: '1' }, scope)),
-    supabaseRest(env, scopedPath('affective_state_history', { select: 'mood,relationship,event,created_at', order: 'created_at.desc', limit: '80' }, scope)),
-  ]);
-  const defaultAffect = { mood: { valence: 0, arousal: 0.3 }, relationship: { closeness: 0.5, tension: 0, repair_debt: 0, trust: 0.5 }, desires: { attention: 0, sharing: 0, comfort: 0, security: 0 }, updated_at: null };
-  const defaultLife = { energy: 0.6, satiety: 0.6, health: 1, current_activity: null, last_slept_at: null, sick_until: null, late_night_streak: 0, last_late_night_day: null, updated_at: null };
+  // 先带 intimacy 列；老库未迁移时回退无 intimacy 的查询，避免整页失败
+  let affect = await supabaseRest(env, scopedPath('affective_state', { select: 'mood,relationship,desires,intimacy,updated_at', limit: '1' }, scope));
+  if (!affect.ok) {
+    affect = await supabaseRest(env, scopedPath('affective_state', { select: 'mood,relationship,desires,updated_at', limit: '1' }, scope));
+  }
+  let life = await supabaseRest(env, scopedPath('life_state', { select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day,outfit,updated_at', limit: '1' }, scope));
+  if (!life.ok) {
+    life = await supabaseRest(env, scopedPath('life_state', { select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day,updated_at', limit: '1' }, scope));
+  }
+  const history = await supabaseRest(env, scopedPath('affective_state_history', { select: 'mood,relationship,event,created_at', order: 'created_at.desc', limit: '80' }, scope));
+  const defaultAffect = {
+    mood: { valence: 0, arousal: 0.3 },
+    relationship: { closeness: 0.5, tension: 0, repair_debt: 0, trust: 0.5 },
+    desires: { attention: 0, sharing: 0, comfort: 0, security: 0 },
+    intimacy: { ...DEFAULT_INTIMACY },
+    updated_at: null,
+  };
+  const defaultLife = {
+    energy: 0.6, satiety: 0.6, health: 1, current_activity: null, last_slept_at: null, sick_until: null,
+    late_night_streak: 0, last_late_night_day: null,
+    outfit: { current: null, context: 'home', changed_at: null, updated_at: null },
+    updated_at: null,
+  };
+  const affectRow = affect.ok && affect.data?.[0] ? affect.data[0] : null;
+  const affectOut = affectRow
+    ? {
+        ...defaultAffect,
+        ...affectRow,
+        desires: { ...defaultAffect.desires, ...(affectRow.desires || {}) },
+        intimacy: normalizeIntimacyRow(affectRow.intimacy),
+      }
+    : defaultAffect;
+  const lifeRow = life.ok && life.data?.[0] ? life.data[0] : null;
+  const lifeOut = lifeRow
+    ? {
+        ...defaultLife,
+        ...lifeRow,
+        outfit: lifeRow.outfit && typeof lifeRow.outfit === 'object'
+          ? lifeRow.outfit
+          : defaultLife.outfit,
+      }
+    : defaultLife;
   return {
     ok: affect.ok || life.ok,
-    affect: affect.ok && affect.data?.[0] ? affect.data[0] : defaultAffect,
-    life: life.ok && life.data?.[0] ? life.data[0] : defaultLife,
+    affect: affectOut,
+    life: lifeOut,
     history: history.ok ? history.data : [],
     errors: [affect, life, history].filter((r) => !r.ok && !r.missingTable).map((r) => r.message),
   };
@@ -822,6 +1053,42 @@ async function getCompanionUpgrade(env, scope) {
   };
 }
 
+async function getCompanyDashboard(env, scope) {
+  const companionId = safeCompanionId(scope.companionId || 'default');
+  if (!companionId) return { ok: false, message: '角色 ID 不合法' };
+  const persona = loadPersonaConfig(path.join(ROOT, 'companions', `${companionId}.json`));
+  const company = persona?.config?.company ?? null;
+  if (!company) return { ok: false, message: '这个角色还没有配置公司系统' };
+
+  let story = { ok: true, data: [] };
+  let state = null;
+  if (scope.userId) {
+    [story, state] = await Promise.all([
+      supabaseRest(env, scopedPath('story_lines', {
+        select: 'storyline_key,title,stage,mood_link,last_beat,next_beat_hint,last_beat_at,beats_day,beats_today,beat_shared_at,last_beat_sharing,updated_at',
+        order: 'updated_at.desc',
+        limit: '30',
+      }, scope)).catch((error) => ({ ok: false, message: error?.message })),
+      getStateBundle(env, scope).catch((error) => ({ ok: false, message: error?.message })),
+    ]);
+  }
+
+  const snapshot = buildCompanySnapshot(company, story.ok ? story.data : [], {
+    now: Date.now(),
+    currentActivity: state?.life?.current_activity || '',
+  });
+  return {
+    ok: true,
+    scope: { userId: scope.userId || '', companionId },
+    company: snapshot,
+    storyConnected: Boolean(scope.userId && story.ok),
+    issues: [story, state]
+      .filter((result) => result && !result.ok)
+      .map((result) => result.missingTable ? '缺少 story_lines 数据表，请重新执行 sql/schema.sql' : result.message)
+      .filter(Boolean),
+  };
+}
+
 function behaviorSummary(row) {
   const stonewallAt = Array.isArray(row?.state?.stonewallAt) ? row.state.stonewallAt : [];
   const last = stonewallAt.at(-1) ?? null;
@@ -867,6 +1134,12 @@ async function saveStateBundle(env, scope, input = {}) {
         comfort: clamp(input.affect.desires.comfort), security: clamp(input.affect.desires.security),
         updated_at: new Date().toISOString(),
       } } : {}),
+      ...(input.affect.intimacy ? {
+        intimacy: {
+          ...normalizeIntimacyRow(input.affect.intimacy),
+          updated_at: new Date().toISOString(),
+        },
+      } : {}),
       updated_at: new Date().toISOString(),
     };
     results.push(await supabaseRequest(env, 'affective_state?on_conflict=user_id,companion_id', { method: 'POST', body: row, headers: { prefer: 'resolution=merge-duplicates,return=representation' } }));
@@ -883,6 +1156,12 @@ async function saveStateBundle(env, scope, input = {}) {
       last_late_night_day: input.life.last_late_night_day || null,
       updated_at: new Date().toISOString(),
     };
+    if (input.life.outfit && typeof input.life.outfit === 'object') {
+      row.outfit = {
+        ...input.life.outfit,
+        updated_at: new Date().toISOString(),
+      };
+    }
     results.push(await supabaseRequest(env, 'life_state?on_conflict=user_id,companion_id', { method: 'POST', body: row, headers: { prefer: 'resolution=merge-duplicates,return=representation' } }));
   }
   const failed = results.find((r) => !r.ok);
@@ -1033,29 +1312,180 @@ function paramPayload() {
   };
 }
 
+/** 合并写入覆盖文件 (不是整份替换) —— 前端每次只传本次改动的字段, 之前保存过的其它覆盖不能被这次请求悄悄抹掉。 */
 function saveParams(values = {}) {
-  const out = {};
+  const overrides = readParamOverrides();
+  let applied = 0;
   for (const field of PARAM_SCHEMA) {
     if (!(field.path in values)) continue;
+    if (field.type === 'bool') {
+      setPathValue(overrides, field.path, Boolean(values[field.path]));
+      applied += 1;
+      continue;
+    }
     let value = Number(values[field.path]);
     if (!Number.isFinite(value)) continue;
     value = Math.min(field.max, Math.max(field.min, value));
     if (field.step >= 1) value = Math.round(value);
-    setPathValue(out, field.path, value);
+    setPathValue(overrides, field.path, value);
+    applied += 1;
   }
   fs.mkdirSync(path.dirname(PARAMS_FILE), { recursive: true });
-  fs.writeFileSync(PARAMS_FILE, `${JSON.stringify(out, null, 2)}\n`);
-  return { ok: true, message: `已保存 ${Object.keys(values).length} 项参数；重启 Bot 后生效`, values: out };
+  fs.writeFileSync(PARAMS_FILE, `${JSON.stringify(overrides, null, 2)}\n`);
+  return { ok: true, message: `已保存 ${applied} 项参数；重启 Bot 后生效`, values: overrides };
+}
+
+/** 清空全部参数覆盖, 整个系统回到 DEFAULT_PARAMS。是显式动作, 不是"传空 values"的副作用。 */
+function resetParams() {
+  fs.mkdirSync(path.dirname(PARAMS_FILE), { recursive: true });
+  fs.writeFileSync(PARAMS_FILE, '{}\n');
+  return { ok: true, message: '已重置为默认参数；重启 Bot 后生效' };
 }
 
 async function exportScope(env, scope) {
   if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
+  const policy = readProductPolicy().safety;
+  if (policy.dataRights?.allowExport === false) {
+    return { ok: false, message: '当前策略禁止导出' };
+  }
   const tables = {};
   for (const table of BACKUP_TABLES) {
     const r = await supabaseRest(env, scopedPath(table, { select: '*', limit: '10000' }, scope));
     if (r.ok) tables[table] = r.data;
   }
-  return { ok: true, version: 1, exportedAt: new Date().toISOString(), scope, tables };
+  const redacted = redactExportTables(tables, policy);
+  return { ok: true, version: 1, exportedAt: new Date().toISOString(), scope, tables: redacted, redacted: Boolean(policy.redactPII) };
+}
+
+// ---- P2 产品策略：安全 / 配额 ----
+function readProductPolicy() {
+  let raw = {};
+  try {
+    if (fs.existsSync(PRODUCT_POLICY_FILE)) raw = JSON.parse(fs.readFileSync(PRODUCT_POLICY_FILE, 'utf8'));
+  } catch {
+    raw = {};
+  }
+  return {
+    safety: normalizeSafetyPolicy(raw.safety || {}),
+    quota: normalizeQuota(raw.quota || {}),
+    updatedAt: raw.updatedAt || null,
+  };
+}
+
+function writeProductPolicy(patch = {}) {
+  const cur = readProductPolicy();
+  const next = {
+    safety: normalizeSafetyPolicy(patch.safety !== undefined ? { ...cur.safety, ...patch.safety } : cur.safety),
+    quota: normalizeQuota(patch.quota !== undefined ? { ...cur.quota, ...patch.quota } : cur.quota),
+    updatedAt: new Date().toISOString(),
+  };
+  fs.mkdirSync(path.dirname(PRODUCT_POLICY_FILE), { recursive: true });
+  fs.writeFileSync(PRODUCT_POLICY_FILE, `${JSON.stringify(next, null, 2)}\n`);
+  return next;
+}
+
+async function getProductLife(env, scope) {
+  if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = scope.companionId || 'default';
+  const [state, history, episodes, story, gallery, annuals, behavior] = await Promise.all([
+    getStateBundle(env, scope),
+    supabaseRest(env, scopedPath('chat_history', { select: 'id,role,content,created_at', order: 'created_at.desc', limit: '40' }, scope)),
+    supabaseRest(env, scopedPath('memories', {
+      select: 'id,type,content,fact_core,narrative,created_at,subject_kind',
+      type: 'eq.episode',
+      superseded_by: 'is.null',
+      order: 'created_at.desc',
+      limit: '20',
+    }, scope)),
+    supabaseRest(env, scopedPath('story_lines', {
+      select: 'storyline_key,title,stage,last_beat,next_beat_hint,last_beat_at,updated_at',
+      order: 'updated_at.desc',
+      limit: '8',
+    }, scope)),
+    getGallery(env, scope).catch(() => ({ ok: false, assets: [] })),
+    supabaseRest(env, scopedPath('prospective', {
+      select: 'id,content,trigger_kind,trigger_at,status,created_at',
+      trigger_kind: 'eq.annual',
+      order: 'trigger_at.asc',
+      limit: '20',
+    }, scope)),
+    supabaseRest(env, scopedPath('behavior_state', { select: 'state,updated_at', limit: '1' }, scope)).catch(() => ({ ok: false })),
+  ]);
+
+  const hist = history.ok ? (history.data || []).reverse() : [];
+  const eps = episodes.ok ? episodes.data || [] : [];
+  const stories = story.ok ? story.data || [] : [];
+  const photos = gallery.ok ? gallery.assets || [] : [];
+  const anns = annuals.ok ? annuals.data || [] : [];
+  const timeline = buildTimeline({
+    history: hist,
+    episodes: eps,
+    story: stories,
+    photos: photos.slice(0, 12),
+    annuals: anns,
+    life: state.life,
+  });
+  const relationship = buildRelationshipView({
+    relationship: state.affect?.relationship || state.relationship || {},
+    annuals: anns,
+    episodes: eps,
+    behavior: behavior.ok ? behaviorSummary(behavior.data?.[0]) : null,
+    desires: state.affect?.desires || null,
+  });
+
+  return {
+    ok: true,
+    scope: { userId: scope.userId, companionId },
+    day: timeline.summary,
+    timeline: timeline.events,
+    relationship,
+    outfit: state.life?.outfit || null,
+    photos: photos.slice(0, 24).map((p) => ({ id: p.id, url: p.url, tags: p.tags, created_at: p.created_at })),
+    story: stories,
+  };
+}
+
+async function getProductUsage(env, scope) {
+  if (!scope.userId) return { messagesToday: 0, photosToday: 0, memories: 0, companions: 0 };
+  const dayStart = new Date();
+  dayStart.setHours(0, 0, 0, 0);
+  const iso = dayStart.toISOString();
+  const filters = { user_id: `eq.${scope.userId}`, companion_id: `eq.${scope.companionId || 'default'}` };
+  const [messagesToday, photosToday, memories, companions] = await Promise.all([
+    supabaseCount(env, 'chat_history', { ...filters, created_at: `gte.${iso}` }).catch(() => 0),
+    supabaseCount(env, 'appearance_assets', { ...filters, created_at: `gte.${iso}` }).catch(() => 0),
+    supabaseCount(env, 'memories', { ...filters, superseded_by: 'is.null' }).catch(() => 0),
+    supabaseCount(env, 'companions', { user_id: `eq.${scope.userId}` }).catch(() => 1),
+  ]);
+  return { messagesToday, photosToday, memories, companions, tokensMonth: 0 };
+}
+
+async function getProductQuota(env, scope) {
+  const policy = readProductPolicy();
+  const usage = scope?.userId ? await getProductUsage(env, scope) : {
+    messagesToday: 0, photosToday: 0, memories: 0, companions: 0, tokensMonth: 0,
+  };
+  const check = checkQuota(usage, policy.quota);
+  return { ok: true, ...check, scope: scope?.userId ? scope : null };
+}
+
+async function deleteScopeData(env, scope, { confirm } = {}) {
+  if (!scope.userId) return { ok: false, message: '请先选择用户和角色' };
+  const policy = readProductPolicy().safety;
+  if (policy.dataRights?.allowDelete === false) return { ok: false, message: '当前策略禁止删除' };
+  if (confirm !== 'DELETE') return { ok: false, message: '请传 confirm: "DELETE" 二次确认' };
+  const deleted = {};
+  for (const table of BACKUP_TABLES) {
+    // PostgREST: DELETE with filters
+    const path = `${table}?user_id=eq.${encodeURIComponent(scope.userId)}&companion_id=eq.${encodeURIComponent(scope.companionId || 'default')}`;
+    const r = await supabaseRequest(env, path, {
+      method: 'DELETE',
+      headers: { prefer: 'return=minimal' },
+      timeoutMs: 120000,
+    }).catch((e) => ({ ok: false, message: e?.message }));
+    deleted[table] = r.ok ? 'ok' : (r.message || 'fail');
+  }
+  return { ok: true, deleted, message: `已删除 ${scope.userId} / ${scope.companionId || 'default'} 的作用域数据` };
 }
 
 async function importScope(env, payload = {}) {
@@ -1084,7 +1514,7 @@ async function importScope(env, payload = {}) {
 
 async function getSystemHealth(env) {
   const required = ['memories', 'affective_state', 'life_state', 'prospective', 'chat_history', 'world_state', 'story_lines', 'jobs', 'behavior_state'];
-  const optional = ['knowledge_entities', 'knowledge_relations', 'appearance_assets', 'companions'];
+  const optional = ['knowledge_entities', 'knowledge_relations', 'appearance_assets', 'companions', 'companion_card_assets', 'album_custom_entries'];
   const results = await Promise.all([...required, ...optional].map(async (table) => {
     const r = await supabaseRequest(env, `${table}?select=*&limit=1`, { timeoutMs: 30000 })
       .catch((error) => ({ ok: false, message: error?.message }));
@@ -1100,6 +1530,15 @@ async function getSystemHealth(env) {
       embedding: Boolean(env.EMBED_API_KEY || env.LLM_API_KEY),
       asr: Boolean((env.ASR_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && (env.ASR_MODEL || 'whisper-1')),
       image: Boolean((env.IMAGE_API_KEY || env.EMBED_API_KEY || env.LLM_API_KEY) && env.IMAGE_MODEL),
+      r2: (() => {
+        try {
+          // 同步粗检：桶配置是否齐全（Token 可能来自 wrangler，不在 .env）
+          const hasBucket = Boolean(env.R2_BUCKET && env.R2_PUBLIC_BASE && (env.CLOUDFLARE_ACCOUNT_ID || env.R2_ACCOUNT_ID));
+          return hasBucket;
+        } catch {
+          return false;
+        }
+      })(),
       telegram: Boolean(env.TELEGRAM_BOT_TOKEN),
       feishu: Boolean(env.FEISHU_APP_ID && env.FEISHU_APP_SECRET),
       discord: Boolean(env.DISCORD_BOT_TOKEN),
@@ -1218,6 +1657,806 @@ function listCompanions() {
       shardCount: isDir ? fs.readdirSync(dir).filter((f) => safePersonaName(`${id}/${f}`)).length : 1,
     };
   });
+}
+
+// 目录式人设里 profile 之外的其余分片; 每个文件都是 { <section>: {...} } 或 (persona/relationship)
+// 带 meta/emotion_baseline 等额外顶层键的形态 —— 通用接口直接读写整份文件内容, 不narrow到单个 key,
+// 这样不用对 persona/relationship 的多顶层键做特殊处理。profile 有专门的结构化表单 (见下方
+// readCompanionProfile/saveCompanionProfile), 不走这条通用路径。
+const COMPANION_SECTIONS = ['persona', 'appearance', 'life', 'relationship', 'runtime', 'knowledge', 'story', 'company', 'narration', 'intimacy'];
+
+function companionSectionFilePath(id, section) {
+  return path.join(companionDirPath(id), `${section}.json`);
+}
+
+/** 读一个角色某个分片的原始 JSON (给控制台的通用编辑器用); 文件不存在返回空对象, 不算错误。 */
+function readCompanionSection(companionId, section) {
+  const id = safeCompanionId(companionId);
+  if (!id) return { ok: false, message: '角色 ID 不合法' };
+  if (!COMPANION_SECTIONS.includes(section)) return { ok: false, message: `未知分片: ${section}` };
+  const file = companionSectionFilePath(id, section);
+  try {
+    const data = fs.existsSync(file) ? JSON.parse(fs.readFileSync(file, 'utf8')) : {};
+    return { ok: true, data };
+  } catch (error) {
+    return { ok: false, message: `分片读取失败: ${error.message}` };
+  }
+}
+
+/** 整份覆盖写一个角色某个分片的 JSON (给控制台的通用编辑器用); 角色目录不存在会自动建。 */
+function saveCompanionSection(companionId, section, data) {
+  const id = safeCompanionId(companionId);
+  if (!id) return { ok: false, message: '角色 ID 不合法' };
+  if (!COMPANION_SECTIONS.includes(section)) return { ok: false, message: `未知分片: ${section}` };
+  if (!data || typeof data !== 'object' || Array.isArray(data)) return { ok: false, message: '内容必须是 JSON 对象' };
+  try {
+    fs.mkdirSync(companionDirPath(id), { recursive: true });
+    fs.writeFileSync(companionSectionFilePath(id, section), `${JSON.stringify(data, null, 2)}\n`);
+    return { ok: true, message: '已保存；下次对话会读取新的设定' };
+  } catch (error) {
+    return { ok: false, message: `保存失败: ${error.message}` };
+  }
+}
+
+// ---- 穿搭系统（衣橱目录 + 卡片图/提示词资产） ----
+
+function readCompanionOutfitRaw(companionId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const file = path.join(companionDirPath(id), 'outfit.json');
+  try {
+    if (!fs.existsSync(file)) return null;
+    const raw = JSON.parse(fs.readFileSync(file, 'utf8'));
+    return raw?.outfit && typeof raw.outfit === 'object' ? raw.outfit : raw;
+  } catch {
+    return null;
+  }
+}
+
+function companionRootForAssets(companionId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const dir = companionDirPath(id);
+  fs.mkdirSync(dir, { recursive: true });
+  return dir;
+}
+
+async function loadCardAssetMap(env, companionId, collection) {
+  const r = await supabaseRest(env, listAssetsPath(companionId, collection));
+  if (!r.ok) {
+    if (r.missingTable) {
+      return { ok: false, missingTable: true, map: {}, message: '缺少 companion_card_assets 表，请在 Supabase 执行 sql/card-assets.sql' };
+    }
+    return { ok: false, map: {}, message: r.message };
+  }
+  return { ok: true, map: rowsToAssetMapLite(r.data || []) };
+}
+
+function attachOutfitCatalogAssets(catalog, assetMap, companionId) {
+  const keys = [
+    'looks', 'dresses', 'tops', 'bottoms', 'outerwear', 'hair',
+    'shoes', 'bags', 'lingerie', 'jewelry', 'watches', 'accessories',
+    'beauty', 'travel', 'pieces',
+  ];
+  const out = { ...catalog, counts: { ...catalog.counts } };
+  for (const key of keys) {
+    if (!Array.isArray(catalog[key])) continue;
+    out[key] = attachAssetsToCards(catalog[key], assetMap, { companionId, collection: 'outfit' });
+  }
+  return out;
+}
+
+async function getOutfitCatalog(env, scope = {}) {
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const root = companionRootForAssets(companionId);
+  const raw = readCompanionOutfitRaw(companionId);
+  const customLooks = readCustomLooks(root);
+  const catalog = buildOutfitCatalog(raw, customLooks);
+  const assets = await loadCardAssetMap(env, companionId, 'outfit');
+  const enriched = attachOutfitCatalogAssets(catalog, assets.map || {}, companionId);
+  let current = null;
+  if (scope.userId) {
+    const life = await supabaseRest(env, scopedPath('life_state', { select: 'outfit,updated_at', limit: '1' }, {
+      userId: scope.userId,
+      companionId,
+    }));
+    if (life.ok && life.data?.[0]?.outfit) current = life.data[0].outfit;
+  }
+  return {
+    ok: true,
+    companionId,
+    current,
+    storage: 'supabase',
+    assetsOk: assets.ok,
+    assetsMessage: assets.ok ? null : assets.message,
+    customLooksCount: customLooks.length,
+    ...enriched,
+  };
+}
+
+function findLookForWear(companionId, lookId) {
+  const id = String(lookId || '');
+  const raw = readCompanionOutfitRaw(companionId);
+  const wardrobe = normalizeWardrobe(raw);
+  const fromWardrobe = (wardrobe.wardrobe || []).find((x) => x.id === id);
+  if (fromWardrobe) return fromWardrobe;
+  const custom = findCustomLook(companionRootForAssets(companionId), id);
+  if (custom) {
+    return {
+      id: custom.id,
+      context: custom.context,
+      summary: custom.summary,
+      style: custom.style,
+      pieces: custom.pieces,
+    };
+  }
+  return null;
+}
+
+async function createOutfitCustomLook(env, companionId, body = {}) {
+  const id = safeCompanionId(companionId) || 'default';
+  try {
+    const look = createCustomLook(companionRootForAssets(id), {
+      title: body.title || body.style,
+      style: body.style || body.title,
+      summary: body.summary || body.notes || body.title,
+      context: body.context || 'home',
+      pieces: body.pieces || {},
+      dress: body.dress,
+      top: body.top,
+      bottom: body.bottom,
+      outer: body.outer,
+      shoes: body.shoes,
+      bag: body.bag,
+      jewelry: body.jewelry,
+      watch: body.watch,
+      hair: body.hair,
+      makeup: body.makeup,
+      prompt: body.prompt || '',
+    });
+    const cardKey = outfitCardId('look', look.id);
+    if (body.prompt?.trim()) {
+      await upsertCardAsset(env, id, 'outfit', cardKey, { prompt: body.prompt.trim() });
+    }
+    return {
+      ok: true,
+      look,
+      cardId: cardKey,
+      message: `已创建造型：${look.style || look.summary}`,
+    };
+  } catch (error) {
+    return { ok: false, message: error.message || '创建失败' };
+  }
+}
+
+async function updateOutfitCustomLook(env, companionId, lookId, body = {}) {
+  const id = safeCompanionId(companionId) || 'default';
+  try {
+    const look = updateCustomLook(companionRootForAssets(id), lookId, body);
+    if (!look) return { ok: false, message: '找不到该自定义造型' };
+    if (body.prompt != null && String(body.prompt).trim()) {
+      await upsertCardAsset(env, id, 'outfit', outfitCardId('look', look.id), {
+        prompt: String(body.prompt).trim(),
+      });
+    }
+    return { ok: true, look, message: '造型已更新' };
+  } catch (error) {
+    return { ok: false, message: error.message || '更新失败' };
+  }
+}
+
+async function deleteOutfitCustomLook(env, companionId, lookId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const ok = deleteCustomLook(companionRootForAssets(id), lookId);
+  if (!ok) return { ok: false, message: '找不到该自定义造型（系统衣橱造型不可删）' };
+  // 尽量清掉卡片图/提示词资产
+  const cardKey = outfitCardId('look', lookId);
+  try {
+    await deleteOutfitCardImage(env, id, cardKey);
+  } catch { /* ignore */ }
+  return { ok: true, message: '已删除自定义造型' };
+}
+
+/** 解析系列提示词（DeepSeek 优先，失败启发式） */
+async function parseOutfitSeries(env, body = {}) {
+  const text = String(body.text || body.prompt || '').trim();
+  if (!text) return { ok: false, message: '请粘贴系列提示词' };
+  const useLlm = body.useLlm !== false;
+  try {
+    const parsed = await parseLookSeries(text, {
+      useLlm,
+      baseURL: env.LLM_BASE_URL || 'https://api.deepseek.com',
+      apiKey: env.LLM_API_KEY || '',
+      model: env.LLM_MODEL || 'deepseek-chat',
+      timeoutMs: 120_000,
+    });
+    return {
+      ok: true,
+      method: parsed.method,
+      seriesTitle: parsed.seriesTitle,
+      seriesId: parsed.seriesId,
+      count: parsed.looks?.length || 0,
+      looks: parsed.looks,
+      llmError: parsed.llmError || null,
+      message: parsed.method === 'llm'
+        ? `已识别 ${parsed.looks.length} 套造型（DeepSeek）`
+        : `已识别 ${parsed.looks.length} 套造型（${parsed.method}${parsed.llmError ? ` · ${parsed.llmError}` : ''}）`,
+    };
+  } catch (error) {
+    return { ok: false, message: error.message || '解析失败' };
+  }
+}
+
+/** 解析并批量创建造型卡 + 写入各卡提示词资产 */
+async function importOutfitSeries(env, companionId, body = {}) {
+  const id = safeCompanionId(companionId) || 'default';
+  const text = String(body.text || body.prompt || '').trim();
+  if (!text && !body.parsed?.looks) return { ok: false, message: '请粘贴系列提示词' };
+  try {
+    let parsed = body.parsed;
+    if (!parsed?.looks?.length) {
+      parsed = await parseLookSeries(text, {
+        useLlm: body.useLlm !== false,
+        baseURL: env.LLM_BASE_URL || 'https://api.deepseek.com',
+        apiKey: env.LLM_API_KEY || '',
+        model: env.LLM_MODEL || 'deepseek-chat',
+        timeoutMs: 120_000,
+      });
+    }
+    const root = companionRootForAssets(id);
+    const result = importSeriesLooks(root, parsed, {
+      replaceSeriesId: body.replaceSeriesId || null,
+    });
+    // 每张卡的提示词写入 Supabase card assets（与翻面编辑一致）
+    for (const look of result.looks) {
+      const cardKey = outfitCardId('look', look.id);
+      if (look.prompt) {
+        await upsertCardAsset(env, id, 'outfit', cardKey, { prompt: look.prompt }).catch(() => null);
+      }
+    }
+    return {
+      ok: true,
+      method: parsed.method,
+      seriesId: result.seriesId,
+      seriesTitle: result.seriesTitle,
+      count: result.looks.length,
+      looks: result.looks.map((l) => ({
+        id: l.id,
+        title: l.style,
+        summary: l.summary,
+        seriesIndex: l.seriesIndex,
+        cardId: outfitCardId('look', l.id),
+      })),
+      llmError: parsed.llmError || null,
+      message: `已创建系列「${result.seriesTitle}」共 ${result.looks.length} 张造型卡，提示词已分别填入`,
+    };
+  } catch (error) {
+    return { ok: false, message: error.message || '导入失败' };
+  }
+}
+
+async function wearOutfitLook(env, scope, lookId) {
+  if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const look = findLookForWear(companionId, lookId);
+  if (!look) return { ok: false, message: `找不到造型：${lookId}` };
+  const outfit = lookToOutfitState({
+    lookId: look.id,
+    context: look.context,
+    summary: look.summary,
+    style: look.style,
+    pieces: look.pieces,
+  });
+  // 读出现有 life 行，避免只写 outfit 时把 energy 等冲成 0
+  let life = await supabaseRest(env, scopedPath('life_state', {
+    select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day,outfit',
+    limit: '1',
+  }, { userId: scope.userId, companionId }));
+  if (!life.ok) {
+    life = await supabaseRest(env, scopedPath('life_state', {
+      select: 'energy,satiety,health,current_activity,last_slept_at,sick_until,late_night_streak,last_late_night_day',
+      limit: '1',
+    }, { userId: scope.userId, companionId }));
+  }
+  const prev = life.ok && life.data?.[0] ? life.data[0] : {};
+  const prevOutfit = prev.outfit && typeof prev.outfit === 'object' ? prev.outfit : {};
+  const dayKey = localDayKey(Date.now(), DEFAULT_PARAMS.outfit?.dailyLook?.timezoneOffsetMinutes ?? 480);
+  const outfitWithDaily = clampOutfitState({
+    ...outfit,
+    daily_key: dayKey,
+    composed_from: { lookId: look.id, source: 'manual_wear' },
+    daily_photo: prevOutfit.daily_key === dayKey ? prevOutfit.daily_photo : null,
+  });
+  const row = {
+    user_id: scope.userId,
+    companion_id: companionId,
+    energy: Number.isFinite(Number(prev.energy)) ? Number(prev.energy) : 0.6,
+    satiety: Number.isFinite(Number(prev.satiety)) ? Number(prev.satiety) : 0.6,
+    health: Number.isFinite(Number(prev.health)) ? Number(prev.health) : 1,
+    current_activity: prev.current_activity ?? null,
+    last_slept_at: prev.last_slept_at ?? null,
+    sick_until: prev.sick_until ?? null,
+    late_night_streak: prev.late_night_streak ?? 0,
+    last_late_night_day: prev.last_late_night_day ?? null,
+    outfit: outfitWithDaily,
+    updated_at: new Date().toISOString(),
+  };
+  const result = await supabaseRequest(env, 'life_state?on_conflict=user_id,companion_id', {
+    method: 'POST',
+    body: row,
+    headers: { prefer: 'resolution=merge-duplicates,return=representation' },
+  });
+  if (!result.ok) return result;
+  return { ok: true, outfit: outfitWithDaily, message: `已上身：${look.summary || look.id}` };
+}
+
+/** 保存日更成片到相册（data URL → R2；http/mock → 直接写 url） */
+async function saveDailyAlbumImage(env, companionId, cardId, payload = {}) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = normalizeCardKey(cardId) || cardId;
+  const url = String(payload.url || '');
+  if (payload.prompt) {
+    await upsertCardAsset(env, id, 'album', key, { prompt: payload.prompt }).catch(() => null);
+  }
+  if (url.startsWith('data:')) {
+    const m = url.match(/^data:([^;]+);base64,(.+)$/s);
+    if (m) {
+      return uploadCardImageToR2AndDb(env, id, 'album', key, {
+        mime: m[1] || payload.mime || 'image/png',
+        data: m[2],
+        name: `${key}.png`,
+      });
+    }
+  }
+  if (url) {
+    const r = await upsertCardAsset(env, id, 'album', key, {
+      prompt: payload.prompt,
+      url,
+      mime: payload.mime || 'image/png',
+      meta: {
+        has_image: true,
+        storage: url.startsWith('mock://') ? 'mock' : 'remote',
+        lookSummary: payload.lookSummary || null,
+        daily: true,
+      },
+    });
+    if (!r.ok) return r;
+    return { ok: true, imageUrl: url, url, entry: r.entry };
+  }
+  return { ok: false, message: '无图片 URL' };
+}
+
+async function getDailyOutfit(env, scope = {}) {
+  if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const raw = readCompanionOutfitRaw(companionId);
+  const wardrobe = normalizeWardrobe(raw);
+  let stored = defaultOutfitSafe(await readOutfit(scope.userId, companionId).catch(() => null));
+  // 若 life 走 REST 失败则用 supabase 客户端 readOutfit
+  const life = await supabaseRest(env, scopedPath('life_state', { select: 'outfit,updated_at', limit: '1' }, {
+    userId: scope.userId,
+    companionId,
+  }));
+  if (life.ok && life.data?.[0]?.outfit) {
+    stored = clampOutfitState(life.data[0].outfit);
+  }
+  const ensured = ensureDailyLookState(stored, {
+    wardrobe,
+    now: Date.now(),
+    config: DEFAULT_PARAMS.outfit,
+  });
+  if (ensured.composed) {
+    await writeOutfit(scope.userId, companionId, ensured.state).catch(() => null);
+  }
+  const o = ensured.state;
+  return {
+    ok: true,
+    companionId,
+    dailyKey: o.daily_key,
+    outfit: o,
+    summary: o.current?.summary || null,
+    pieces: o.current?.pieces || {},
+    composedFrom: o.composed_from,
+    photo: o.daily_photo,
+    albumCardId: o.daily_photo?.albumCardId || (o.daily_key ? dailyAlbumCardId(o.daily_key) : null),
+    hasPhoto: Boolean(o.daily_photo?.url),
+  };
+}
+
+function defaultOutfitSafe(v) {
+  return clampOutfitState(v || {});
+}
+
+async function recomposeDailyOutfit(env, scope = {}) {
+  if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const raw = readCompanionOutfitRaw(companionId);
+  const wardrobe = normalizeWardrobe(raw);
+  const life = await supabaseRest(env, scopedPath('life_state', { select: 'outfit', limit: '1' }, {
+    userId: scope.userId,
+    companionId,
+  }));
+  const stored = clampOutfitState(life.ok && life.data?.[0]?.outfit ? life.data[0].outfit : {});
+  const ensured = ensureDailyLookState(stored, {
+    wardrobe,
+    now: Date.now(),
+    config: DEFAULT_PARAMS.outfit,
+    force: true,
+  });
+  await writeOutfit(scope.userId, companionId, ensured.state).catch((e) => {
+    throw e;
+  });
+  return {
+    ok: true,
+    message: '已重新组合今日穿搭',
+    outfit: ensured.state,
+    dailyKey: ensured.state.daily_key,
+    summary: ensured.state.current?.summary,
+    composedFrom: ensured.state.composed_from,
+  };
+}
+
+function loadCompanionAppearanceText(companionId) {
+  const id = safeCompanionId(companionId) || 'default';
+  // 1) appearance.json · anchor_prompt
+  try {
+    const aPath = path.join(companionDirPath(id), 'appearance.json');
+    if (fs.existsSync(aPath)) {
+      const a = JSON.parse(fs.readFileSync(aPath, 'utf8'));
+      const anchor = a?.appearance?.anchor_prompt || a?.anchor_prompt || a?.appearance;
+      if (typeof anchor === 'string' && anchor.trim()) return anchor.trim().slice(0, 800);
+    }
+  } catch { /* ignore */ }
+  // 2) profile.json
+  try {
+    const pPath = path.join(companionDirPath(id), 'profile.json');
+    if (fs.existsSync(pPath)) {
+      const p = JSON.parse(fs.readFileSync(pPath, 'utf8'));
+      const text = p.appearance || p.look || p?.profile?.appearance;
+      if (typeof text === 'string' && text.trim()) return text.trim().slice(0, 800);
+    }
+  } catch { /* ignore */ }
+  return 'elegant mature East Asian adult woman, refined facial proportions, polished executive presence';
+}
+
+async function generateDailyOutfitPhoto(env, scope = {}, { force = false } = {}) {
+  if (!scope?.userId) return { ok: false, message: '请先选择用户和角色' };
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const daily = await getDailyOutfit(env, scope);
+  if (!daily.ok) return daily;
+  const provider = imageProviderFromEnv(env);
+  const appearance = loadCompanionAppearanceText(companionId);
+  const t0 = Date.now();
+  try {
+    const result = await generateDailyLookPhoto({
+      outfit: daily.outfit,
+      appearance,
+      snapshot: { outfit: daily.outfit, life: {}, emotion: {} },
+      force: Boolean(force),
+      provider,
+      getReferences: () => {
+        const refs = listReferenceImages(scope.userId, companionId);
+        // 只取头像 + 1 张脸图，降低 edits 体积与失败率
+        return [...refs]
+          .sort((a, b) => Number(Boolean(b.isAvatar)) - Number(Boolean(a.isAvatar)))
+          .slice(0, 2)
+          .map((x) => ({ path: referenceFilePath(x), mime: x.mime, name: x.name }));
+      },
+      saveAlbum: (cardId, payload) => saveDailyAlbumImage(env, companionId, cardId, payload),
+      writeAppearance: (asset) => insertAppearanceAsset(scope.userId, companionId, asset),
+      writeOutfit: (outfit) => writeOutfit(scope.userId, companionId, outfit),
+      config: DEFAULT_PARAMS.outfit,
+    });
+    const ms = Date.now() - t0;
+    if (!result.ok && !result.skipped) {
+      return {
+        ok: false,
+        message: result.reason || '生成失败',
+        reason: result.reason,
+        ms,
+      };
+    }
+    return {
+      ok: true,
+      skipped: Boolean(result.skipped),
+      message: result.skipped
+        ? (result.reason === 'already' ? '今日成片已存在' : result.reason)
+        : `今日穿搭成片已生成（${Math.round(ms / 1000)}s）`,
+      url: result.url,
+      albumCardId: result.albumCardId,
+      outfit: result.outfit,
+      lookSummary: result.lookSummary || null,
+      ms,
+    };
+  } catch (error) {
+    console.error('[generateDailyOutfitPhoto]', error);
+    const raw = error?.message || String(error);
+    // 图模安全审核 / 业务错误直接透出，不要再包一层「网络请求失败」
+    const message = /safety|sexual|生成失败|超时|参考图|质量|quality_gate/i.test(raw)
+      ? raw
+      : (describeNetworkError(error) || raw || '生成失败');
+    return {
+      ok: false,
+      message,
+      ms: Date.now() - t0,
+    };
+  }
+}
+
+async function upsertCardAsset(env, companionId, collection, cardId, patch) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = normalizeCardKey(cardId);
+  if (!key) return { ok: false, message: '缺少卡片 ID' };
+  const existing = await supabaseRest(env, oneAssetPath(id, collection, key, { withImage: false }));
+  const prev = existing.ok && existing.data?.[0] ? existing.data[0] : null;
+  const body = upsertAssetBody(id, collection, key, {
+    prompt: patch.prompt !== undefined ? patch.prompt : prev?.prompt,
+    mime: patch.clearImage ? null : (patch.mime !== undefined ? patch.mime : prev?.mime),
+    url: patch.clearImage ? null : (patch.url !== undefined ? patch.url : prev?.url),
+    r2_key: patch.clearImage ? null : (patch.r2_key !== undefined ? patch.r2_key : prev?.r2_key),
+    meta: patch.meta || prev?.meta || {},
+    clearImage: Boolean(patch.clearImage),
+  });
+  if (patch.url === undefined && !patch.clearImage) {
+    delete body.url;
+    delete body.r2_key;
+  }
+  if (patch.mime === undefined && !patch.clearImage && prev?.mime) body.mime = prev.mime;
+  if (patch.clearImage) {
+    body.mime = null;
+    body.url = null;
+    body.r2_key = null;
+    body.image_base64 = null;
+    body.meta = { ...(prev?.meta || {}), has_image: false };
+  }
+  if (patch.url) {
+    body.meta = { ...(body.meta || {}), has_image: true, r2_key: patch.r2_key || body.r2_key };
+    body.image_base64 = null;
+  }
+
+  const result = await supabaseRequest(env, 'companion_card_assets?on_conflict=companion_id,collection,card_id', {
+    method: 'POST',
+    body,
+    headers: { prefer: 'resolution=merge-duplicates,return=representation' },
+    timeoutMs: 60000,
+  });
+  if (!result.ok) {
+    if (result.missingTable) {
+      return { ok: false, message: '缺少 companion_card_assets 表，请在 Supabase 执行 sql/card-assets.sql' };
+    }
+    // 列 url/r2_key 可能尚未 migrate
+    if (/url|r2_key|column/i.test(String(result.message || ''))) {
+      return { ok: false, message: `${result.message}（若缺 url/r2_key 列，请再执行 sql/card-assets.sql）` };
+    }
+    return result;
+  }
+  const row = Array.isArray(result.data) ? result.data[0] : result.data;
+  return { ok: true, entry: row, cardId: key, prev };
+}
+
+async function updateOutfitCard(env, companionId, cardId, { prompt } = {}) {
+  if (prompt == null) return { ok: false, message: '没有可更新的字段' };
+  const r = await upsertCardAsset(env, companionId, 'outfit', cardId, { prompt });
+  if (!r.ok) return r;
+  return { ok: true, cardId: r.cardId, entry: r.entry, message: '提示词已保存到 Supabase' };
+}
+
+async function uploadCardImageToR2AndDb(env, companionId, collection, cardId, body = {}) {
+  try {
+    const id = safeCompanionId(companionId) || 'default';
+    const key = normalizeCardKey(cardId);
+    if (!key) return { ok: false, message: '缺少卡片 ID' };
+    const { mime, base64 } = validateImagePayload(body);
+    const r2cfg = resolveR2Config(env);
+    if (!r2cfg.canUpload) {
+      return {
+        ok: false,
+        message: 'Cloudflare R2 未就绪：请 wrangler login，或在 .env 配置 CLOUDFLARE_API_TOKEN / R2_BUCKET / R2_PUBLIC_BASE',
+      };
+    }
+    // 上传新图前读出旧 key，成功后删旧对象
+    const existing = await supabaseRest(env, oneAssetPath(id, collection, key, { withImage: false }));
+    const prev = existing.ok && existing.data?.[0] ? existing.data[0] : null;
+    const oldKey = prev?.r2_key || prev?.meta?.r2_key || null;
+
+    const up = await uploadBase64ToR2(base64, {
+      mime,
+      companionId: id,
+      collection,
+      cardId: key,
+      env,
+    });
+    if (!up.ok) return up;
+
+    const r = await upsertCardAsset(env, id, collection, key, {
+      mime,
+      url: up.url,
+      r2_key: up.key,
+      meta: {
+        name: String(body.name || cardId).slice(0, 160),
+        has_image: true,
+        r2_key: up.key,
+        storage: 'r2',
+      },
+    });
+    if (!r.ok) return r;
+
+    if (oldKey && oldKey !== up.key) {
+      await deleteFromR2(oldKey, env).catch(() => null);
+    }
+
+    return {
+      ok: true,
+      cardId: key,
+      entry: r.entry,
+      imageUrl: up.url,
+      storage: 'r2',
+      message: collection === 'album' ? '上身成片已上传到 Cloudflare R2' : '图片已上传到 Cloudflare R2',
+    };
+  } catch (error) {
+    return { ok: false, message: error.message || '上传失败' };
+  }
+}
+
+async function uploadOutfitCardImage(env, companionId, cardId, body = {}) {
+  return uploadCardImageToR2AndDb(env, companionId, 'outfit', cardId, body);
+}
+
+async function deleteOutfitCardImage(env, companionId, cardId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = normalizeCardKey(cardId);
+  const existing = await supabaseRest(env, oneAssetPath(id, 'outfit', key, { withImage: false }));
+  const prev = existing.ok && existing.data?.[0] ? existing.data[0] : null;
+  const r2key = prev?.r2_key || prev?.meta?.r2_key;
+  if (r2key) await deleteFromR2(r2key, env).catch(() => null);
+  const r = await upsertCardAsset(env, companionId, 'outfit', cardId, { clearImage: true });
+  if (!r.ok) return r;
+  return { ok: true, message: '卡片图片已从 R2 / Supabase 清除' };
+}
+
+/** 兼容旧 base64 行；新图直接用 R2 公网 url，一般不走这里 */
+async function serveCardMedia(env, companionId, collection, cardId, res) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = decodeURIComponent(String(cardId || ''));
+  const r = await supabaseRest(env, oneAssetPath(id, collection, key, { withImage: true }));
+  if (!r.ok) {
+    json(res, r.missingTable ? 400 : 404, {
+      ok: false,
+      message: r.missingTable
+        ? '缺少 companion_card_assets 表，请执行 sql/card-assets.sql'
+        : (r.message || '没有这张图'),
+    });
+    return true;
+  }
+  const row = r.data?.[0];
+  if (row?.url) {
+    res.writeHead(302, { location: row.url, 'cache-control': 'private, max-age=60' });
+    res.end();
+    return true;
+  }
+  const decoded = decodeImageBase64({
+    image_base64: row?.image_base64,
+    mime: row?.mime,
+  });
+  if (!decoded) {
+    json(res, 404, { ok: false, message: '没有这张图' });
+    return true;
+  }
+  res.writeHead(200, {
+    'content-type': decoded.mime,
+    'content-length': decoded.buffer.length,
+    'cache-control': 'private, max-age=3600',
+  });
+  res.end(decoded.buffer);
+  return true;
+}
+
+// ---- 穿搭相册（上身效果 lookbook）· 资产在 Supabase ----
+
+async function getAlbumCatalog(env, scope = {}) {
+  const companionId = safeCompanionId(scope.companionId) || 'default';
+  const raw = readCompanionOutfitRaw(companionId);
+  const customRes = await supabaseRest(env, listCustomAlbumPath(companionId));
+  const custom = customRes.ok ? (customRes.data || []) : [];
+  if (!customRes.ok && customRes.missingTable) {
+    // 表未建时仍返回造型卡，提示迁移
+  }
+  const catalog = buildAlbumCatalog(raw, custom);
+  const assets = await loadCardAssetMap(env, companionId, 'album');
+  let cards = attachAssetsToCards(catalog.cards, assets.map || {}, { companionId, collection: 'album' });
+
+  // 今日日更成片置顶
+  if (scope.userId) {
+    const daily = await getDailyOutfit(env, { userId: scope.userId, companionId }).catch(() => null);
+    if (daily?.ok && daily.dailyKey) {
+      const cardId = daily.albumCardId || dailyAlbumCardId(daily.dailyKey);
+      const asset = (assets.map || {})[cardId];
+      const dailyCard = {
+        id: cardId,
+        kind: 'wearing',
+        source: 'daily',
+        lookId: daily.composedFrom?.lookId || daily.outfit?.current?.id || null,
+        title: `今日穿搭 · ${daily.dailyKey}`,
+        subtitle: 'daily lookbook',
+        summary: daily.summary || '',
+        context: daily.outfit?.context || 'home',
+        season: null,
+        style: '今日',
+        pieces: daily.pieces || {},
+        tags: ['今日', daily.outfit?.context, '日更'].filter(Boolean),
+        defaultPrompt: '',
+        prompt: asset?.prompt || '',
+        promptMode: 'person_look',
+        hasCustomPrompt: Boolean(asset?.prompt),
+        imageUrl: daily.photo?.url || (asset?.file ? `/api/album/media/${encodeURIComponent(cardId)}/file?companionId=${encodeURIComponent(companionId)}` : null),
+        hasImage: Boolean(daily.photo?.url || asset?.file || asset?.url),
+        updatedAt: daily.photo?.at || asset?.updatedAt || null,
+      };
+      // 若 attach 已有同 id，替换并置顶
+      cards = [dailyCard, ...cards.filter((c) => c.id !== cardId)];
+    }
+  }
+
+  const withImage = cards.filter((c) => c.hasImage).length;
+  return {
+    ok: true,
+    companionId,
+    storage: 'supabase',
+    assetsOk: assets.ok,
+    assetsMessage: assets.ok ? null : assets.message,
+    counts: {
+      ...catalog.counts,
+      withImage,
+      pending: cards.length - withImage,
+    },
+    cards,
+  };
+}
+
+async function updateAlbumCard(env, companionId, cardId, { prompt } = {}) {
+  if (prompt == null) return { ok: false, message: '没有可更新的字段' };
+  const r = await upsertCardAsset(env, companionId, 'album', cardId, { prompt });
+  if (!r.ok) return r;
+  return { ok: true, cardId: r.cardId, entry: r.entry, message: '提示词已保存到 Supabase' };
+}
+
+async function uploadAlbumCardImage(env, companionId, cardId, body = {}) {
+  return uploadCardImageToR2AndDb(env, companionId, 'album', cardId, body);
+}
+
+async function deleteAlbumCardImage(env, companionId, cardId) {
+  const id = safeCompanionId(companionId) || 'default';
+  const key = normalizeCardKey(cardId);
+  const existing = await supabaseRest(env, oneAssetPath(id, 'album', key, { withImage: false }));
+  const prev = existing.ok && existing.data?.[0] ? existing.data[0] : null;
+  const r2key = prev?.r2_key || prev?.meta?.r2_key;
+  if (r2key) await deleteFromR2(r2key, env).catch(() => null);
+  const r = await upsertCardAsset(env, companionId, 'album', cardId, { clearImage: true });
+  if (!r.ok) return r;
+  return { ok: true, message: '相册图片已从 R2 / Supabase 清除' };
+}
+
+async function createAlbumCustom(env, companionId, entry) {
+  const id = safeCompanionId(companionId) || 'default';
+  try {
+    const body = upsertCustomAlbumBody(id, entry || {});
+    const result = await supabaseRequest(env, 'album_custom_entries?on_conflict=companion_id,id', {
+      method: 'POST',
+      body,
+      headers: { prefer: 'resolution=merge-duplicates,return=representation' },
+    });
+    if (!result.ok) {
+      if (result.missingTable) {
+        return { ok: false, message: '缺少 album_custom_entries 表，请执行 sql/card-assets.sql' };
+      }
+      return result;
+    }
+    if (body.prompt) {
+      await upsertCardAsset(env, id, 'album', `album:custom:${body.id}`, { prompt: body.prompt });
+    }
+    const row = Array.isArray(result.data) ? result.data[0] : result.data;
+    return { ok: true, entry: row, message: '已加入相册（Supabase）' };
+  } catch (error) {
+    return { ok: false, message: error.message || '创建失败' };
+  }
 }
 
 const EMPTY_COMPANION_PROFILE = normalizeCompanionProfile({});
@@ -1345,11 +2584,13 @@ function deleteCompanion(companionId, { confirm } = {}) {
 // ---------------------------------------------------------------
 // 编排器试聊: 每条消息 spawn 一次 chat-runner (真实走完整管线, 会调 LLM + 写库)
 // ---------------------------------------------------------------
-function runChat({ message, userId, companionId, debug = false }) {
+function runChat({ message, userId, companionId, debug = false, stopIntimate = false, intimacyAllowed = true, stream = false, onEvent = null } = {}) {
   return new Promise((resolve) => {
     const proc = spawn(
       process.execPath,
-      [path.join(__dirname, 'chat-runner.js'), JSON.stringify({ message, userId, companionId, debug })],
+      [path.join(__dirname, 'chat-runner.js'), JSON.stringify({
+        message, userId, companionId, debug, stopIntimate, intimacyAllowed, stream: Boolean(stream),
+      })],
       { cwd: ROOT, stdio: ['ignore', 'pipe', 'pipe'] },
     );
     let out = '';
@@ -1365,23 +2606,29 @@ function runChat({ message, userId, companionId, debug = false }) {
       proc.kill('SIGKILL');
       finish({ ok: false, message: '回复超时 (120s)' });
     }, 180000);
-    proc.stdout.on('data', (chunk) => {
-      out += chunk;
-      // 协议: runner 输出一行 JSON。防御性地跳过混进 stdout 的杂散日志行,
-      // 只认第一条能解析出 ok 字段的行; 找到后不杀进程, 让 runner 把
-      // afterReply (记忆提取/状态演变) 跑完再自行退出。
-      let nl;
-      while (!settled && (nl = out.indexOf('\n')) >= 0) {
-        const line = out.slice(0, nl).trim();
-        out = out.slice(nl + 1);
-        if (!line) continue;
-        try {
-          const parsed = JSON.parse(line);
-          if (parsed && typeof parsed.ok === 'boolean') {
+    const handleLine = (line) => {
+      if (!line) return;
+      try {
+        const parsed = JSON.parse(line);
+        if (stream && typeof onEvent === 'function' && parsed?.event) {
+          onEvent(parsed);
+        }
+        // 非流式：第一条带 ok 的就是结果；流式：event=done 且 ok 为结果
+        if (parsed && typeof parsed.ok === 'boolean') {
+          if (!stream || parsed.event === 'done' || !parsed.event) {
             clearTimeout(timer);
             finish(parsed);
           }
-        } catch {} // 杂散日志行, 忽略
+        }
+      } catch { /* 杂散日志 */ }
+    };
+    proc.stdout.on('data', (chunk) => {
+      out += chunk;
+      let nl;
+      while ((nl = out.indexOf('\n')) >= 0) {
+        const line = out.slice(0, nl).trim();
+        out = out.slice(nl + 1);
+        handleLine(line);
       }
     });
     proc.stderr.on('data', (chunk) => {
@@ -1389,6 +2636,7 @@ function runChat({ message, userId, companionId, debug = false }) {
     });
     proc.on('exit', () => {
       clearTimeout(timer);
+      if (!settled && out.trim()) handleLine(out.trim());
       finish({ ok: false, message: `runner 退出且无输出${err ? `: ${err.slice(-300)}` : ''}` });
     });
   });
@@ -1558,7 +2806,7 @@ async function readBody(req) {
 }
 
 export function bodyLimitForPath(pathname = '') {
-  return /\/api\/(image-references|images|import)/.test(String(pathname)) ? 20_000_000 : 1_000_000;
+  return /\/api\/(image-references|images|import|outfit|album)/.test(String(pathname)) ? 20_000_000 : 1_000_000;
 }
 
 export function isAllowedHost(value = '') {
@@ -1572,12 +2820,28 @@ export function isAuthorized(headers = {}, token = '') {
   return String(headers.authorization || '').replace(/^Bearer\s+/i, '') === token;
 }
 
+// 供单测：产品策略读写与门控
+export {
+  readProductPolicy,
+  writeProductPolicy,
+  checkMessageSafety,
+  checkQuota,
+  canWriteAction,
+  normalizeSafetyPolicy,
+  normalizeQuota,
+  DEFAULT_SAFETY_POLICY,
+  DEFAULT_QUOTA,
+};
+
 async function handle(req, res) {
   const url = new URL(req.url, `http://${req.headers.host}`);
   const route = `${req.method} ${url.pathname}`;
   if (!isAllowedHost(req.headers.host)) return json(res, 403, { ok: false, message: 'invalid host' });
   const adminToken = readEnvValues().UI_ADMIN_TOKEN || process.env.UI_ADMIN_TOKEN || '';
-  if (url.pathname.startsWith('/api/') && !isAuthorized(req.headers, adminToken)) {
+  // /api/health 是基础设施探活端点 (VPS 部署脚本重启后用它判断要不要回滚), 不带 token
+  // 请求;只吐 {ok, config 的布尔值, tables 的布尔值}，没有密钥原文，加鉴权没有收益，
+  // 反而会让每次自动部署都在健康检查这步失败 (曾经真的发生过，导致部署每分钟重试)。
+  if (url.pathname.startsWith('/api/') && url.pathname !== '/api/health' && !isAuthorized(req.headers, adminToken)) {
     return json(res, 401, { ok: false, message: '需要管理控制台 Token' });
   }
 
@@ -1601,6 +2865,42 @@ async function handle(req, res) {
     const body = await readBody(req);
     const savedKeys = saveConfig(body?.values ?? {});
     return json(res, 200, { ok: true, savedKeys, message: savedKeys.length ? `已保存 ${savedKeys.length} 项到 .env` : '没有需要保存的改动' });
+  }
+  if (route === 'GET /api/mcp') {
+    const env = readEnvValues();
+    return json(res, 200, {
+      ok: true,
+      items: listMcpCatalog({ env }),
+      paths: clientConfigPaths(),
+      message: 'MCP 快捷连接目录',
+    });
+  }
+  if (route === 'POST /api/mcp/install') {
+    const body = await readBody(req);
+    const env = readEnvValues();
+    const result = installMcpToClient(body?.id, body?.client || 'grok', {
+      confirm: Boolean(body?.confirm),
+      env,
+    });
+    return json(res, result.ok ? 200 : 400, result);
+  }
+  if (route === 'POST /api/mcp/uninstall') {
+    const body = await readBody(req);
+    const result = uninstallMcpFromClient(body?.id, body?.client || 'grok', {
+      confirm: Boolean(body?.confirm),
+    });
+    return json(res, result.ok ? 200 : 400, result);
+  }
+  if (route === 'POST /api/mcp/snippet') {
+    const body = await readBody(req);
+    const entry = MCP_CATALOG.find((x) => x.id === body?.id);
+    if (!entry) return json(res, 400, { ok: false, message: '未知 MCP' });
+    return json(res, 200, {
+      ok: true,
+      id: entry.id,
+      client: body?.client || 'claude',
+      snippet: buildClientSnippet(entry, body?.client || 'claude', { env: readEnvValues() }),
+    });
   }
   if (req.method === 'POST' && url.pathname.startsWith('/api/test/')) {
     const target = url.pathname.slice('/api/test/'.length);
@@ -1639,6 +2939,10 @@ async function handle(req, res) {
   }
   if (route === 'GET /api/companion-v2') {
     try { return json(res, 200, await getCompanionUpgrade(readEnvValues(), Object.fromEntries(url.searchParams))); }
+    catch (error) { return json(res, 200, { ok: false, message: describeNetworkError(error) }); }
+  }
+  if (route === 'GET /api/company') {
+    try { return json(res, 200, await getCompanyDashboard(readEnvValues(), Object.fromEntries(url.searchParams))); }
     catch (error) { return json(res, 200, { ok: false, message: describeNetworkError(error) }); }
   }
   if (route === 'GET /api/state') {
@@ -1726,12 +3030,46 @@ async function handle(req, res) {
   }
   if (route === 'GET /api/params') return json(res, 200, paramPayload());
   if (route === 'PUT /api/params') return json(res, 200, saveParams((await readBody(req)).values ?? {}));
+  if (route === 'DELETE /api/params') return json(res, 200, resetParams());
   if (route === 'POST /api/actions') {
     const body = await readBody(req);
     return json(res, 200, await runAction({ ...(body.scope ?? {}), ...body }));
   }
   if (route === 'GET /api/export') return json(res, 200, await exportScope(readEnvValues(), Object.fromEntries(url.searchParams)));
   if (route === 'POST /api/import') return json(res, 200, await importScope(readEnvValues(), await readBody(req)));
+  // P2 产品：生活时间线 / 安全 / 配额 / 删除
+  if (route === 'GET /api/product/life') {
+    return json(res, 200, await getProductLife(readEnvValues(), Object.fromEntries(url.searchParams)));
+  }
+  if (route === 'GET /api/product/safety') {
+    const p = readProductPolicy();
+    return json(res, 200, { ok: true, safety: p.safety, updatedAt: p.updatedAt });
+  }
+  if (route === 'PUT /api/product/safety') {
+    const body = await readBody(req);
+    const next = writeProductPolicy({ safety: body?.safety ?? body });
+    return json(res, 200, { ok: true, safety: next.safety, updatedAt: next.updatedAt, message: '安全策略已保存' });
+  }
+  if (route === 'GET /api/product/quota') {
+    return json(res, 200, await getProductQuota(readEnvValues(), Object.fromEntries(url.searchParams)));
+  }
+  if (route === 'PUT /api/product/quota') {
+    const body = await readBody(req);
+    const next = writeProductPolicy({ quota: body?.quota ?? body });
+    return json(res, 200, { ok: true, quota: next.quota, updatedAt: next.updatedAt, message: '配额已保存' });
+  }
+  if (route === 'POST /api/product/safety/check') {
+    const body = await readBody(req);
+    const safety = readProductPolicy().safety;
+    return json(res, 200, { ok: true, ...checkMessageSafety(body?.text || '', safety) });
+  }
+  if (route === 'POST /api/product/delete') {
+    const body = await readBody(req);
+    return json(res, 200, await deleteScopeData(readEnvValues(), {
+      userId: body?.userId || url.searchParams.get('userId'),
+      companionId: body?.companionId || url.searchParams.get('companionId') || 'default',
+    }, { confirm: body?.confirm }));
+  }
   if (route === 'GET /api/health') return json(res, 200, await getSystemHealth(readEnvValues()));
   if (route === 'GET /api/memories') {
     try {
@@ -1773,18 +3111,250 @@ async function handle(req, res) {
     const body = await readBody(req);
     return json(res, 200, saveCompanionProfile(body?.companionId || 'default', body?.profile ?? {}));
   }
-  if (route === 'POST /api/chat') {
+  if (route === 'GET /api/companion-section') {
+    const result = readCompanionSection(url.searchParams.get('companionId') || 'default', url.searchParams.get('section') || '');
+    return json(res, result.ok ? 200 : 400, result);
+  }
+  if (route === 'PUT /api/companion-section') {
+    const body = await readBody(req);
+    const result = saveCompanionSection(body?.companionId || 'default', body?.section || '', body?.data ?? {});
+    return json(res, result.ok ? 200 : 400, result);
+  }
+  if (route === 'GET /api/outfit') {
+    return json(res, 200, await getOutfitCatalog(readEnvValues(), Object.fromEntries(url.searchParams)));
+  }
+  if (route === 'POST /api/outfit/wear') {
+    const body = await readBody(req);
+    const scope = body?.scope || { userId: body?.userId, companionId: body?.companionId || 'default' };
+    return json(res, 200, await wearOutfitLook(readEnvValues(), scope, body?.lookId));
+  }
+  if (route === 'POST /api/outfit/looks') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await createOutfitCustomLook(readEnvValues(), companionId, body));
+  }
+  if (route === 'POST /api/outfit/looks/parse-series') {
+    const body = await readBody(req);
+    return json(res, 200, await parseOutfitSeries(readEnvValues(), body));
+  }
+  if (route === 'POST /api/outfit/looks/import-series') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await importOutfitSeries(readEnvValues(), companionId, body));
+  }
+  if (route === 'PUT /api/outfit/looks') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await updateOutfitCustomLook(readEnvValues(), companionId, body?.lookId || body?.id, body));
+  }
+  if (route === 'DELETE /api/outfit/looks') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || url.searchParams.get('companionId') || 'default';
+    const lookId = body?.lookId || body?.id || url.searchParams.get('lookId');
+    return json(res, 200, await deleteOutfitCustomLook(readEnvValues(), companionId, lookId));
+  }
+  if (route === 'GET /api/outfit/daily') {
+    const scope = {
+      userId: url.searchParams.get('userId') || '',
+      companionId: url.searchParams.get('companionId') || 'default',
+    };
+    return json(res, 200, await getDailyOutfit(readEnvValues(), scope));
+  }
+  if (route === 'POST /api/outfit/daily') {
+    const body = await readBody(req);
+    const scope = body?.scope || { userId: body?.userId, companionId: body?.companionId || 'default' };
+    try {
+      return json(res, 200, await recomposeDailyOutfit(readEnvValues(), scope));
+    } catch (error) {
+      return json(res, 200, { ok: false, message: error.message || '重组失败' });
+    }
+  }
+  if (route === 'POST /api/outfit/daily/photo') {
+    const body = await readBody(req);
+    const scope = body?.scope || { userId: body?.userId, companionId: body?.companionId || 'default' };
+    // 生图 1～3 分钟常见；错误已在 generateDailyOutfitPhoto 内消化
+    return json(res, 200, await generateDailyOutfitPhoto(readEnvValues(), scope, { force: Boolean(body?.force) }));
+  }
+  if (route === 'PUT /api/outfit/card') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await updateOutfitCard(readEnvValues(), companionId, body?.cardId, { prompt: body?.prompt }));
+  }
+  if (route === 'POST /api/outfit/card/image') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await uploadOutfitCardImage(readEnvValues(), companionId, body?.cardId, body));
+  }
+  if (route === 'DELETE /api/outfit/card/image') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || url.searchParams.get('companionId') || 'default';
+    const cardId = body?.cardId || url.searchParams.get('cardId');
+    return json(res, 200, await deleteOutfitCardImage(readEnvValues(), companionId, cardId));
+  }
+  if (req.method === 'GET' && /^\/api\/outfit\/media\/.+\/file$/.test(url.pathname)) {
+    const parts = url.pathname.split('/');
+    const cardId = parts[4];
+    const companionId = url.searchParams.get('companionId') || 'default';
+    return serveCardMedia(readEnvValues(), companionId, 'outfit', cardId, res);
+  }
+  if (route === 'GET /api/album') {
+    return json(res, 200, await getAlbumCatalog(readEnvValues(), Object.fromEntries(url.searchParams)));
+  }
+  if (route === 'PUT /api/album/card') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await updateAlbumCard(readEnvValues(), companionId, body?.cardId, { prompt: body?.prompt }));
+  }
+  if (route === 'POST /api/album/card/image') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await uploadAlbumCardImage(readEnvValues(), companionId, body?.cardId, body));
+  }
+  if (route === 'DELETE /api/album/card/image') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || url.searchParams.get('companionId') || 'default';
+    const cardId = body?.cardId || url.searchParams.get('cardId');
+    return json(res, 200, await deleteAlbumCardImage(readEnvValues(), companionId, cardId));
+  }
+  if (route === 'POST /api/album/custom') {
+    const body = await readBody(req);
+    const companionId = body?.companionId || body?.scope?.companionId || 'default';
+    return json(res, 200, await createAlbumCustom(readEnvValues(), companionId, body));
+  }
+  if (req.method === 'GET' && /^\/api\/album\/media\/.+\/file$/.test(url.pathname)) {
+    const parts = url.pathname.split('/');
+    const cardId = parts[4];
+    const companionId = url.searchParams.get('companionId') || 'default';
+    return serveCardMedia(readEnvValues(), companionId, 'album', cardId, res);
+  }
+  if (route === 'POST /api/chat' || route === 'POST /api/chat/stream') {
     const body = await readBody(req);
     const message = String(body?.message ?? '').trim();
     if (!message) return json(res, 200, { ok: false, message: '消息为空' });
     const env = readEnvValues();
+    const userId = String(body?.userId || 'ui:playground');
+    const companionId = String(body?.companionId || env.TELEGRAM_COMPANION_ID || 'default');
+    const wantStream = route === 'POST /api/chat/stream' || Boolean(body?.stream);
+    // 与 Telegram/飞书同一套 gate（安全+配额+身份+审计+账单计数）
+    const gate = gateIncomingMessage({
+      text: message,
+      userId,
+      companionId,
+      channel: 'ui',
+    });
+    if (!gate.allow) {
+      if (wantStream) {
+        res.writeHead(200, {
+          'content-type': 'text/event-stream; charset=utf-8',
+          'cache-control': 'no-cache',
+          connection: 'keep-alive',
+        });
+        res.write(`data: ${JSON.stringify({ event: 'done', ok: false, message: gate.replyText || '消息未发送', blocked: true })}\n\n`);
+        res.end();
+        return;
+      }
+      return json(res, 200, {
+        ok: false,
+        blocked: !gate.safety?.ok,
+        quotaExceeded: gate.reasons?.some((r) => String(r).includes('limit') || String(r).includes('cap')),
+        message: gate.replyText || '消息未发送',
+        safety: gate.safety,
+        quota: gate.quota,
+        reasons: gate.reasons,
+      });
+    }
+
+    if (wantStream) {
+      res.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache',
+        connection: 'keep-alive',
+      });
+      let doneSent = false;
+      const result = await runChat({
+        message,
+        userId,
+        companionId,
+        debug: Boolean(body?.debug),
+        stopIntimate: gate.stopIntimate,
+        intimacyAllowed: gate.intimacyAllowed,
+        stream: true,
+        onEvent: (ev) => {
+          try {
+            const payload =
+              ev.event === 'done'
+                ? {
+                    ...ev,
+                    safety: { stopIntimate: gate.stopIntimate, intimacyAllowed: gate.intimacyAllowed },
+                  }
+                : ev;
+            res.write(`data: ${JSON.stringify(payload)}\n\n`);
+            if (ev.event === 'done') doneSent = true;
+          } catch { /* client gone */ }
+        },
+      });
+      // runner 异常退出时补一条 done
+      if (!doneSent && result) {
+        try {
+          res.write(`data: ${JSON.stringify({
+            event: 'done',
+            ...result,
+            safety: { stopIntimate: gate.stopIntimate, intimacyAllowed: gate.intimacyAllowed },
+          })}\n\n`);
+        } catch { /* */ }
+      }
+      res.end();
+      return;
+    }
+
     const result = await runChat({
       message,
-      userId: String(body?.userId || 'ui:playground'),
-      companionId: String(body?.companionId || env.TELEGRAM_COMPANION_ID || 'default'),
+      userId,
+      companionId,
       debug: Boolean(body?.debug),
+      stopIntimate: gate.stopIntimate,
+      intimacyAllowed: gate.intimacyAllowed,
     });
-    return json(res, 200, result);
+    return json(res, 200, {
+      ...result,
+      safety: { stopIntimate: gate.stopIntimate, intimacyAllowed: gate.intimacyAllowed },
+    });
+  }
+  if (route === 'GET /api/product/audit') {
+    const limit = Math.min(200, Math.max(1, Number(url.searchParams.get('limit')) || 50));
+    return json(res, 200, { ok: true, entries: readAuditTail({ limit }) });
+  }
+  if (route === 'GET /api/product/billing') {
+    const scope = Object.fromEntries(url.searchParams);
+    if (!scope.userId) return json(res, 200, { ok: false, message: '需要 userId' });
+    const usage = getTenantUsage(scope.userId, scope.companionId || 'default');
+    const summary = buildBillingSummary(scope.userId, scope.companionId || 'default');
+    return json(res, 200, { ok: true, usage, summary, scope });
+  }
+  if (route === 'GET /api/product/identity') {
+    const userId = url.searchParams.get('userId');
+    return json(res, 200, { ok: true, identity: getIdentity(userId), userId });
+  }
+  if (route === 'POST /api/product/identity/affirm') {
+    const body = await readBody(req);
+    const userId = String(body?.userId || '');
+    if (!userId) return json(res, 200, { ok: false, message: '需要 userId' });
+    const identity = affirmAdult(userId, { method: body?.method || 'self_declare' });
+    appendAudit({ action: 'identity_affirm', channel: 'ui', userId, ok: true, detail: { method: identity.method } });
+    return json(res, 200, { ok: true, identity, message: '已记录成年声明' });
+  }
+  if (route === 'POST /api/product/identity/revoke') {
+    const body = await readBody(req);
+    const userId = String(body?.userId || '');
+    if (!userId) return json(res, 200, { ok: false, message: '需要 userId' });
+    const identity = revokeAdult(userId);
+    appendAudit({ action: 'identity_revoke', channel: 'ui', userId, ok: true });
+    return json(res, 200, { ok: true, identity });
+  }
+  if (route === 'POST /api/product/album-quote') {
+    const body = await readBody(req);
+    const text = buildAlbumQuoteMessage(body?.card || body || {});
+    return json(res, 200, { ok: true, text, message: '已生成相册引用文案' });
   }
   if (route === 'GET /api/bot') return json(res, 200, botStatus());
   if (route === 'POST /api/bot/start') return json(res, 200, startBot());

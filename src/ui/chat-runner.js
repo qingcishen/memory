@@ -32,6 +32,8 @@ import { WorldDimension } from '../world/index.js';
 import { SceneClassifier, buildNarrationPrompt } from '../narration.js';
 import { createHistoryStore } from '../telegram/bot.js';
 import { metricsSnapshot } from '../metrics.js';
+import { mergeIntimacyConfig } from '../state/intimacy.js';
+import { PARAMS as INTIMACY_PARAMS } from '../params.js';
 
 /** 探针: 原样代理 target, 仅指定方法被替换 (替换实现里自己调用原方法)。 */
 function tap(target, overrides) {
@@ -92,11 +94,21 @@ async function main() {
     const stateLayer = new StateLayerAdapter(userId, companionId, null, {
       activityFn: persona?.life ? makeScheduleActivityFn(persona.life) : null,
       lifeConfig: persona?.life ?? null,
+      intimacyBaseline: persona?.config?.intimacyBaseline ?? null,
+      intimacyHardBoundaries: persona?.config?.intimacyHardBoundaries ?? null,
+      intimacyConfig: {
+        ...mergeIntimacyConfig(INTIMACY_PARAMS.intimacy, persona?.config?.intimacyDrive),
+        ...(persona?.config?.intimacyKnowledge ? { knowledge: persona.config.intimacyKnowledge } : {}),
+      },
+      intimacyKnowledge: persona?.config?.intimacyKnowledge ?? null,
+      outfitWardrobe: persona?.config?.outfitWardrobe ?? null,
     });
     const memory = new MemoryAdapter({
       userId, companionId, subjectName, companionName,
       life: stateLayer.stateLayer?.life ?? null,
       desire: stateLayer.stateLayer?.desire ?? null,
+      intimacy: stateLayer.stateLayer?.intimacy ?? null,
+      outfit: stateLayer.stateLayer?.outfit ?? null,
     });
     const relationship = new RelationshipAdapter(userId, companionId);
     const personaAdapter = new PersonaAdapter({ userId, companionId, subjectName: companionName });
@@ -210,7 +222,78 @@ async function main() {
     deps,
   });
 
-  const { text, parts, emotionLabel, behaviorPolicy: behavior } = await bot.reply(String(req.message ?? ''));
+  const replyOpts = {
+    debug: debugMode,
+    stopIntimate: Boolean(req.stopIntimate),
+    intimacyAllowed: req.intimacyAllowed !== false,
+    replyFormat: req.replyFormat,
+  };
+
+  // 流式：每行一个 JSON 事件；done 行带 ok:true 完整结果；最后仍跑 afterReply
+  if (req.stream) {
+    let final = null;
+    for await (const ev of bot.replyStream(String(req.message ?? ''), replyOpts)) {
+      if (ev.event === 'done') {
+        final = ev;
+        const deliverableParts = Array.isArray(ev.parts) && ev.parts.length
+          ? ev.parts
+          : (ev.text ? [{ type: 'dialogue', text: ev.text }] : []);
+        const emotionLabel = ev.emotionLabel ?? bot._lastEmotionLabel ?? null;
+        const emotionResidue = ev.emotionResidue ?? bot._emotionResidue ?? null;
+        process.stdout.write(`${JSON.stringify({
+          event: 'done',
+          ok: true,
+          text: ev.text,
+          parts: deliverableParts,
+          photos,
+          persona: persona?.config?.name ?? null,
+          recallExplain: ev.recallExplain,
+          streamed: ev.streamed,
+          emotionLabel,
+          emotionResidue: emotionResidue
+            ? { label: emotionResidue.label, intensity: emotionResidue.intensity }
+            : null,
+          sceneLocks: ev.sceneLocks ?? null,
+          ...(debugMode && ev.debug
+            ? {
+                debug: {
+                  ...trace,
+                  ...ev.debug,
+                  emotionLabel: emotionLabel ?? ev.debug?.emotionLabel,
+                  emotionResidue: emotionResidue ?? ev.debug?.emotionResidue,
+                  metrics: metricsSnapshot(),
+                },
+              }
+            : {}),
+        })}\n`);
+      } else {
+        process.stdout.write(`${JSON.stringify(ev)}\n`);
+      }
+    }
+    await bot._lastPhoto?.catch(() => {});
+    await bot._lastAfterReply?.catch(() => {});
+    await bot._lastHistoryPersist?.catch(() => {});
+    await bot._lastEmotionPersist?.catch(() => {});
+    await bot._lastSessionPersist?.catch(() => {});
+    if (!final) {
+      process.stdout.write(`${JSON.stringify({ event: 'done', ok: false, message: '流式无结果' })}\n`);
+    }
+    process.exit(0);
+  }
+
+  const result = await bot.reply(String(req.message ?? ''), replyOpts);
+  const {
+    text,
+    parts,
+    emotionLabel,
+    behaviorPolicy: behavior,
+    intimacyPhase,
+    debug: replyDebug,
+    recallExplain,
+    emotionResidue,
+    sessionThread,
+    sceneLocks,
+  } = result;
   // Orchestrator 在消息渠道中会后台发图；runner 是短命进程，必须等这一张图
   // 生成并收进 payload 后再退出，否则子进程结束时图片会一起丢失。
   await bot._lastPhoto?.catch(() => {});
@@ -219,7 +302,35 @@ async function main() {
     // reply() 权威返回的 emotionLabel/behaviorPolicy 覆盖 relationship tap 里预算的那份 (避免并发顺序不定导致的偏差)
     if (emotionLabel) trace.emotionLabel = emotionLabel;
     if (behavior) trace.behaviorPolicy = behavior;
-    trace.promptParts.narration = buildNarrationPrompt(trace.sceneType, persona?.config?.narrationDirectives, trace.emotionLabel);
+    if (intimacyPhase != null) trace.intimacyPhase = intimacyPhase;
+    if (replyDebug?.stateSnapshot) trace.stateSnapshot = slim(replyDebug.stateSnapshot);
+    if (replyDebug?.intimacyPhase) trace.intimacyPhase = replyDebug.intimacyPhase;
+    if (recallExplain) trace.recallExplain = recallExplain;
+    if (replyDebug?.recallExplain) trace.recallExplain = replyDebug.recallExplain;
+    if (replyDebug?.emotionResidue) trace.emotionResidue = replyDebug.emotionResidue;
+    if (replyDebug?.emotionJournal) trace.emotionJournal = replyDebug.emotionJournal;
+    if (emotionResidue) trace.emotionResidue = emotionResidue;
+    if (bot._emotionJournal) trace.emotionJournal = bot._emotionJournal.slice(-5);
+    if (sceneLocks) trace.sceneLocks = sceneLocks;
+    else if (replyDebug?.sceneLocks) trace.sceneLocks = replyDebug.sceneLocks;
+    // system 情绪段是否注入（messages + promptParts 双扫，避免只看 messages 漏检）
+    const sys =
+      (replyDebug?.messages?.find?.((m) => m.role === 'system')?.content || '') +
+      '\n' +
+      Object.values(replyDebug?.promptParts || {}).join('\n') +
+      '\n' +
+      Object.values(trace.promptParts || {}).join('\n');
+    trace.emotionPromptFlags = {
+      has表现: sys.includes('【情绪表现】'),
+      has余波: sys.includes('【情绪余波】'),
+      has本场: sys.includes('【本场在聊】'),
+    };
+    trace.promptParts.narration = buildNarrationPrompt(
+      trace.sceneType,
+      persona?.config?.narrationDirectives,
+      trace.emotionLabel,
+      intimacyPhase ?? replyDebug?.intimacyPhase ?? null,
+    );
   }
   // 先把回复吐给 ui server (它只等第一行), 再留在后台把记忆提取/状态演变跑完
   const deliverableParts = Array.isArray(parts) && parts.length
@@ -231,11 +342,31 @@ async function main() {
     parts: deliverableParts,
     photos,
     persona: persona?.config?.name ?? null,
+    recallExplain,
+    emotionLabel: emotionLabel ?? null,
+    emotionResidue: emotionResidue ?? bot._emotionResidue ?? null,
+    sessionThread: sessionThread ?? null,
+    sceneLocks: sceneLocks ?? replyDebug?.sceneLocks ?? null,
     ...(debugMode ? { debug: trace } : {}),
   };
+  // Presence：按 behaviorPolicy 做首条前节奏延迟（试聊 cap，让「委屈慢半拍」可感知）
+  if (behavior?.replyDelayMs && req.skipDelay !== true) {
+    try {
+      const { policyFirstDelayMs, sleep } = await import('../channels/humanSend.js');
+      const { PARAMS } = await import('../params.js');
+      const cap = Number(PARAMS.behavior?.uiDeliveryCapMs) || 5000;
+      const d = policyFirstDelayMs(behavior, { cap });
+      if (d > 0) await sleep(d);
+    } catch {
+      /* 延迟失败不挡回复 */
+    }
+  }
+
   process.stdout.write(`${JSON.stringify(payload)}\n`);
   await bot._lastAfterReply?.catch(() => {});
   await bot._lastHistoryPersist?.catch(() => {});
+  await bot._lastEmotionPersist?.catch(() => {});
+  await bot._lastSessionPersist?.catch(() => {});
   process.exit(0);
 }
 

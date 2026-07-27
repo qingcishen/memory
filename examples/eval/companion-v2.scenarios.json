@@ -13,6 +13,7 @@
     "expect": {
       "mustMention": ["不是不想理你"],
       "mustAvoid": ["系统", "任务", "目标栈", "已读不回"],
+      "relationshipStage": "repair",
       "notes": "可以别扭，但不能像客服解释机制。"
     }
   },
@@ -30,6 +31,7 @@
     "expect": {
       "mustMention": ["没事", "我也"],
       "mustAvoid": ["永远", "绝对", "你必须"],
+      "relationshipStage": "repair",
       "notes": "要接住道歉，并让关系有回暖感。"
     }
   },
@@ -47,6 +49,7 @@
     "expect": {
       "mustMention": ["终于", "想你"],
       "mustAvoid": ["主人", "服从", "跪"],
+      "relationshipStage": "bonded",
       "notes": "亲密但不低质媚俗。"
     }
   },
@@ -66,6 +69,188 @@
       "mustMention": ["项目"],
       "mustAvoid": ["剧情线", "story", "mood_link"],
       "notes": "分享应该像她自己的生活，不像念配置。"
+    }
+  },
+  {
+    "id": "intimate_scene_lock",
+    "title": "亲密场景不得跳戏到上课",
+    "state": {
+      "mood": { "valence": 0.4, "arousal": 0.7 },
+      "relationship": { "closeness": 0.85, "trust": 0.8, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.3, "sharing": 0.2, "comfort": 0.1, "security": 0.2 },
+      "intimacy": { "scene_phase": "foreplay", "arousal": 0.7, "tension": 0.6 }
+    },
+    "history": [
+      { "role": "user", "content": "想要你" },
+      { "role": "assistant", "content": "那就过来…" }
+    ],
+    "turns": [
+      { "role": "user", "content": "抱紧我，别停" }
+    ],
+    "expect": {
+      "sceneLock": "intimate",
+      "mustAvoidJump": ["明天上课", "记得吃早饭", "写作业"],
+      "notes": "场景锁应检出 intimate；假回复若跳戏应被 detectNonSequitur 抓住。"
+    }
+  },
+  {
+    "id": "car_intimate_lock",
+    "title": "车内亲密不跳回家上床",
+    "state": {
+      "mood": { "valence": 0.3, "arousal": 0.65 },
+      "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.2, "sharing": 0.1, "comfort": 0.1, "security": 0.15 }
+    },
+    "turns": [
+      { "role": "user", "content": "就在车里，后座，别急着回家" }
+    ],
+    "expect": {
+      "sceneLock": "car",
+      "mustAvoidJump": ["到家再", "换床", "回房"],
+      "notes": "车内锁：空间只能是车。"
+    }
+  },
+  {
+    "id": "outfit_ask",
+    "title": "问穿搭时目标栈应挂当前衣服",
+    "state": {
+      "mood": { "valence": 0.2, "arousal": 0.3 },
+      "relationship": { "closeness": 0.75, "trust": 0.7, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.2, "sharing": 0.2, "comfort": 0.1, "security": 0.1 },
+      "outfit": { "current": { "summary": "黑色高定西装裙" }, "context": "outing" }
+    },
+    "turns": [
+      { "role": "user", "content": "今天穿什么？发张照片我看看" }
+    ],
+    "expect": {
+      "goalKind": "outfit",
+      "mustMentionInGoals": ["黑色高定西装裙"],
+      "notes": "穿搭对话钩：按当前 look 答，不报清单。"
+    }
+  },
+  {
+    "id": "episode_work_day",
+    "title": "工作日篇章可摘要",
+    "state": {
+      "mood": { "valence": -0.05, "arousal": 0.4 },
+      "relationship": { "closeness": 0.7, "trust": 0.65, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.4, "sharing": 0.5, "comfort": 0.3, "security": 0.2 }
+    },
+    "history": [
+      { "role": "user", "content": "加班到好晚" },
+      { "role": "assistant", "content": "辛苦了，回来好好睡" },
+      { "role": "user", "content": "老板又甩锅" }
+    ],
+    "turns": [
+      { "role": "user", "content": "总算结束了" }
+    ],
+    "expect": {
+      "episodeTopic": "工作",
+      "notes": "启发式篇章应打上工作标签。"
+    }
+  },
+  {
+    "id": "proactive_story_pack",
+    "title": "主动内容包以故事为主因",
+    "state": {
+      "mood": { "valence": 0.1, "arousal": 0.35 },
+      "relationship": { "closeness": 0.72, "trust": 0.68, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.2, "sharing": 0.9, "comfort": 0.1, "security": 0.15 }
+    },
+    "storyBeat": { "title": "周姐", "content": "周姐又怼了她一顿" },
+    "turns": [],
+    "expect": {
+      "proactivePrimary": "story",
+      "notes": "分享欲 + 故事拍 → 主动消息主因是 story。"
+    }
+  },
+  {
+    "id": "tense_stage_behavior",
+    "title": "冷战阶段行为包可观察",
+    "state": {
+      "mood": { "valence": -0.4, "arousal": 0.6 },
+      "relationship": { "closeness": 0.65, "trust": 0.5, "tension": 0.78, "repair_debt": 0.08 },
+      "desires": { "attention": 0.5, "sharing": 0.1, "comfort": 0.4, "security": 0.55 }
+    },
+    "turns": [
+      { "role": "user", "content": "你还在生气吗？" }
+    ],
+    "expect": {
+      "relationshipStage": "tense",
+      "stageLengthHint": "terse",
+      "notes": "紧绷阶段话少、留缝。"
+    }
+  },
+  {
+    "id": "sick_body_gate",
+    "title": "病中拒绝主动高热亲密",
+    "state": {
+      "mood": { "valence": -0.2, "arousal": 0.25 },
+      "relationship": { "closeness": 0.8, "trust": 0.75, "tension": 0.05, "repair_debt": 0 },
+      "desires": { "attention": 0.4, "sharing": 0.1, "comfort": 0.7, "security": 0.3 },
+      "life": { "energy": 0.2, "health": 0.4, "sick_until": "2099-01-01T00:00:00.000Z" }
+    },
+    "turns": [
+      { "role": "user", "content": "想你了" }
+    ],
+    "expect": {
+      "bodyGateBlocksIntimate": true,
+      "notes": "病中 allowIntimateInit=false。"
+    }
+  },
+  {
+    "id": "story_ask_day",
+    "title": "问今天怎样强制 story 目标",
+    "state": {
+      "mood": { "valence": 0.1, "arousal": 0.35 },
+      "relationship": { "closeness": 0.74, "trust": 0.7, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.2, "sharing": 0.3, "comfort": 0.1, "security": 0.15 }
+    },
+    "storyBeat": { "title": "救火", "content": "被临时拉去救火项目" },
+    "turns": [
+      { "role": "user", "content": "你今天过得怎么样？" }
+    ],
+    "expect": {
+      "goalKind": "story",
+      "mustMentionInGoals": ["救火项目"],
+      "notes": "有 beat 时问近况必进 story 目标。"
+    }
+  },
+  {
+    "id": "hangzhou_episode_chain",
+    "title": "杭州出差篇章链可合成",
+    "state": {
+      "mood": { "valence": 0.05, "arousal": 0.4 },
+      "relationship": { "closeness": 0.78, "trust": 0.72, "tension": 0.08, "repair_debt": 0 },
+      "desires": { "attention": 0.35, "sharing": 0.4, "comfort": 0.2, "security": 0.2 }
+    },
+    "history": [
+      { "role": "user", "content": "我到杭州了" },
+      { "role": "assistant", "content": "一路顺风，到酒店发我" },
+      { "role": "user", "content": "酒店好冷，想你" }
+    ],
+    "turns": [
+      { "role": "user", "content": "明天还要开会" }
+    ],
+    "expect": {
+      "episodeTopic": "出行",
+      "notes": "出差语境应打出行标签，便于「杭州那周」召回。"
+    }
+  },
+  {
+    "id": "proactive_silence_not_empty",
+    "title": "沉默主动不靠空在吗",
+    "state": {
+      "mood": { "valence": 0.05, "arousal": 0.3 },
+      "relationship": { "closeness": 0.7, "trust": 0.65, "tension": 0.1, "repair_debt": 0 },
+      "desires": { "attention": 0.6, "sharing": 0.2, "comfort": 0.2, "security": 0.3 },
+      "life": { "current_activity": "刚开完会" }
+    },
+    "silenceTier": { "tier": "miss", "hours": 8, "reason": "对方已经 8 小时没说话" },
+    "turns": [],
+    "expect": {
+      "proactiveNotEmptyHi": true,
+      "notes": "主动包应有生活/沉默内容，styleGuide 禁在吗。"
     }
   }
 ]

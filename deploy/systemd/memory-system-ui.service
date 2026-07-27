@@ -1,0 +1,19 @@
+[Unit]
+Description=Memory System Web UI
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/root/memory-system
+EnvironmentFile=/root/memory-system/.env
+Environment=NODE_ENV=production
+Environment=UI_PORT=8787
+ExecStart=/usr/bin/node /root/memory-system/src/ui/server.js
+Restart=always
+RestartSec=5
+KillSignal=SIGTERM
+
+[Install]
+WantedBy=multi-user.target
