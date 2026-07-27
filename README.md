@@ -4,7 +4,7 @@
 
 架构参考斯坦福 Generative Agents 的记忆模型,针对伴侣场景做了改动(情绪保护衰减、矛盾不覆盖而是 supersede)。
 
-完整介绍、接入流程和 API 说明见 [项目介绍与使用指南](docs/INTRODUCTION_AND_USAGE.md)。开发计划和架构验收见 [开发文档与路线图](docs/DEVELOPMENT.md)。
+完整介绍、接入流程和 API 说明见 [项目介绍与使用指南](docs/INTRODUCTION_AND_USAGE.md)。开发计划和架构验收见 [开发文档与路线图](docs/DEVELOPMENT.md)。下一轮"从功能齐到像人"的升级计划(需求系统/情绪行为策略/生活叙事引擎)见 [伴侣升级开发文档 v2](docs/companion-upgrade-v2.md)。
 
 ## 它解决什么
 
@@ -149,6 +149,8 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 npm run ui   # 打开 http://127.0.0.1:8787
 ```
 
+控制台只保留 React 版本，`npm run ui` 会先构建前端再启动本地服务。如果通过局域网代理或 Tunnel 暴露控制台，必须配置 `UI_ADMIN_TOKEN`；前端第一次收到 401 时会提示输入，并只保存在当前浏览器。
+
 浏览器里的管理台,零新依赖(node 内置 http + fetch),分五个页签:
 
 **配置页**:
@@ -163,7 +165,7 @@ npm run ui   # 打开 http://127.0.0.1:8787
 
 - **记忆**:直接浏览 memories 表——按用户筛、按内容搜,类型/主体/重要性/情绪一目了然;可选显示被新记忆取代的旧版本(划线样式)。
 - **知识图谱**:实体云 + "实体 —关系→ 实体"列表(置信度、对话依据);没建表时会引导你去 SQL 工具箱执行 `knowledge-graph.sql`。
-- **人设**:直接编辑 `companions/*.json`(名字/性格/说话风格/外貌/作息),保存前校验 JSON,也能从 default 模板新建角色。
+- **人设**:直接编辑人设文件,保存前校验 JSON,也能从 default 模板新建角色。人设支持两种格式:`companions/<角色ID>.json` 单文件,或 **`companions/<角色ID>/` 目录按功能分片**(`persona` 人格散文 / `appearance` 外貌 / `life` 作息身体 / `relationship` 关系与情绪起点 / `knowledge` 知识库 / `narration` 旁白指令按场景覆盖 / `runtime` 运行时选项)——目录存在时优先生效,顶层键按"数组相接、对象浅合并"规则合并,改说话风格不用再滚过整个知识库。
 - **试聊**:编排器调试场,和 Telegram 完全同一条管线(人设 + 记忆 + 状态 + 世界观 + 旁白),narration/dialogue 分气泡显示。注意是真实调用:走 LLM、写记忆库;换个用户 ID 就是一段全新的关系。
 
 端口可用 `UI_PORT` 覆盖。配置项 schema 在 `src/ui/server.js` 的 `CONFIG_SCHEMA`,加字段只改那一处。
@@ -189,6 +191,38 @@ TELEGRAM_COMPANION_ID=default
 
 Telegram 的 `chat.id` 会映射成 `userId = telegram:<chat.id>`, 因此每个聊天都有独立记忆和状态。
 支持 `/start`、`/help`、`/status`;普通文字消息会直接进入 `Orchestrator.reply()`。
+
+### macOS 登录自启
+
+仓库提供 Telegram 和飞书两个 LaunchAgent：`launchd/com.memory-system.telegram-bot.plist` 与 `launchd/com.memory-system.feishu-bot.plist`。安装后登录即启动，异常退出会自动拉起；启动脚本会等待本机 Shadowrocket `127.0.0.1:1082` 代理端口。日志分别位于 `logs/telegram-bot*.log` 和 `logs/feishu-bot*.log`。
+
+## 飞书与 Discord 接入
+
+控制台可以同时配置并启动 Telegram、飞书和 Discord。三个渠道共用同一套人设、记忆、状态和对话编排，用户 ID 分别使用 `telegram:`、`feishu:`、`discord:` 前缀隔离。
+
+飞书使用自建应用长连接，无需公网回调地址。在开放平台开启机器人能力，给应用添加 `im:message`、`im:message:send_as_bot`、图片/消息资源所需权限，订阅 `im.message.receive_v1`，发布应用后填写：
+
+```env
+FEISHU_APP_ID=cli_xxx
+FEISHU_APP_SECRET=xxx
+FEISHU_VERIFICATION_TOKEN=
+FEISHU_ENCRYPT_KEY=
+```
+
+飞书支持双向图片：用户发图后会下载并交给视觉模型理解、写入记忆；角色生成自拍或场景照后会自动上传飞书并发送。飞书上传图片限制为 10 MB，支持 JPEG、PNG、WEBP、GIF、TIFF、BMP 和 ICO。
+
+渠道默认关闭每轮“内心独白”以减少一次串行模型调用；需要时可设置 `CHANNEL_USE_MONOLOGUE=true` / `TELEGRAM_USE_MONOLOGUE=true`。飞书和 Discord 会合并旁白与台词后再按平台长度分片。
+
+> 本次可靠性升级新增 `channel_events`、`jobs.locked_at/locked_by` 和 `chat_history.event_id`。旧数据库需重新执行一次幂等的 `sql/schema.sql`，才能启用跨进程幂等、任务租约恢复和历史去重。
+
+Discord 使用 Gateway 长连接。在 Developer Portal 创建 Bot，开启 **Message Content Intent**，邀请 Bot 时授予 View Channels、Send Messages 和 Read Message History 权限，然后填写：
+
+```env
+DISCORD_BOT_TOKEN=xxx
+DISCORD_ALLOWED_GUILD_IDS=   # 可选，逗号分隔；留空允许所有服务器
+```
+
+Discord 私聊会直接回复；服务器频道中只有提及机器人时才回复。也可以单独运行 `npm run feishu` 或 `npm run discord`。
 
 ## 项目规则
 
@@ -221,6 +255,7 @@ Telegram 的 `chat.id` 会映射成 `userId = telegram:<chat.id>`, 因此每个�
 | `modal.mediaTopK` | 图搜图: `recallMedia` 默认返回几条最相似的图/视频 | 调高则一次给更多候选, 但 prompt 更长 |
 | `knowledge.enabled` | K1 知识图谱: observe 抽实体关系 + recall 多跳注入 | 关 false 则零额外 LLM/DB 调用 |
 | `knowledge.maxHops` / `maxFacts` | 图谱召回的展开跳数 / 注入事实上限 | 调高则关联带得更远更多, 但 prompt 更长 |
+| `tts.maxSpeakChars` | 语音回复: 台词总长超过它就不合成、回退文字 | 调高则更长的回复也会被念出来 |
 
 ## 数据流
 
@@ -267,7 +302,7 @@ Telegram 的 `chat.id` 会映射成 `userId = telegram:<chat.id>`, 因此每个�
 | `src/memory/reconsolidate.js` | 重构性记忆 (M3): 想起时按当下情绪重写情感层, 永不改 fact_core |
 | `src/persona.js` / `src/narrative.js` | self 人格域隔离 / dyad 共同记忆 + 关系叙事 (M4) |
 | `src/memory/prospective.js` | 预期记忆 (M5): 识别未来意图 → 到点/语境主动提起 |
-| `src/modal/` | 多模态 (M6): `image`(vision caption + `recallMedia` 图搜图) / `audio`(ASR + 语气→affect) |
+| `src/modal/` | 多模态 (M6): `image`(vision caption + `recallMedia` 图搜图) / `audio`(ASR + 语气→affect) / `speech`(TTS 语音回复: 语音进语音出, 台词合成语音条、旁白仍走文字) |
 | `src/knowledge/` | K1 结构化知识图谱: `extract`(对话→实体关系三元组) / `store`(幂等 upsert) / `recall`(入口实体向量召回 + 有界多跳展开 + 注入格式化); observe/recall 自动参与, 失败安全降级 |
 | `src/memory.js` | 门面类 `Memory` |
 | `src/orchestrator/` | 编排器: `Orchestrator` 门面 + 把 Memory/persona/stateLayer/relationship 适配成统一 `toPrompt` 接口, `assemble` 纯本地拼接 prompt |

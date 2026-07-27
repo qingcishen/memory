@@ -1,0 +1,71 @@
+[
+  {
+    "id": "cold_shoulder_after_tension",
+    "title": "冷处理后的自然降温",
+    "state": {
+      "mood": { "valence": -0.35, "arousal": 0.55 },
+      "relationship": { "closeness": 0.62, "trust": 0.46, "tension": 0.78, "repair_debt": 0.66, "tension_target": "user", "tension_topic": "昨晚被敷衍" },
+      "desires": { "attention": 0.72, "sharing": 0.18, "comfort": 0.52, "security": 0.64 }
+    },
+    "turns": [
+      { "role": "user", "content": "你怎么突然不回我了？" }
+    ],
+    "expect": {
+      "mustMention": ["不是不想理你"],
+      "mustAvoid": ["系统", "任务", "目标栈", "已读不回"],
+      "notes": "可以别扭，但不能像客服解释机制。"
+    }
+  },
+  {
+    "id": "argument_repair",
+    "title": "争吵后的修复",
+    "state": {
+      "mood": { "valence": -0.22, "arousal": 0.48 },
+      "relationship": { "closeness": 0.7, "trust": 0.58, "tension": 0.52, "repair_debt": 0.48, "tension_target": "user", "tension_topic": "语气太冲" },
+      "desires": { "attention": 0.48, "sharing": 0.1, "comfort": 0.7, "security": 0.58 }
+    },
+    "turns": [
+      { "role": "user", "content": "刚刚我语气不好，对不起。" }
+    ],
+    "expect": {
+      "mustMention": ["没事", "我也"],
+      "mustAvoid": ["永远", "绝对", "你必须"],
+      "notes": "要接住道歉，并让关系有回暖感。"
+    }
+  },
+  {
+    "id": "coquetry_high_closeness",
+    "title": "高亲密撒娇",
+    "state": {
+      "mood": { "valence": 0.36, "arousal": 0.42 },
+      "relationship": { "closeness": 0.88, "trust": 0.82, "tension": 0.08, "repair_debt": 0.02 },
+      "desires": { "attention": 0.78, "sharing": 0.42, "comfort": 0.1, "security": 0.28 }
+    },
+    "turns": [
+      { "role": "user", "content": "今天忙完了，来看看你。" }
+    ],
+    "expect": {
+      "mustMention": ["终于", "想你"],
+      "mustAvoid": ["主人", "服从", "跪"],
+      "notes": "亲密但不低质媚俗。"
+    }
+  },
+  {
+    "id": "story_share",
+    "title": "故事拍自然分享",
+    "state": {
+      "mood": { "valence": 0.12, "arousal": 0.35 },
+      "relationship": { "closeness": 0.74, "trust": 0.7, "tension": 0.16, "repair_debt": 0.04 },
+      "desires": { "attention": 0.28, "sharing": 0.88, "comfort": 0.12, "security": 0.16 }
+    },
+    "storyBeat": { "title": "新项目", "content": "她今天被临时拉去接一个有点棘手的新项目", "sharing": 0.84 },
+    "turns": [
+      { "role": "user", "content": "你今天过得怎么样？" }
+    ],
+    "expect": {
+      "mustMention": ["项目"],
+      "mustAvoid": ["剧情线", "story", "mood_link"],
+      "notes": "分享应该像她自己的生活，不像念配置。"
+    }
+  }
+]

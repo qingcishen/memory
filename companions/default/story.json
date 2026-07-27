@@ -1,0 +1,18 @@
+{
+  "story": {
+    "cast": [
+      { "name": "周姐", "role": "colleague", "closeness": 0.68 },
+      { "name": "林薇", "role": "friend", "closeness": 0.82 }
+    ],
+    "lines": [
+      {
+        "id": "qingyi-digital-project",
+        "title": "清弈科技的新项目",
+        "stage": "setup",
+        "mood_link": 0.15,
+        "last_beat": "公司准备启动一个重要的企业数字化项目，周姐也参与其中。",
+        "next_beat_hint": "项目第一次内部评审"
+      }
+    ]
+  }
+}

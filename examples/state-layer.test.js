@@ -138,9 +138,11 @@ console.log('StateLayer snapshot/toPrompt/samplingHints/evolve');
       evolved = true;
     },
   };
+  const desire = { async snapshot() { return { attention: 0.8, sharing: 0, comfort: 0, security: 0 }; }, async evolve() {} };
   const layer = new StateLayer({
     userId: 'u_state_layer',
     life,
+    desire,
     read: async () => ({
       mood: { valence: 0.8, arousal: 0.1 },
       relationship: { closeness: 0.5 },
@@ -148,13 +150,15 @@ console.log('StateLayer snapshot/toPrompt/samplingHints/evolve');
     }),
   });
   const snapshot = await layer.snapshot();
-  ok('snapshot() 返回 emotion + life 两个维度', Object.keys(snapshot).sort().join(',') === 'emotion,life');
+  ok('snapshot() 返回三个状态维度', Object.keys(snapshot).sort().join(',') === 'desires,emotion,life');
+  ok('desires 维度进入状态快照', snapshot.desires.attention === 0.8);
   ok('emotion 维度只有 valence/warmth', Object.keys(snapshot.emotion).sort().join(',') === 'valence,warmth');
   ok('life 维度返回 energy/satiety/health', snapshot.life.energy === 0.9 && snapshot.life.satiety === 0.1 && snapshot.life.health === 0.4);
 
   const prompt = layer.toPrompt(snapshot);
   ok('toPrompt() 拼接 emotion 指引', prompt.includes('心情不错'));
   ok('toPrompt() 拼接 life 饥饿/健康指引', prompt.includes('有点饿了') && prompt.includes('身体有点不舒服'));
+  ok('toPrompt() 拼接高需求表现指引', prompt.includes('求关注但嘴硬'));
   ok('samplingHints() 使用 life 维度并受 health 收紧', layer.samplingHints(snapshot).maxTokens === 260);
 
   await layer.evolve([{ role: 'user', content: '你好' }]);

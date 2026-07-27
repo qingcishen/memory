@@ -10,8 +10,10 @@ yarn-debug.log*
 yarn-error.log*
 pnpm-debug.log*
 .telegram-bot.lock
+.feishu-bot.lock
 logs/
 config/params.json
+config/reference-images/
 
 coverage/
 dist/

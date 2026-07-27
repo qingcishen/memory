@@ -13,6 +13,10 @@ import { getCompanion } from '../companion.js';
 import { Selfie, decidePhoto } from '../appearance/index.js';
 import { buildNarrationPrompt } from '../narration.js';
 import { PARAMS } from '../params.js';
+import { inferEmotionLabel } from '../state/emotionLabel.js';
+import { behaviorPolicy, behaviorToPrompt } from '../state/behavior.js';
+import { StoryEngine } from '../story/index.js';
+import { buildConversationGoals, goalsToPrompt } from './goals.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 
@@ -46,7 +50,8 @@ export class Orchestrator {
     // 共用同一个 life 实例 (L4: 生病/被照顾由 memory.observe 统一演变, 避免双写 life_state)。
     this.stateLayer = deps.stateLayer ?? new StateLayerAdapter(userId, companionId, null, { activityFn, lifeConfig });
     const sharedLife = this.stateLayer?.stateLayer?.life ?? null;
-    this.memory = deps.memory ?? new MemoryAdapter({ userId, companionId, subjectName, companionName, life: sharedLife });
+    const sharedDesire = this.stateLayer?.stateLayer?.desire ?? null;
+    this.memory = deps.memory ?? new MemoryAdapter({ userId, companionId, subjectName, companionName, life: sharedLife, desire: sharedDesire });
     this.relationship = deps.relationship ?? new RelationshipAdapter(userId, companionId);
     this.persona = deps.persona ?? new PersonaAdapter({ userId, companionId, subjectName: companionName });
     this.llm = deps.llm ?? new DefaultLLM();
@@ -56,12 +61,16 @@ export class Orchestrator {
     // 这也让全 mock 的编排器测试默认离线 (不注入 onPhoto 即跳过)。photo 能力默认用真实 Selfie。
     this.photo = deps.photo ?? new Selfie({ userId, companionId, provider: deps.imageProvider });
     this.onPhoto = deps.onPhoto ?? null;
+    this.afterReplyEnqueue = deps.afterReplyEnqueue ?? null;
     // 天气感知 (可选): 注入了才拉真实天气并进 prompt; 默认 null → 离线安全 (mock 测试不连网)。
     this.weather = deps.weather ?? null;
     // 世界观系统 (可选): 注入 WorldDimension 才有背景剧情线/氛围并随对话演变; 默认 null → 离线安全。
     this.world = deps.world ?? null;
     // 旁白系统 (可选): 注入 SceneClassifier 才按场景动态给旁白指令; 默认 null → 离线安全, 不额外调 LLM。
     this.narration = deps.narration ?? null;
+    this.story = deps.story ?? null;
+    this._storyProvided = Object.prototype.hasOwnProperty.call(deps, 'story');
+    this._storySeeded = false;
 
     this.history = [];
     this._personaLoadedAt = 0;
@@ -96,8 +105,19 @@ export class Orchestrator {
         if (typeof this.relationship?.seedIfNew === 'function') {
           await this.relationship.seedIfNew(this._config);
         }
+        if (!this._storyProvided && (this._config.storyCast?.length || this._config.storylines?.length)) {
+          this.story = new StoryEngine({
+            userId: this.userId, companionId: this.companionId, companionName: this.companionName,
+            cast: this._config.storyCast, lines: this._config.storylines, memory: this.memory,
+            desire: this.stateLayer?.stateLayer?.desire ?? null,
+          });
+        }
       }
       this._configLoaded = true;
+    }
+    if (this.story && !this._storySeeded && typeof this.story.seed === 'function') {
+      await this.story.seed().catch(() => {});
+      this._storySeeded = true;
     }
     if (!this._personaLoadedAt || now - this._personaLoadedAt >= this.options.personaRefreshMs) {
       if (typeof this.persona.load === 'function') await this.persona.load().catch(() => {});
@@ -106,6 +126,10 @@ export class Orchestrator {
     if (!this._historyLoaded) {
       await this.loadHistory().catch(() => {});
       this._historyLoaded = true;
+    }
+    if (!this._anniversariesEnsured && typeof this.memory.ensureAnniversaries === 'function') {
+      await this.memory.ensureAnniversaries().catch(() => {});
+      this._anniversariesEnsured = true;
     }
     return this;
   }
@@ -129,13 +153,13 @@ export class Orchestrator {
   }
 
   /** 写入实例内短期历史, 并把增量异步交给可选 historyStore。 */
-  recordHistory(turns = []) {
+  recordHistory(turns = [], meta = {}) {
     const clean = normalizeHistory(turns);
     if (clean.length === 0) return;
     this.history.push(...clean);
     this.trimHistory();
     if (this.historyStore && typeof this.historyStore.append === 'function') {
-      this._lastHistoryPersist = Promise.resolve(this.historyStore.append({ userId: this.userId, companionId: this.companionId, turns: clean })).catch((reason) => {
+      this._lastHistoryPersist = Promise.resolve(this.historyStore.append({ userId: this.userId, companionId: this.companionId, turns: clean, ...meta })).catch((reason) => {
         console.error('[historyStore]', reason);
       });
     }
@@ -152,17 +176,21 @@ export class Orchestrator {
     const idleHours = this._lastUserMessageAt ? (Date.now() - this._lastUserMessageAt) / 3600000 : 0;
     if (idleHours >= 4 && this.history.length > 0) {
       this.history = [];
+      this._lastSceneType = null; // 隔了这么久, 场景连续性提示也该重新开始判断, 不该沿用几小时前的场景
     }
     this._lastUserMessageAt = Date.now();
 
-    const [stateSnapshot, relState, memoryResult, weather, worldSnapshot, sceneType, lastUserMessageAt] = await Promise.all([
+    const [stateSnapshot, relState, memoryResult, weather, worldSnapshot, storySnapshot, dueItems, sceneType, lastUserMessageAt] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(userMessage, { debug: Boolean(opts.debug) }).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
+      this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
+      typeof this.memory.checkProspective === 'function' ? this.memory.checkProspective({ query: userMessage }).catch(() => []) : Promise.resolve([]),
       // 场景分类 (旁白系统): 用最近历史 + 这句话判断当前场景, 决定这一轮用哪条旁白指令。
-      this.narration ? this.narration.classify({ userMessage, history: this.history }).catch(() => 'daily') : Promise.resolve('daily'),
+      // 带上上一轮场景做连续性提示, 减少单轮误判导致的场景来回跳变。
+      this.narration ? this.narration.classify({ userMessage, history: this.history, previousScene: this._lastSceneType, signal: opts.signal }).catch(() => 'daily') : Promise.resolve('daily'),
       // 时间跳跃感: 取"对方上次说话"的时间(早于本轮, 因为本轮还没 recordHistory) -> 距今多久。
       this.historyStore && typeof this.historyStore.lastUserMessageAt === 'function'
         ? this.historyStore.lastUserMessageAt({ userId: this.userId, companionId: this.companionId }).catch(() => null)
@@ -171,22 +199,41 @@ export class Orchestrator {
     const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
     const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
     const gapHours = lastUserMessageAt != null ? hoursSince(lastUserMessageAt) : null;
+    const emotionLabel = inferEmotionLabel(
+      { ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} },
+      stateSnapshot?.desires,
+      [...this.history.slice(-4), { role: 'user', content: userMessage }]
+    );
+    const behavior = behaviorPolicy(emotionLabel, { relationship: relState?.relationship ?? relState ?? {}, ...(opts.behaviorState ?? {}) });
+    const goals = buildConversationGoals({ dueItems, desires: stateSnapshot?.desires, storyBeat: storySnapshot?.today });
+    if (this.narration) this._lastSceneType = sceneType; // 供下一轮连续性提示; 未启用旁白则不维护
+
+    // B3: Telegram 明确要求执行 stonewall 时，不生成一条永远不会送达的假回复，也不把它写进历史。
+    if (opts.executeStonewall && behavior.stonewall) {
+      this.recordHistory([{ role: 'user', content: userMessage }], { eventId: opts.eventId });
+      this._lastAfterReply = this.afterReply(userMessage, '');
+      return { text: '', parts: [], emotionLabel, behaviorPolicy: behavior };
+    }
 
     const promptParts = {
       timePrompt: buildTimePrompt(new Date(), { weather, gapHours }),
       personaPrompt: this.persona.toPrompt() ?? '',
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
+      storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
-      statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
+      statePrompt: [this.stateLayer.toPrompt(stateSnapshot), behaviorToPrompt(behavior)].filter(Boolean).join('\n\n'),
+      goalsPrompt: goalsToPrompt(goals),
       memoryBlock: memoryBlock ?? '',
-      narrationPrompt: this.narration ? buildNarrationPrompt(sceneType) : '',
+      // 旁白指令: 角色人设的按场景覆盖优先 (companions/<id>/narration.json), 缺省用通用默认;
+      // 叠加本轮离散情绪 (emotionLabel) 的细节层, 让委屈/吃醋/撒娇/心疼在旁白里有区分。
+      narrationPrompt: this.narration ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel) : '',
     };
 
     let monologue = '';
     if (this.options.useMonologue) {
       const ctx = buildMonologueContext({ userMessage, ...promptParts });
-      monologue = await this.llm.think(ctx).catch(() => '');
+      monologue = await this.llm.think(ctx, { signal: opts.signal }).catch(() => '');
     }
 
     const messages = assemble({
@@ -199,12 +246,12 @@ export class Orchestrator {
 
     const samplingHints =
       typeof this.stateLayer.samplingHints === 'function' && stateSnapshot ? this.stateLayer.samplingHints(stateSnapshot) : {};
-    const { text: reply, parts } = normalizeReplyResult(await this.llm.generateReply(messages, samplingHints));
+    const { text: reply, parts } = normalizeReplyResult(await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal }));
 
     this.recordHistory([
       { role: 'user', content: userMessage },
       { role: 'assistant', content: reply },
-    ]);
+    ], { eventId: opts.eventId });
 
     // fire-and-forget; 暴露在 _lastAfterReply 上仅供测试 await。
     this._lastAfterReply = this.afterReply(userMessage, reply);
@@ -217,7 +264,11 @@ export class Orchestrator {
       stateSnapshot,
       relationshipState: relState,
       worldSnapshot,
+      storySnapshot,
       sceneType,
+      emotionLabel,
+      behaviorPolicy: behavior,
+      goals,
       memoryHits: memoryHits.map(({ embedding, media_embedding, ...m }) => m),
       promptParts,
       monologue,
@@ -225,7 +276,7 @@ export class Orchestrator {
       samplingHints,
       historyTurns: this.options.historyTurns,
     } : undefined;
-    return { text: reply, parts, ...(debug ? { debug } : {}) };
+    return { text: reply, parts, emotionLabel, behaviorPolicy: behavior, goals, ...(debug ? { debug } : {}) };
   }
 
   /**
@@ -243,18 +294,20 @@ export class Orchestrator {
     if (!shouldSend) return null;
 
     const seed = ctx.query ?? ctx.memoryQuery ?? ctx.reason ?? '想主动找对方聊一句';
-    const [stateSnapshot, relState, memoryBlock, weather, worldSnapshot] = await Promise.all([
+    const [stateSnapshot, relState, memoryBlock, weather, worldSnapshot, storySnapshot] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.memory.recall(seed).catch(() => ''),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
+      this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
     ]);
 
     const promptParts = {
       timePrompt: buildTimePrompt(new Date(), { weather }),
       personaPrompt: this.persona.toPrompt() ?? '',
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
+      storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       statePrompt: this.stateLayer.toPrompt(stateSnapshot) ?? '',
@@ -320,11 +373,16 @@ export class Orchestrator {
     if (typeof this.stateLayer.tickActivity === 'function') tasks.push(this.stateLayer.tickActivity());
     if (nightly) {
       if (typeof this.memory.reflect === 'function') tasks.push(this.memory.reflect());
+      if (typeof this.memory.updateUserProfile === 'function') tasks.push(this.memory.updateUserProfile());
       if (typeof this.memory.story === 'function') tasks.push(this.memory.story());
       if (typeof this.memory.dedupe === 'function') tasks.push(this.memory.dedupe());
       if (typeof this.memory.train === 'function') tasks.push(this.trainNightly());
     }
     const results = await Promise.allSettled(tasks);
+    // S2 故事拍在基础 settle 完成后再推进，避免两条 affect 写路径并发覆盖。
+    if (nightly && typeof this.story?.tick === 'function') {
+      results.push(...await Promise.allSettled([this.story.tick({ now })]));
+    }
     for (const r of results) if (r.status === 'rejected') console.error('[maintain]', r.reason);
     return results;
   }
@@ -352,6 +410,18 @@ export class Orchestrator {
 
   /** 回复返回后触发的后台状态更新, 任一失败只记日志, 不影响已发出的回复。 */
   afterReply(userMessage, reply) {
+    if (this.afterReplyEnqueue) {
+      return Promise.resolve(this.afterReplyEnqueue({ userMessage, reply }))
+        .catch((error) => {
+          console.error('[afterReply.enqueue]', error);
+          return this.runAfterReply(userMessage, reply);
+        });
+    }
+    return this.runAfterReply(userMessage, reply);
+  }
+
+  /** 真正执行回复后状态更新，供持久队列 worker 调用。 */
+  runAfterReply(userMessage, reply) {
     const turns = [
       { role: 'user', content: userMessage },
       { role: 'assistant', content: reply },
@@ -377,6 +447,26 @@ function buildPersonaExtra(config) {
   if (config.speechStyle) parts.push(`说话风格: ${config.speechStyle}`);
   if (config.personality) parts.push(`性格: ${config.personality}`);
   if (Array.isArray(config.traits) && config.traits.length) parts.push(`特点: ${config.traits.join('、')}`);
+  const profile = config.profile ?? {};
+  const publicProfile = [];
+  if (profile.legalName) publicProfile.push(`法定姓名: ${profile.legalName}`);
+  if (Array.isArray(profile.nicknames) && profile.nicknames.length) publicProfile.push(`小名/昵称: ${profile.nicknames.join('、')}`);
+  if (profile.gender) publicProfile.push(`性别: ${profile.gender}`);
+  if (profile.birthDate) publicProfile.push(`出生日期: ${profile.birthDate}`);
+  if (profile.birthPlace) publicProfile.push(`出生地: ${profile.birthPlace}`);
+  if (profile.nationality) publicProfile.push(`国籍: ${profile.nationality}`);
+  const family = (profile.family ?? []).filter((member) => member?.relation || member?.name).map((member) => {
+    const detail = [member.name, member.nickname && `小名${member.nickname}`, member.occupation, member.location].filter(Boolean).join(' · ');
+    return `${member.relation || '家人'}: ${detail || '资料待补充'}${member.notes ? `（${member.notes}）` : ''}`;
+  });
+  if (family.length) publicProfile.push(`家庭关系:\n${family.map((line) => `- ${line}`).join('\n')}`);
+  if (publicProfile.length) parts.push(`【角色档案】\n${publicProfile.join('\n')}`);
+  const menstrual = profile.menstrual ?? {};
+  if (menstrual.enabled) {
+    const cycle = Number(menstrual.cycleLengthDays) || 28;
+    const period = Number(menstrual.periodLengthDays) || 5;
+    parts.push(`【身体周期】生理期记录已开启，平均周期约 ${cycle} 天、经期约 ${period} 天。${menstrual.lastPeriodStart ? `上次周期开始日为 ${menstrual.lastPeriodStart}。` : ''}${menstrual.notes ? `备注：${menstrual.notes}` : ''} 只在相关不适或对方关心时自然表达，不主动暴露隐私。`);
+  }
   return parts.join('\n');
 }
 

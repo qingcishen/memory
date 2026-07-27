@@ -13,6 +13,9 @@ function ok(name, condition) {
 }
 
 console.log('knowledge graph database schema');
+ok('affective_state 包含幂等 desires 迁移', /alter table affective_state add column if not exists desires jsonb/i.test(schema));
+ok('定义 behavior_state 表保存 stonewall 每日状态', /create table if not exists behavior_state\s*\(/i.test(schema));
+ok('定义 story_lines 表与阶段约束', /create table if not exists story_lines\s*\(/i.test(schema) && /stage in \('setup','rising','climax','cooldown','closed'\)/i.test(schema));
 ok('定义 knowledge_entities 表', /create table if not exists knowledge_entities\s*\(/i.test(schema));
 ok('定义 knowledge_relations 表', /create table if not exists knowledge_relations\s*\(/i.test(schema));
 ok('实体按 user + companion + key 唯一', /unique\s*\(user_id,\s*companion_id,\s*entity_key\)/i.test(schema));
@@ -25,5 +28,9 @@ ok('定义 match_knowledge_entities RPC', /create or replace function match_know
 ok('RPC 严格按 user 和 companion 隔离', /e\.user_id\s*=\s*p_user_id/i.test(schema) && /e\.companion_id\s*=\s*p_companion_id/i.test(schema));
 ok('提供可单独执行的幂等迁移', /begin;/i.test(migration) && /create table if not exists knowledge_entities/i.test(migration) && /create or replace function match_knowledge_entities/i.test(migration) && /commit;/i.test(migration));
 ok('迁移完成后刷新 Supabase 结构缓存', /notify\s+pgrst\s*,\s*'reload schema'/i.test(migration));
+ok('渠道事件有跨进程幂等表', /create table if not exists channel_events\s*\(/i.test(schema) && /primary key\s*\(channel,\s*event_id\)/i.test(schema));
+ok('聊天历史按 event + role 幂等', /chat_history_event_unique_idx/i.test(schema));
+ok('持久任务包含租约字段', /alter table jobs add column if not exists locked_at/i.test(schema) && /locked_by/i.test(schema));
+ok('业务表默认启用 RLS', /enable row level security/i.test(schema) && schema.includes("'channel_events'") && schema.includes("'chat_history'"));
 
 console.log(`\n数据库 schema 全部 ${passed} 条断言通过 ✅`);

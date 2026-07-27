@@ -29,13 +29,16 @@ export class SupabaseHistoryStore {
   }
 
   /** 追加这一轮的 user/assistant 消息。 */
-  async append({ userId, companionId = 'default', turns = [] } = {}) {
+  async append({ userId, companionId = 'default', turns = [], eventId = null } = {}) {
     if (!userId || !turns.length) return;
     const rows = turns
       .filter((t) => t && (t.role === 'user' || t.role === 'assistant') && t.content != null)
-      .map((t) => ({ user_id: userId, companion_id: companionId, role: t.role, content: String(t.content) }));
+      .map((t) => ({ user_id: userId, companion_id: companionId, role: t.role, content: String(t.content), event_id: eventId || null }));
     if (!rows.length) return;
-    const { error } = await this.client.from(this.table).insert(rows);
+    const query = eventId
+      ? this.client.from(this.table).upsert(rows, { onConflict: 'user_id,companion_id,event_id,role', ignoreDuplicates: true })
+      : this.client.from(this.table).insert(rows);
+    const { error } = await query;
     if (error) throw error;
   }
 
@@ -71,18 +74,20 @@ export class LocalJsonHistoryStore {
     return rows.slice(-limit).map((r) => ({ role: r.role, content: r.content }));
   }
 
-  async append({ userId, companionId = 'default', turns = [] } = {}) {
+  async append({ userId, companionId = 'default', turns = [], eventId = null } = {}) {
     if (!userId || !turns.length) return;
     const rows = turns
       .filter((t) => t && (t.role === 'user' || t.role === 'assistant') && t.content != null)
-      .map((t) => ({ role: t.role, content: String(t.content), created_at: new Date().toISOString() }));
+      .map((t) => ({ role: t.role, content: String(t.content), event_id: eventId || null, created_at: new Date().toISOString() }));
     if (!rows.length) return;
 
     // 上一次写失败不能毒化锁链: 先 catch 掉再排队, 否则一次磁盘错误后所有后续 append 永久静默失败
     const task = this._lock.catch(() => {}).then(async () => {
       const db = await this.read();
       const key = this.key(userId, companionId);
-      db[key] = [...(db[key] ?? []), ...rows].slice(-this.maxTurnsPerChat);
+      const existing = db[key] ?? [];
+      const fresh = eventId ? rows.filter((row) => !existing.some((old) => old.event_id === eventId && old.role === row.role)) : rows;
+      db[key] = [...existing, ...fresh].slice(-this.maxTurnsPerChat);
       await this.write(db);
     });
     this._lock = task;

@@ -6,7 +6,7 @@ export {
   PersonaAdapter,
   formatRelationshipPrompt,
 } from './adapters.js';
-export { DefaultLLM, parseReplyParts, joinReplyParts, normalizeReplyResult } from './llm.js';
+export { DefaultLLM, parseReplyParts, joinReplyParts, normalizeReplyResult, rewriteNarrationParts } from './llm.js';
 export { assemble, buildSystemPrompt, buildTimePrompt, buildGapHint, buildMonologueContext } from './assemble.js';
 export { LocalJsonHistoryStore, SupabaseHistoryStore } from './historyStore.js';
 export {
@@ -21,4 +21,5 @@ export {
   normalizeRateLimitState,
   pickSilenceTier,
   pickBedtimeTier,
+  desireUrgency,
 } from './scheduler.js';

@@ -1,6 +1,6 @@
 // A1 纯逻辑/骨架测试: 出图 provider(mock) + 自拍策略 + 图库命中。不连网, 注入假 read/write/provider。
 import assert from 'node:assert';
-import { MockImageProvider, HttpImageProvider, OpenAIImageProvider } from '../src/appearance/provider.js';
+import { MockImageProvider, HttpImageProvider, OpenAIImageProvider, withLoraTrigger } from '../src/appearance/provider.js';
 import { shouldSendSelfie, canSendSelfie, buildSelfiePrompt, buildScenePrompt, decidePhoto, Selfie } from '../src/appearance/selfie.js';
 
 let passed = 0;
@@ -50,6 +50,59 @@ console.log('OpenAIImageProvider (Seedream/OpenAI 兼容图片接口)');
   const body = JSON.parse(request.options.body);
   ok('请求带模型和提示词', body.model === 'seedream-pro' && body.prompt === '一个自然自拍');
   ok('读取返回图片 URL', img.url === 'https://cdn.test/generated.png');
+}
+
+console.log('OpenAIImageProvider (GPT Image Base64 响应)');
+{
+  let requestBody = null;
+  const p = new OpenAIImageProvider({
+    baseURL: 'https://api.openai.test/v1',
+    apiKey: 'openai-secret',
+    model: 'gpt-image-2',
+    fetchImpl: async (_url, options) => {
+      requestBody = JSON.parse(options.body);
+      return new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }] }), {
+        status: 200, headers: { 'content-type': 'application/json' },
+      });
+    },
+  });
+  const img = await p.generate('角色自拍', {
+    size: '1536x1536', quality: 'high', background: 'opaque',
+    output_format: 'webp', output_compression: 100,
+  });
+  ok('GPT Image 不发送 response_format=url', !('response_format' in requestBody));
+  ok('GPT Image 传递全部输出参数', requestBody.size === '1536x1536' && requestBody.quality === 'high'
+    && requestBody.background === 'opaque' && requestBody.output_format === 'webp'
+    && requestBody.output_compression === 100);
+  ok('GPT Image Base64 使用正确 MIME', img.url === 'data:image/webp;base64,aW1hZ2U=');
+}
+
+console.log('LoRA trigger (角色一致性触发词)');
+{
+  ok('有 LoRA trigger 时自动前置', withLoraTrigger('手机自拍', { loraTrigger: 'shiya_v2' }).startsWith('shiya_v2, '));
+  ok('prompt 已包含 trigger 时不重复', withLoraTrigger('shiya_v2, 手机自拍', { loraTrigger: 'shiya_v2' }) === 'shiya_v2, 手机自拍');
+}
+
+console.log('OpenAIImageProvider (多参考图编辑接口)');
+{
+  let request = null;
+  const p = new OpenAIImageProvider({
+    baseURL: 'https://api.openai.test/v1', apiKey: 'secret', model: 'gpt-image-2',
+    defaults: { size: '1024x1536', quality: 'high', output_format: 'png', input_fidelity: 'high' },
+    fetchImpl: async (url, options) => {
+      request = { url, options };
+      return new Response(JSON.stringify({ data: [{ b64_json: 'aW1hZ2U=' }], usage: { total_tokens: 123 } }), { status: 200 });
+    },
+  });
+  const img = await p.edit('保持人物特征，生成手机竖图', [
+    { buffer: Buffer.from('one'), mime: 'image/png', name: 'one.png' },
+    { buffer: Buffer.from('two'), mime: 'image/jpeg', name: 'two.jpg' },
+  ]);
+  ok('调用 /images/edits', request.url.endsWith('/images/edits'));
+  ok('multipart 包含两张参考图', request.options.body.getAll('image[]').length === 2);
+  ok('gpt-image-2 自动省略不支持的 input_fidelity', request.options.body.get('input_fidelity') === null);
+  ok('编辑请求保留竖图尺寸', request.options.body.get('size') === '1024x1536');
+  ok('编辑响应带 usage 元数据', img.meta.referenceCount === 2 && img.meta.usage.total_tokens === 123);
 }
 
 console.log('shouldSendSelfie (被状态触发, 不是随机/有求必应)');

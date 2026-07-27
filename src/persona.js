@@ -10,6 +10,7 @@ import { supabase, PARAMS } from './config.js';
 import { embedMany } from './embeddings.js';
 import { normalizeMemory } from './ontology.js';
 import { sanitizeForPrompt } from './promptSafety.js';
+import { readUserProfilePrompt } from './profile.js';
 
 // ---- 纯逻辑 ----
 
@@ -66,15 +67,16 @@ export async function seedPersona(userId, companionId = 'default', facts = []) {
 /** 取她当前的 self 设定并拼成 persona 注入块 (域隔离: 只取 self)。 */
 export async function personaBlock(userId, companionId = 'default', subjectName = '她', opts = {}) {
   const topK = opts.topK ?? PARAMS.relationship_memory.personaTopK;
-  const { data, error } = await supabase
+  const [{ data, error }, profilePrompt] = await Promise.all([supabase
     .from('memories')
-    .select('fact_core, content, narrative, importance')
+    .select('fact_core, content, narrative, importance, source')
     .eq('user_id', userId)
     .eq('companion_id', companionId)
     .eq('subject_kind', 'self')
     .is('superseded_by', null)
     .order('importance', { ascending: false })
-    .limit(topK);
+    .limit(topK + 1), readUserProfilePrompt(userId, companionId).catch(() => '')]);
   if (error) throw error;
-  return formatPersonaBlock(data ?? [], subjectName);
+  const ordinary = (data ?? []).filter((m) => m.source?.kind !== 'user_profile').slice(0, topK);
+  return [formatPersonaBlock(ordinary, subjectName), profilePrompt].filter(Boolean).join('\n\n');
 }

@@ -149,9 +149,12 @@ create table if not exists affective_state (
   relationship jsonb not null default '{"closeness":0.5,"tension":0,"repair_debt":0,"trust":0.5}'::jsonb,
   updated_at   timestamptz not null default now()
 );
+alter table jobs add column if not exists locked_at timestamptz;
+alter table jobs add column if not exists locked_by text;
 -- 多角色: 加 companion_id 并把主键从 user_id 升级为 (user_id, companion_id)。
 -- add primary key 非幂等, 用守卫保证整段脚本可重复执行。
 alter table affective_state add column if not exists companion_id text not null default 'default';
+alter table affective_state add column if not exists desires jsonb not null default '{"attention":0,"sharing":0,"comfort":0,"security":0,"updated_at":null}'::jsonb;
 alter table affective_state drop constraint if exists affective_state_pkey;
 do $$
 begin
@@ -219,8 +222,11 @@ create table if not exists prospective (
 );
 -- 多角色: id 是主键, 加列 + 扩索引。
 alter table prospective add column if not exists companion_id text not null default 'default';
+alter table prospective add column if not exists annual_key text;
+alter table prospective add column if not exists last_fired_year int;
 drop index if exists prospective_pending_idx;
 create index if not exists prospective_pending_idx on prospective (user_id, companion_id, status) where status = 'pending';
+create unique index if not exists prospective_annual_unique_idx on prospective (user_id, companion_id, annual_key);
 
 -- 主动消息限流状态: 跨进程共享 quiet hours / cooldown / max-per-day 的发送轨迹。
 -- state 形如 {"sentAt":["2026-06-14T12:00:00.000Z"],"policy":{...}}。
@@ -238,6 +244,42 @@ begin
     alter table proactive_rate_limits add primary key (user_id, companion_id);
   end if;
 end $$;
+
+-- B3 · 行为投递状态：stonewall 每日额度与“下一轮必须给台阶”。
+create table if not exists behavior_state (
+  user_id text not null,
+  companion_id text not null default 'default',
+  state jsonb not null default '{"stonewallAt":[],"mustGiveRepairStep":false}'::jsonb,
+  updated_at timestamptz not null default now(),
+  primary key (user_id, companion_id)
+);
+
+-- S1 · 连续生活故事线。storyline_key 来自人设 seed，按角色幂等。
+create table if not exists story_lines (
+  id uuid primary key default gen_random_uuid(),
+  user_id text not null,
+  companion_id text not null default 'default',
+  storyline_key text not null,
+  title text not null,
+  stage text not null default 'setup' check (stage in ('setup','rising','climax','cooldown','closed')),
+  mood_link real not null default 0 check (mood_link >= -1 and mood_link <= 1),
+  last_beat text not null default '',
+  next_beat_hint text not null default '',
+  last_beat_at timestamptz,
+  beats_day text,
+  beats_today int not null default 0,
+  beat_shared_at timestamptz,
+  last_beat_sharing real not null default 0,
+  created_at timestamptz not null default now(),
+  updated_at timestamptz not null default now(),
+  unique (user_id, companion_id, storyline_key)
+);
+create index if not exists story_lines_active_idx on story_lines (user_id, companion_id, updated_at desc) where stage <> 'closed';
+alter table story_lines add column if not exists last_beat_at timestamptz;
+alter table story_lines add column if not exists beats_day text;
+alter table story_lines add column if not exists beats_today int not null default 0;
+alter table story_lines add column if not exists beat_shared_at timestamptz;
+alter table story_lines add column if not exists last_beat_sharing real not null default 0;
 
 -- ------------------------------------------------------------
 --  多角色 · 人设配置表 (见 src/companion.js)
@@ -310,7 +352,19 @@ create table if not exists chat_history (
   content      text not null,
   created_at   timestamptz not null default now()
 );
+alter table chat_history add column if not exists event_id text;
 create index if not exists chat_history_idx on chat_history (user_id, companion_id, created_at desc);
+create unique index if not exists chat_history_event_unique_idx
+  on chat_history (user_id, companion_id, event_id, role);
+
+-- 渠道事件幂等：飞书/Discord 重投或多进程时，同一事件只处理一次。
+create table if not exists channel_events (
+  channel    text not null,
+  event_id   text not null,
+  created_at timestamptz not null default now(),
+  primary key (channel, event_id)
+);
+create index if not exists channel_events_created_idx on channel_events (created_at);
 
 -- ------------------------------------------------------------
 --  世界观系统 (worldview): 动态世界状态 —— 背景剧情线/氛围随对话推进缓慢演变,
@@ -464,6 +518,21 @@ as $$
   order by e.embedding <=> query_embedding
   limit greatest(0, least(coalesce(match_count, 4), 50));
 $$;
+
+-- 安全默认：应用按 README 使用 service_role（可绕过 RLS）；禁止 anon key 直接读写伴侣数据。
+do $$
+declare table_name text;
+begin
+  foreach table_name in array array[
+    'memories','knowledge_entities','knowledge_relations','affective_state','life_state',
+    'affective_state_history','prospective','proactive_rate_limits','behavior_state','story_lines',
+    'companions','appearance_assets','jobs','chat_history','channel_events','world_state'
+  ] loop
+    if to_regclass('public.' || table_name) is not null then
+      execute format('alter table public.%I enable row level security', table_name);
+    end if;
+  end loop;
+end $$;
 
 -- 让 Supabase PostgREST 立即识别新表 / 新 RPC, 避免等待 schema cache 自动刷新。
 notify pgrst, 'reload schema';

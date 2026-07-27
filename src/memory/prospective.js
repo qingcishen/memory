@@ -73,7 +73,26 @@ export function isDue(item, ctx = {}, now = Date.now(), opts = {}) {
     if (!Array.isArray(ctx.queryVec) || !Array.isArray(item.cue_embedding)) return false;
     return cosine(ctx.queryVec, item.cue_embedding) >= thr;
   }
+  if (item.trigger_kind === 'annual') {
+    return item.trigger_at != null && new Date(item.trigger_at).getTime() <= now && Number(item.last_fired_year) !== new Date(now).getFullYear();
+  }
   return false;
+}
+
+export function annualTriggerAt(month, day, now = Date.now(), hour = PARAMS.prospective.defaultHour) {
+  const current = new Date(now);
+  let target = new Date(current.getFullYear(), Number(month) - 1, Number(day), hour, 0, 0, 0);
+  if (target.getTime() <= now) target = new Date(current.getFullYear() + 1, Number(month) - 1, Number(day), hour, 0, 0, 0);
+  return Number.isNaN(target.getTime()) ? null : target;
+}
+
+export function detectAnnualProspective(turns = [], now = Date.now(), subjectName = '对方') {
+  const text = turns.filter((t) => t.role === 'user').map((t) => String(t.content ?? '')).join('\n');
+  const match = /(?:我的?)?生日(?:是|在)?\s*(\d{1,2})月(\d{1,2})[日号]?/u.exec(text);
+  if (!match) return null;
+  const at = annualTriggerAt(match[1], match[2], now);
+  if (!at) return null;
+  return { content: `${subjectName}生日到了，认真祝他生日快乐`, trigger_kind: 'annual', trigger_at: at.toISOString(), annual_key: `birthday:${Number(match[1])}-${Number(match[2])}` };
 }
 
 /** time 型: 过了触发时刻又超过 grace 仍没提起, 视为过期 (降级, 不再打扰)。 */
@@ -95,18 +114,29 @@ export async function scheduleProspective(userId, companionId = 'default', item)
     trigger_kind: item.trigger_kind,
     trigger_at: item.trigger_at ?? null,
     status: 'pending',
+    annual_key: item.annual_key ?? null,
   };
   if (item.trigger_kind === 'cue' && item.cueText) row.cue_embedding = await embed(item.cueText);
-  const { data, error } = await supabase.from('prospective').insert(row).select().single();
+  const query = item.trigger_kind === 'annual'
+    ? supabase.from('prospective').upsert(row, { onConflict: 'user_id,companion_id,annual_key', ignoreDuplicates: true })
+    : supabase.from('prospective').insert(row);
+  const { data, error } = await query.select().maybeSingle();
   if (error) throw error;
   return data;
 }
 
 /** observe 阶段顺手识别并排程未来意图; 没识别到返回 null。 */
 export async function scheduleFromTurns(userId, companionId = 'default', turns, now = Date.now(), subjectName = '对方') {
+  const annual = detectAnnualProspective(turns, now, subjectName);
+  if (annual) return scheduleProspective(userId, companionId, annual);
   const p = detectProspective(turns, now, subjectName);
   if (!p) return null;
   return scheduleProspective(userId, companionId, p);
+}
+
+export async function ensureFirstChatAnniversary(userId, companionId = 'default', now = Date.now()) {
+  const d = new Date(now);
+  return scheduleProspective(userId, companionId, { content: '你们第一次聊天的纪念日，找自然时机提起这一天', trigger_kind: 'annual', trigger_at: annualTriggerAt(d.getMonth() + 1, d.getDate(), now)?.toISOString(), annual_key: `first-chat:${d.getMonth() + 1}-${d.getDate()}` });
 }
 
 /**
@@ -143,7 +173,15 @@ export async function dueProspectives(userId, companionId = 'default', ctx = {},
 /** 触发后标记 fired, 避免重复打扰。 */
 export async function markFired(ids) {
   if (!ids || ids.length === 0) return;
-  await supabase.from('prospective').update({ status: 'fired' }).in('id', [].concat(ids));
+  const list = [].concat(ids);
+  const { data: annual } = await supabase.from('prospective').select('id,trigger_at,trigger_kind').in('id', list).eq('trigger_kind', 'annual');
+  const annualIds = new Set((annual ?? []).map((item) => item.id));
+  for (const item of annual ?? []) {
+    const next = new Date(item.trigger_at); next.setFullYear(next.getFullYear() + 1);
+    await supabase.from('prospective').update({ trigger_at: next.toISOString(), last_fired_year: new Date().getFullYear(), status: 'pending' }).eq('id', item.id);
+  }
+  const ordinary = list.filter((id) => !annualIds.has(id));
+  if (ordinary.length) await supabase.from('prospective').update({ status: 'fired' }).in('id', ordinary);
 }
 
 function parseVec(v) {

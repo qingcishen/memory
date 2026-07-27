@@ -1,0 +1,6 @@
+{
+  "runtime": {
+    "use_monologue": true,
+    "history_turns": 14
+  }
+}

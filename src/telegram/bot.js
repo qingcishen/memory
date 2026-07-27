@@ -2,17 +2,26 @@ import dotenv from 'dotenv';
 import fs from 'node:fs';
 import https from 'node:https';
 import path from 'node:path';
+import { HttpsProxyAgent } from 'https-proxy-agent';
+import { ProxyAgent } from 'undici';
 import { Orchestrator, ProactiveScheduler, SupabaseRateLimitStore, LocalJsonHistoryStore, SupabaseHistoryStore } from '../../index.js';
 import { loadPersonaConfig } from '../companion.js';
 import { CompanionRuntime } from '../runtime/index.js';
 import { metricsSnapshot } from '../metrics.js';
-import { queueStats } from '../queue/jobs.js';
+import { enqueue, queueStats, Worker } from '../queue/jobs.js';
 import { makeScheduleActivityFn, parseSleepWindow } from '../state/activity.js';
 import { WeatherProvider } from '../world/weather.js';
 import { WorldDimension } from '../world/index.js';
 import { SceneClassifier } from '../narration.js';
+import { pickSpeakableText, shouldReplyWithVoice, synthesizeSpeech } from '../modal/speech.js';
+import { TTS_CONFIGURED } from '../config.js';
+import { BehaviorStateStore, normalizeBehaviorState } from '../state/behavior.js';
 
 dotenv.config();
+
+const TELEGRAM_PROXY_URL = process.env.TELEGRAM_PROXY_URL || process.env.HTTPS_PROXY || process.env.HTTP_PROXY || '';
+const telegramHttpsAgent = TELEGRAM_PROXY_URL ? new HttpsProxyAgent(TELEGRAM_PROXY_URL) : undefined;
+const telegramFetchDispatcher = TELEGRAM_PROXY_URL ? new ProxyAgent(TELEGRAM_PROXY_URL) : undefined;
 
 const DEFAULT_POLL_TIMEOUT_SECONDS = 25;
 const DEFAULT_RETRY_MS = 3000;
@@ -74,9 +83,85 @@ export function buildOutgoingMessages(parts = []) {
   return out;
 }
 
+export function ensureReplyParts(reply, parts) {
+  if (Array.isArray(parts) && parts.length > 0) return parts;
+  const text = String(reply ?? '').trim();
+  return text ? [{ type: 'dialogue', text }] : [];
+}
+
 /** 按文字长度估一个"打字用了多久"的延迟, 让连续发消息不是瞬间刷屏。纯函数。 */
 export function typingDelayMs(text = '') {
-  return Math.min(4000, Math.max(600, String(text ?? '').length * 40));
+  return Math.min(1200, Math.max(600, String(text ?? '').length * 12));
+}
+
+export function pickPolicyDelay(policy = {}, rng = Math.random) {
+  const [rawMin, rawMax] = Array.isArray(policy.replyDelayMs) ? policy.replyDelayMs : [0, 0];
+  const min = Math.max(0, Number(rawMin) || 0);
+  const max = Math.max(min, Number(rawMax) || 0);
+  return Math.round(min + (max - min) * Math.min(1, Math.max(0, Number(rng()) || 0)));
+}
+
+/** partsBudget 只限制台词条数，旁白作为场景信息保留。 */
+export function applyPartsBudget(parts = [], budget = Infinity) {
+  const cap = Math.max(1, Math.floor(Number(budget) || 1));
+  let dialogues = 0;
+  return (parts ?? []).filter((part) => part?.type === 'narration' || ++dialogues <= cap);
+}
+
+export async function simulateBehaviorDelay(api, chatId, delayMs, sleepFn = sleep) {
+  let remaining = Math.max(0, Number(delayMs) || 0);
+  while (remaining > 0) {
+    await api.sendChatAction(chatId, 'typing').catch(() => {});
+    const typingFor = Math.min(2500, remaining);
+    await sleepFn(typingFor);
+    remaining -= typingFor;
+    if (remaining > 0) {
+      const pause = Math.min(1000, remaining);
+      await sleepFn(pause); // typing 状态短暂停下，形成“打了又删”的感觉
+      remaining -= pause;
+    }
+  }
+}
+
+/** 将所有旁白/台词合并成一条（超长时才按 Telegram 限制分块）。 */
+export function buildMergedOutgoingMessages(parts = []) {
+  const outgoing = buildOutgoingMessages(parts);
+  return chunkMessage(outgoing.map((item) => item.text).join('\n\n'))
+    .filter(Boolean)
+    .map((text) => ({ type: 'merged', text }));
+}
+
+/** Telegram 的 typing 状态只保持几秒；模型生成期间定时续期，完成后由返回函数停止。 */
+export function startTypingHeartbeat(
+  api,
+  chatId,
+  { intervalMs = 4000, setIntervalFn = setInterval, clearIntervalFn = clearInterval } = {},
+) {
+  let stopped = false;
+  const send = () => {
+    if (!stopped) Promise.resolve(api.sendChatAction(chatId, 'typing')).catch(() => {});
+  };
+  send();
+  const timer = setIntervalFn(send, intervalMs);
+  timer?.unref?.();
+  return () => {
+    if (stopped) return;
+    stopped = true;
+    clearIntervalFn(timer);
+  };
+}
+
+/** data URL -> { mime, buffer }; 不是合法 base64 data URL 返回 null。纯函数。
+ *  GPT Image 系列只回 base64 (没有公网 URL), 走 multipart 上传 Telegram 时用。 */
+export function parseDataUrl(url = '') {
+  const m = /^data:([a-z0-9.+-]+\/[a-z0-9.+-]+);base64,([A-Za-z0-9+/=\s]+)$/i.exec(String(url ?? '').trim());
+  if (!m) return null;
+  try {
+    const buffer = Buffer.from(m[2], 'base64');
+    return buffer.length > 0 ? { mime: m[1].toLowerCase(), buffer } : null;
+  } catch {
+    return null;
+  }
 }
 
 class TelegramApi {
@@ -121,6 +206,31 @@ class TelegramApi {
     return this.call('sendPhoto', { chat_id: chatId, photo, ...extra });
   }
 
+  /** 图片二进制上传 (multipart)。GPT Image 只回 base64、没有公网 URL 时走这条。 */
+  async sendPhotoUpload(chatId, buffer, { mime = 'image/png', ...extra } = {}) {
+    const ext = mime.includes('jpeg') ? 'jpg' : mime.includes('webp') ? 'webp' : 'png';
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    form.append('photo', new Blob([buffer], { type: mime }), `photo.${ext}`);
+    for (const [k, v] of Object.entries(extra)) form.append(k, String(v));
+    const res = await telegramFetch(`${this.baseUrl}/sendPhoto`, { method: 'POST', body: form });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) throw new Error(`Telegram sendPhoto upload failed: ${data?.description || `HTTP ${res.status}`}`);
+    return data.result;
+  }
+
+  /** 语音条上传 (multipart, 与 postJson 的纯 JSON 通道分开)。buffer 需为 ogg/opus。 */
+  async sendVoice(chatId, buffer, extra = {}) {
+    const form = new FormData();
+    form.append('chat_id', String(chatId));
+    form.append('voice', new Blob([buffer], { type: 'audio/ogg' }), 'voice.ogg');
+    for (const [k, v] of Object.entries(extra)) form.append(k, String(v));
+    const res = await telegramFetch(`${this.baseUrl}/sendVoice`, { method: 'POST', body: form });
+    const data = await res.json().catch(() => null);
+    if (!res.ok || !data?.ok) throw new Error(`Telegram sendVoice failed: ${data?.description || `HTTP ${res.status}`}`);
+    return data.result;
+  }
+
   getFile(fileId) {
     return this.call('getFile', { file_id: fileId });
   }
@@ -133,7 +243,7 @@ class TelegramApi {
 
   async downloadAsFile(fileId, { name = 'voice.ogg', type = 'audio/ogg' } = {}) {
     const url = await this.fileUrl(fileId);
-    const res = await fetch(url);
+    const res = await telegramFetch(url);
     if (!res.ok) throw new Error(`Telegram 文件下载失败: HTTP ${res.status}`);
     const bytes = await res.arrayBuffer();
     return new File([bytes], name, { type });
@@ -141,7 +251,7 @@ class TelegramApi {
 
   async downloadDataUrl(fileId, type = 'image/jpeg') {
     const url = await this.fileUrl(fileId);
-    const res = await fetch(url);
+    const res = await telegramFetch(url);
     if (!res.ok) throw new Error(`Telegram 文件下载失败: HTTP ${res.status}`);
     const bytes = Buffer.from(await res.arrayBuffer());
     return `data:${type};base64,${bytes.toString('base64')}`;
@@ -162,8 +272,14 @@ export class TelegramMemoryBot {
     // 默认 companions/<companionId>.json; 缺失则只用名字 (退化为通用人设)。
     personaFile = process.env.TELEGRAM_PERSONA_FILE || `companions/${companionId}.json`,
     api = new TelegramApi(token),
+    behaviorStore = new BehaviorStateStore(),
+    sleepFn = sleep,
+    rng = Math.random,
   } = {}) {
     this.api = api;
+    this.behaviorStore = behaviorStore;
+    this.sleepFn = sleepFn;
+    this.rng = rng;
     this.allowedChatIds = allowedChatIds;
     this.companionId = companionId;
     this.companionName = companionName;
@@ -193,6 +309,10 @@ export class TelegramMemoryBot {
     this.stopped = false;
     this.statusFile = process.env.CYBER_UI_STATUS_FILE || '';
     this.statusTimer = null;
+    this.jobKind = 'telegram:after_reply';
+    this.worker = new Worker({ handlers: {
+      [this.jobKind]: ({ chatId, userMessage, reply }) => this.botForChat(chatId).runAfterReply(userMessage, reply),
+    } });
     // 主动性策略: 安静时段 + 冷却 + 每日上限 (东八区)。
     this.proactivePolicy = {
       quietHours: { start: 23, end: 8 },
@@ -211,7 +331,10 @@ export class TelegramMemoryBot {
         companionName: this.companionName,
         subjectName: this.subjectName,
         config: this.persona?.config ?? null, // 注入富人设 (性格/说话风格/外貌/背景)
-        options: this.persona?.options ?? {},
+        options: {
+          ...(this.persona?.options ?? {}),
+          useMonologue: process.env.TELEGRAM_USE_MONOLOGUE === 'true',
+        },
         // 角色专属作息 (开会/健身...) 生成 activityFn; 没有则走通用作息模板
         activityFn: this.persona?.life ? makeScheduleActivityFn(this.persona.life) : null,
         // P2: 角色专属身体参数 (睡眠时段/发病概率), 喂给 LifeDimension
@@ -222,13 +345,24 @@ export class TelegramMemoryBot {
           // 世界观系统: 按 (userId, companionId) 维护各自的背景剧情线, 因此每个 chat 一个实例。
           world: new WorldDimension({ userId: telegramUserId(chatId), companionId: this.companionId }),
           narration: this.narration,
+          afterReplyEnqueue: ({ userMessage, reply }) => enqueue(
+            telegramUserId(chatId), this.companionId, this.jobKind, { chatId: String(chatId), userMessage, reply },
+          ),
           // Seedream 生成完成后直接投递到当前 Telegram 会话；data URL 无法走 JSON Bot API 时安全跳过。
           onPhoto: async ({ url, kind }) => {
-            if (!/^https?:\/\//i.test(String(url ?? ''))) {
-              console.warn(`[telegram] generated ${kind || 'photo'} has no public URL, skipped delivery`);
-              return;
+            const raw = String(url ?? '');
+            if (/^https?:\/\//i.test(raw)) {
+              // Seedream 等返回公网 URL: 直接让 Telegram 拉取
+              await this.api.sendPhoto(chatId, raw);
+            } else {
+              // GPT Image 系列只回 base64 data URL: 走 multipart 上传
+              const parsed = parseDataUrl(raw);
+              if (!parsed) {
+                console.warn(`[telegram] generated ${kind || 'photo'} is neither public URL nor data URL, skipped delivery`);
+                return;
+              }
+              await this.api.sendPhotoUpload(chatId, parsed.buffer, { mime: parsed.mime });
             }
-            await this.api.sendPhoto(chatId, url);
             console.log(`[telegram] photo sent chat=${chatId} kind=${kind || 'photo'}`);
           },
         }, // 短期历史落库 + 真实天气 + 世界观 + 旁白
@@ -246,13 +380,55 @@ export class TelegramMemoryBot {
    * 用户主动发消息这条路径需要失败能冒泡到外层, 好触发"卡了一下"的兜底回复。
    */
   async sendParts(chatId, parts) {
-    const outgoing = buildOutgoingMessages(parts);
+    const outgoing = buildMergedOutgoingMessages(parts);
     for (const msg of outgoing) {
       await this.api.sendChatAction(chatId, 'typing').catch(() => {});
       await sleep(typingDelayMs(msg.text));
       await this.api.sendMessage(chatId, msg.text);
     }
     return outgoing;
+  }
+
+  /**
+   * 语音进语音出: 对方刚发的是语音且配置了 TTS_MODEL 时, 台词合成一条语音条发回
+   * (旁白仍走文字先行, 念第三人称描写很怪); 台词太长/合成失败都回退纯文字 sendParts。
+   */
+  async deliverReply(chatId, parts, { incomingVoice = false, policy = null, behaviorState = null, bot = null } = {}) {
+    const userId = telegramUserId(chatId);
+    const scope = { userId, companionId: this.companionId };
+    const current = normalizeBehaviorState(behaviorState ?? await this.behaviorStore.load(scope).catch(() => ({})));
+    const delay = Math.min(
+      pickPolicyDelay(policy, this.rng),
+      Math.max(0, Number(process.env.CHANNEL_MAX_REPLY_DELAY_MS || 3000) || 3000),
+    );
+    await simulateBehaviorDelay(this.api, chatId, delay, this.sleepFn);
+
+    // stonewall 与 partsBudget 都只影响模型决策/提示，不影响已经生成的发送内容。
+    const deliverableParts = parts ?? [];
+    const speakable = pickSpeakableText(deliverableParts);
+    if (shouldReplyWithVoice({ incomingVoice, configured: TTS_CONFIGURED, speakable })) {
+      try {
+        const audio = await synthesizeSpeech(speakable);
+        const narrations = buildMergedOutgoingMessages((deliverableParts ?? []).filter((p) => p?.type === 'narration'));
+        for (const msg of narrations) {
+          await this.api.sendChatAction(chatId, 'typing').catch(() => {});
+          await sleep(typingDelayMs(msg.text));
+          await this.api.sendMessage(chatId, msg.text);
+        }
+        await this.api.sendChatAction(chatId, 'record_voice').catch(() => {});
+        await sleep(typingDelayMs(speakable));
+        await this.api.sendVoice(chatId, audio);
+        console.log(`[telegram] voice reply chat=${chatId} chars=${speakable.length} bytes=${audio.length}`);
+        const sent = [...narrations, { type: 'voice', text: speakable }];
+        if (current.mustGiveRepairStep) await this.behaviorStore.save({ ...current, mustGiveRepairStep: false }, scope).catch(() => {});
+        return sent;
+      } catch (error) {
+        console.error(`[telegram] tts failed chat=${chatId}, 回退文字:`, formatError(error));
+      }
+    }
+    const sent = await this.sendParts(chatId, deliverableParts);
+    if (current.mustGiveRepairStep) await this.behaviorStore.save({ ...current, mustGiveRepairStep: false }, scope).catch(() => {});
+    return sent;
   }
 
   /** 给一个 chat 起后台"活着"循环: 维护(心情回落/作息/生病/夜间反思) + 主动消息(投递回这个 chat)。 */
@@ -286,6 +462,7 @@ export class TelegramMemoryBot {
   }
 
   async start() {
+    this.worker.start();
     const me = await this.api.getMe();
     console.log(`[telegram] @${me.username} started`);
     console.log(
@@ -305,6 +482,7 @@ export class TelegramMemoryBot {
 
   stop() {
     this.stopped = true;
+    this.worker.stop();
     for (const rt of this.runtimes.values()) rt.stop();
     if (this.statusTimer) clearInterval(this.statusTimer);
     this.statusTimer = null;
@@ -453,12 +631,26 @@ export class TelegramMemoryBot {
       return;
     }
 
-    await this.api.sendChatAction(chatId, 'typing').catch(() => {});
     const bot = this.botForChat(chatId);
     console.log(`[telegram] replying chat=${chatId} timeoutMs=${this.replyTimeoutMs}`);
     try {
-      const { text: reply, parts } = await withTimeout(bot.reply(text), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
-      const sent = await this.sendParts(chatId, parts);
+      const behaviorState = await this.behaviorStore.load({ userId: telegramUserId(chatId), companionId: this.companionId }).catch(() => ({}));
+      const stopTyping = startTypingHeartbeat(this.api, chatId);
+      let result;
+      try {
+        result = await withTimeout((signal) => bot.reply(text, {
+          executeStonewall: false,
+          behaviorState: { ...behaviorState, stonewallUsedToday: behaviorState.stonewallAt?.length ?? 0 },
+          eventId: `telegram:${update.update_id}`,
+          signal,
+        }), this.replyTimeoutMs, `reply timed out after ${this.replyTimeoutMs}ms`);
+      } finally {
+        stopTyping();
+      }
+      const { text: reply, parts, behaviorPolicy: policy } = result;
+      // 少数模型会返回可用 text，但结构化 parts 解析为空。发送层只消费 parts，若不兜底会整轮静默。
+      const deliverableParts = ensureReplyParts(reply, parts);
+      const sent = await this.deliverReply(chatId, deliverableParts, { incomingVoice: Boolean(message.voice || message.audio), policy, behaviorState, bot });
       console.log(`[telegram] replied chat=${chatId} chars=${reply.length} parts=${sent.length}`);
     } catch (error) {
       console.error(`[telegram] reply failed chat=${chatId}:`, formatError(error));
@@ -485,12 +677,13 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function withTimeout(promise, ms, message) {
+function withTimeout(work, ms, message) {
+  const controller = new AbortController();
   let timer = null;
   const timeout = new Promise((_, reject) => {
-    timer = setTimeout(() => reject(new Error(message)), ms);
+    timer = setTimeout(() => { controller.abort(new Error(message)); reject(new Error(message)); }, ms);
   });
-  return Promise.race([promise, timeout]).finally(() => clearTimeout(timer));
+  return Promise.race([Promise.resolve().then(() => work(controller.signal)), timeout]).finally(() => clearTimeout(timer));
 }
 
 function formatError(error) {
@@ -515,6 +708,7 @@ function postJson(url, body, timeoutMs = 35000) {
           'content-type': 'application/json',
           'content-length': Buffer.byteLength(payload),
         },
+        ...(telegramHttpsAgent ? { agent: telegramHttpsAgent } : {}),
         timeout: timeoutMs,
       },
       (res) => {
@@ -542,6 +736,10 @@ function postJson(url, body, timeoutMs = 35000) {
     req.write(payload);
     req.end();
   });
+}
+
+function telegramFetch(url, options = {}) {
+  return fetch(url, { ...options, ...(telegramFetchDispatcher ? { dispatcher: telegramFetchDispatcher } : {}) });
 }
 
 function acquireProcessLock(lockPath = process.env.TELEGRAM_LOCK_FILE || DEFAULT_LOCK_FILE) {

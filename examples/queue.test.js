@@ -43,8 +43,10 @@ console.log('Worker.tick (注入 mock store + handlers, 离线)');
     { id: 'j3', kind: 'unknown', payload: {} },
   ];
   let served = false;
+  let claimOpts = null;
   const store = {
-    async claimBatch() {
+    async claimBatch(opts) {
+      claimOpts = opts;
       if (served) return [];
       served = true;
       return batch;
@@ -67,6 +69,7 @@ console.log('Worker.tick (注入 mock store + handlers, 离线)');
   const summary = await w.tick();
 
   ok('认领到 3 个 job', summary.claimed === 3);
+  ok('Worker 只认领自己有 handler 的任务类型', claimOpts.kinds.includes('observe') && claimOpts.kinds.includes('boom') && !claimOpts.kinds.includes('unknown'));
   ok('成功的 job 被 complete(带 handler 返回值)', completed.length === 1 && completed[0].id === 'j1' && completed[0].result.echoed === 1);
   ok('抛错的 job 进 fail', failed.some((f) => f.id === 'j2' && /炸了/.test(f.msg)));
   ok('无 handler 的 job 也进 fail', failed.some((f) => f.id === 'j3' && /无 handler/.test(f.msg)));

@@ -8,11 +8,11 @@
 
   <key>ProgramArguments</key>
   <array>
-    <string>/Users/hk/memory-system/scripts/run-telegram-bot.sh</string>
+    <string>/Users/shenqingci/memory-system/scripts/run-telegram-bot.sh</string>
   </array>
 
   <key>WorkingDirectory</key>
-  <string>/Users/hk/memory-system</string>
+  <string>/Users/shenqingci/memory-system</string>
 
   <key>RunAtLoad</key>
   <true/>
@@ -20,16 +20,22 @@
   <key>KeepAlive</key>
   <true/>
 
+  <key>ThrottleInterval</key>
+  <integer>15</integer>
+
+  <key>ProcessType</key>
+  <string>Background</string>
+
   <key>StandardOutPath</key>
-  <string>/Users/hk/memory-system/logs/telegram-bot.log</string>
+  <string>/Users/shenqingci/memory-system/logs/telegram-bot.log</string>
 
   <key>StandardErrorPath</key>
-  <string>/Users/hk/memory-system/logs/telegram-bot.err.log</string>
+  <string>/Users/shenqingci/memory-system/logs/telegram-bot.err.log</string>
 
   <key>EnvironmentVariables</key>
   <dict>
     <key>PATH</key>
-    <string>/opt/homebrew/bin:/Users/hk/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
+    <string>/opt/homebrew/bin:/Users/shenqingci/.local/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin</string>
   </dict>
 </dict>
 </plist>
