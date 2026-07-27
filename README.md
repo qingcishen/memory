@@ -310,7 +310,7 @@ Discord 私聊会直接回复；服务器频道中只有提及机器人时才回
 
 ## 测试
 
-全部为**纯逻辑**单测,不连网,覆盖各招牌机制的核心与红线(共 576 断言,22 个套件)。
+`npm test` 由 Vitest 统一调度；旧测试逐文件隔离执行，单个失败不会遮住其余套件。默认不连网，R2 实网上传只在显式执行 `npm run test:r2:live` 时开启。
 
 ```bash
 npm test             # 全部 (M0~M7)
@@ -320,6 +320,20 @@ npm run test:reconsolidate # M3 灵魂: 和好后旧怨回暖, 但 fact_core 一
 ```
 
 > **红线 (CI 必过)**:任何机制下 `fact_core` 永不改变。重构相关测试把这条不变式固化在 `ontology.assertFactCorePreserved`,越权篡改立即抛错。
+
+## 评测与证据
+
+```bash
+npm run bench:memory       # 记忆检索基准，输出 Recall@5/10 与 MRR
+npm run eval:dialogue      # 15 类多轮场景的五维 rubric 报告
+npm run bench:ablation     # 七项机制消融报告
+npm run inspect -- trace 2026-07-27  # 查看逐轮 trace 与当日成本
+npm run labels:prepare -- 2026-07-27 # 从真实 trace 生成脱敏待标注集
+```
+
+结果写入 `bench/results/`，历史口径见 `docs/bench-history.md`。仓库内置结果是**离线流水线基线**，只证明工具可复现运行，不冒充线上质量结论。情绪准确率、强模型裁判分、真实成本和遗忘率拟合必须使用生产 trace 与人工复核标签；遗忘率只有在拟合 `r² >= 0.6` 时才建议替换参数。
+
+逐轮 trace 写入 `logs/traces/YYYY-MM-DD.jsonl`，夜间维护汇总到 `logs/cost-daily.jsonl`。写盘失败不会阻断回复；超过 `PARAMS.trace.dailyBudgetUsd` 会告警。混合检索可由 `PARAMS.retrieval.hybrid` 开启，关键词通道不可用时自动退回纯向量召回。
 
 ## 建议落地顺序
 

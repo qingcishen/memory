@@ -7,10 +7,11 @@ import { supabase } from '../src/config.js';
 import { readState, moodLabel } from '../src/state/affect.js';
 import { scoreActivation } from '../src/engine/activation.js';
 import { driftFromOrigin } from '../src/memory/reconsolidate.js';
+import { dailyCost, query as queryTraces, traceDay } from '../src/trace.js';
 
 const userId = process.argv[2];
 if (!userId) {
-  console.error('用法: npm run inspect <userId>');
+  console.error('用法: npm run inspect <userId> | npm run inspect -- trace [YYYY-MM-DD] [userId]');
   process.exit(1);
 }
 
@@ -18,6 +19,13 @@ const hr = (t) => console.log(`\n${'─'.repeat(50)}\n${t}\n${'─'.repeat(50)}`
 const f = (x) => (typeof x === 'number' ? x.toFixed(2) : '—');
 
 async function main() {
+  if (userId === 'trace') {
+    const day = process.argv[3] ?? traceDay();
+    const traceUserId = process.argv[4];
+    const traces = queryTraces({ day, userId: traceUserId });
+    console.log(JSON.stringify({ summary: dailyCost(day), traces }, null, 2));
+    return;
+  }
   hr(`关系-情感状态  ·  ${userId}`);
   const state = await readState(userId);
   const r = state.relationship;

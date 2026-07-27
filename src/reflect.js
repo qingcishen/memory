@@ -1,4 +1,5 @@
 import { supabase, llm, LLM_MODEL, PARAMS } from './config.js';
+import { recordLlmCall } from './metrics.js';
 import { embed } from './embeddings.js';
 import { memoryStrength } from './decay.js';
 import { selectNearDupMerges } from './dedup.js';
@@ -36,6 +37,7 @@ export async function runReflection(userId, companionId = 'default', opts = {}) 
       { role: 'user', content: mems.map((m) => `- ${m.content}`).join('\n') },
     ],
   });
+  recordLlmCall('reflect', res.usage);
 
   let insights = [];
   try {

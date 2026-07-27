@@ -30,8 +30,12 @@ export function recordLlmCall(kind, usage = null) {
   incr('llm.calls');
   incr(`llm.calls.${kind}`);
   const total = usage?.total_tokens;
+  const prompt = usage?.prompt_tokens ?? usage?.input_tokens;
+  const completion = usage?.completion_tokens ?? usage?.output_tokens;
   if (typeof total === 'number') {
     incr('llm.tokens', total);
     incr(`llm.tokens.${kind}`, total);
   }
+  if (typeof prompt === 'number') incr(`llm.prompt_tokens.${kind}`, prompt);
+  if (typeof completion === 'number') incr(`llm.completion_tokens.${kind}`, completion);
 }

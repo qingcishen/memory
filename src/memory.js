@@ -124,9 +124,8 @@ export class Memory {
    */
   async recall(query, opts = {}) {
     let hits;
-    if (opts.engine === false) {
-      hits = await retrieveMemories(this.userId, this.companionId, query, opts);
-    } else {
+    const reranker = opts.reranker ?? (opts.engine === false ? 'heuristic' : PARAMS.retrieval?.reranker ?? 'activation');
+    if (reranker === 'activation' && opts.engine !== false) {
       const state = await readState(this.userId, this.companionId).catch(() => null);
       hits = await engineRecall(this.userId, this.companionId, query, state, opts);
       // M3: 想起即被当下情绪轻微染色 (落库异步, 返回染色后的值供本轮注入)。
@@ -138,6 +137,8 @@ export class Memory {
         const backdrop = (await dyadBackdrop(this.userId, this.companionId, n).catch(() => [])).filter((m) => !have.has(m.id));
         hits = [...hits, ...backdrop];
       }
+    } else {
+      hits = await retrieveMemories(this.userId, this.companionId, query, { ...opts, reranker });
     }
     // I4: romantic/intimate 场景对 preference 记忆轻微提权（不改引擎打分公式，只做稳定重排加成）
     if (opts.intimateBoost || opts.sceneType === 'intimate' || opts.sceneType === 'romantic') {

@@ -82,12 +82,79 @@ import {
   rebuildSessionThreadFromHistory,
 } from '../companion/sessionThread.js';
 import { readUserProfilePrompt } from '../profile.js';
+import { metricsSnapshot } from '../metrics.js';
+import {
+  activeReplyTrace,
+  record as recordTrace,
+  traceDay,
+  withReplyTrace,
+  writeDailyCost,
+} from '../trace.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
+const traceRuntimeEnabled = () =>
+  PARAMS.trace?.enabled !== false &&
+  (process.env.NODE_ENV !== 'test' || process.env.TRACE_IN_TESTS === '1');
 
 function buildReplyStylePrompt(style = {}) {
   const rules = Array.isArray(style?.promptRules) ? style.promptRules.filter(Boolean) : [];
   return rules.length ? `【角色专属回复风格】\n${rules.map((rule) => `- ${rule}`).join('\n')}` : '';
+}
+
+function emitReplyTrace(orchestrator, {
+  opts = {}, userMessage, result, memoryHits = [], promptParts = {}, messages = [],
+  sceneType, stateSnapshot, traceStartedAt, traceMetricsBefore = {},
+} = {}) {
+  if (!traceRuntimeEnabled()) return;
+  try {
+    const after = metricsSnapshot();
+    const correlated = activeReplyTrace();
+    const metricCalls = [
+      ['think', 'monologue'],
+      ['reply', 'reply'],
+      ['narration', 'narration'],
+    ].flatMap(([kind, stage]) => {
+      const calls = Math.max(0, (after[`llm.calls.${kind}`] ?? 0) - (traceMetricsBefore[`llm.calls.${kind}`] ?? 0));
+      if (!calls) return [];
+      return [{
+        stage,
+        model: process.env.REPLY_MODEL || process.env.LLM_MODEL || 'deepseek-chat',
+        promptTokens: Math.max(0,
+          (after[`llm.prompt_tokens.${kind}`] ?? 0) - (traceMetricsBefore[`llm.prompt_tokens.${kind}`] ?? 0)),
+        completionTokens: Math.max(0,
+          (after[`llm.completion_tokens.${kind}`] ?? 0) - (traceMetricsBefore[`llm.completion_tokens.${kind}`] ?? 0)),
+        latencyMs: stage === 'reply' ? Math.max(0, Date.now() - traceStartedAt) : 0,
+        calls,
+      }];
+    });
+    const bytes = (value) => Buffer.byteLength(String(value ?? ''), 'utf8');
+    const promptBytes = {
+      persona: bytes(promptParts.personaPrompt),
+      state: bytes(promptParts.statePrompt),
+      memory: bytes(promptParts.memoryBlock),
+      history: bytes(messages.filter((m) => m.role !== 'system').map((m) => m.content).join('\n')),
+      total: bytes(messages.map((m) => m.content).join('\n')),
+    };
+    recordTrace({
+      userId: orchestrator.userId,
+      companionId: orchestrator.companionId,
+      eventId: opts.eventId ?? null,
+      userMessage,
+      reply: result.text,
+      memoryHits: correlated?.memoryHits?.length ? correlated.memoryHits : memoryHits,
+      promptBytes,
+      llmCalls: correlated?.llmCalls?.length ? correlated.llmCalls : metricCalls,
+      emotionLabel: result.emotionLabel,
+      behaviorPolicy: result.behaviorPolicy,
+      sceneType,
+      stateSnapshot,
+      lastTurns: messages
+        .filter((message) => message.role !== 'system')
+        .slice(-4)
+        .map(({ role, content }) => ({ role, content })),
+      totalLatencyMs: Math.max(0, Date.now() - traceStartedAt),
+    });
+  } catch {}
 }
 
 // 用户在话里要看她的样子/照片 (触发自拍)。
@@ -117,6 +184,7 @@ export class Orchestrator {
       place: '武汉',
       ...options,
     };
+    this.ablation = { ...(PARAMS.ablation ?? {}), ...(options.ablation ?? {}) };
     // 单一现实钟：回复时间、生活状态、跨会话间隔全部从同一个 now() 读取。
     // 测试可注入固定时刻；生产默认与用户所在现实世界等速前进。
     this.now = typeof deps.now === 'function' ? deps.now : () => Date.now();
@@ -369,7 +437,7 @@ export class Orchestrator {
     }
     this._emotionResidue = next;
     // desire bridge（异步，不阻塞）
-    const desireEvent = residueToDesireEvent(next);
+    const desireEvent = this.ablation.desire === false ? null : residueToDesireEvent(next);
     if (desireEvent) {
       const dim = this.stateLayer?.stateLayer?.desire ?? this.stateLayer?.desire;
       if (dim && typeof dim.accumulate === 'function') {
@@ -460,7 +528,13 @@ export class Orchestrator {
    * 一轮对话主入口: 加载状态+记忆 -> (可选)内心独白 -> 组装 -> 生成回复。
    * 任一子系统加载失败都降级为空, 不影响回复 (见编排器设计方案 §9)。
    */
-  async reply(userMessage, opts = {}) {
+  reply(userMessage, opts = {}) {
+    return withReplyTrace(() => this._reply(userMessage, opts));
+  }
+
+  async _reply(userMessage, opts = {}) {
+    const traceStartedAt = Date.now();
+    const traceMetricsBefore = metricsSnapshot();
     await this.init();
     const historyUserMessage = String(opts.historyUserMessage ?? userMessage);
     const nowMs = this.now();
@@ -495,16 +569,18 @@ export class Orchestrator {
       this.relationship.current().catch(() => null),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
-      this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
+      this.ablation.story !== false && this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
       typeof this.memory.checkProspective === 'function' ? this.memory.checkProspective({ query: userMessage }).catch(() => []) : Promise.resolve([]),
-      this.narration ? this.narration.classify({ userMessage, history: this.history, previousScene: this._lastSceneType, signal: opts.signal }).catch(() => 'daily') : Promise.resolve('daily'),
+      this.ablation.narration !== false && this.narration
+        ? this.narration.classify({ userMessage, history: this.history, previousScene: this._lastSceneType, signal: opts.signal }).catch(() => 'daily')
+        : Promise.resolve('daily'),
     ]);
     const recoverBias =
       emotionDecayOverridesFromConfig(this._config)?.recoverBias ??
       this.stateLayer?.stateLayer?.emotionDecayOverrides?.recoverBias;
     const emotionInferred = inferEmotionLabel(
       { ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} },
-      stateSnapshot?.desires,
+      this.ablation.desire === false ? {} : stateSnapshot?.desires,
       [...this.history.slice(-4), { role: 'user', content: userMessage }],
       {
         previousResidual: this._emotionResidue,
@@ -535,13 +611,24 @@ export class Orchestrator {
             this.stateLayer?.stateLayer?.intimacy?.config ?? PARAMS.intimacy
           )
         : stateSnapshot?.intimacy ?? null;
-    const stateForPrompt = stateSnapshot ? { ...stateSnapshot, intimacy: intimacyLive ?? stateSnapshot.intimacy } : stateSnapshot;
+    const stateForPrompt = stateSnapshot
+      ? {
+          ...stateSnapshot,
+          ...(this.ablation.desire === false ? { desires: null } : {}),
+          intimacy: intimacyLive ?? stateSnapshot.intimacy,
+        }
+      : stateSnapshot;
     const rel = relState?.relationship ?? relState ?? {};
     const relStage = inferRelationshipStage(rel);
     const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual, nowMs);
-    let behavior = behaviorPolicy(emotionLabel, { relationship: rel, ...(opts.behaviorState ?? {}) });
-    behavior = applyStageToBehavior(behavior, relStage);
-    behavior = applyBodyToBehavior(behavior, bodySit);
+    let behavior = behaviorPolicy(
+      this.ablation.behaviorPolicy === false ? '平静' : emotionLabel,
+      { relationship: this.ablation.behaviorPolicy === false ? {} : rel, ...(opts.behaviorState ?? {}) },
+    );
+    if (this.ablation.behaviorPolicy !== false) {
+      behavior = applyStageToBehavior(behavior, relStage);
+      behavior = applyBodyToBehavior(behavior, bodySit);
+    }
     // 场景连贯锁（纯逻辑）：从历史+本轮+亲密阶段推断，注入最高优先级 prompt
     const sceneLocks = detectSceneLocks(userMessage, this.history, intimacyLive?.scene_phase);
     this._lastSceneLocks = sceneLocks;
@@ -560,7 +647,7 @@ export class Orchestrator {
     ].slice(0, 4);
     // 故事 beat：今日 + 未分享的 pending 都可作内容源
     let storyBeat = storySnapshot?.today ?? null;
-    if (!storyBeat && typeof this.story?.pendingShare === 'function') {
+    if (this.ablation.story !== false && !storyBeat && typeof this.story?.pendingShare === 'function') {
       storyBeat = await this.story.pendingShare().catch(() => null);
     }
     // dueItems (如周年纪念日) 一旦被喂进 goals 就标记 fired——checkProspective 的注释写着
@@ -574,8 +661,8 @@ export class Orchestrator {
     }
     const goals = buildConversationGoals({
       dueItems,
-      desires: stateSnapshot?.desires,
-      storyBeat,
+      desires: this.ablation.desire === false ? {} : stateSnapshot?.desires,
+      storyBeat: this.ablation.story === false ? null : storyBeat,
       intimacy: intimacyLive ?? stateSnapshot?.intimacy,
       intimacyPolicy: this.stateLayer?.stateLayer?.intimacy?.config?.proactive,
       unfinished,
@@ -626,7 +713,7 @@ export class Orchestrator {
       bodySit,
       gapHours,
       historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
-      useMonologueDefault: this.options.useMonologue,
+      useMonologueDefault: this.options.useMonologue && this.ablation.monologue !== false,
     });
     // 两阶段：结构化决策（启发式 + 可选便宜模型）
     let structured = planStructuredHeuristic({
@@ -694,7 +781,7 @@ export class Orchestrator {
         now: nowMs,
       }),
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
-      storyPrompt: this.story
+      storyPrompt: this.ablation.story !== false && this.story
         ? this.story.toPrompt(storySnapshot, { forceToday: Boolean(storyBeat) || askAboutDay })
         : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
@@ -732,11 +819,14 @@ export class Orchestrator {
         .filter(Boolean)
         .join('\n\n'),
       goalsPrompt: goalsToPrompt(goals),
-      narrationPrompt: this.narration
-        ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive?.scene_phase)
-        : intimacyLive && ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyLive.scene_phase)
-          ? buildNarrationPrompt(sceneType === 'daily' ? 'intimate' : sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive.scene_phase)
-        : '',
+      narrationPrompt:
+        this.ablation.narration === false
+          ? ''
+          : this.narration
+            ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive?.scene_phase)
+            : intimacyLive && ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyLive.scene_phase)
+              ? buildNarrationPrompt(sceneType === 'daily' ? 'intimate' : sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive.scene_phase)
+              : '',
       replyStylePrompt: buildReplyStylePrompt(this._config?.replyStyle),
     };
 
@@ -766,7 +856,11 @@ export class Orchestrator {
       : Promise.resolve('');
 
     const memoryPromise = this.memory
-      .recall(turn.recallQuery || userMessage, { debug: Boolean(opts.debug) })
+      .recall(turn.recallQuery || userMessage, {
+        debug: Boolean(opts.debug),
+        reconsolidate: this.ablation.reconsolidation !== false,
+        ...(this.ablation.moodGating === false ? { params: { wMood: 0 } } : {}),
+      })
       .catch(() => '');
 
     const [monologue, memoryResult] = await Promise.all([monologuePromise, memoryPromise]);
@@ -776,7 +870,9 @@ export class Orchestrator {
     const recallExplain = explainRecallHits(memoryHits, turn.recallQuery || userMessage);
 
     // E4 触景生情：只扰动本轮展示 emotion，重写 statePrompt 中的情绪段
-    const resonance = resonateFromMemoryHits(memoryHits, stateSnapshot?.emotion);
+    const resonance = this.ablation.moodGating === false
+      ? null
+      : resonateFromMemoryHits(memoryHits, stateSnapshot?.emotion);
     if (resonance && promptBase.statePrompt) {
       const emoShow = applyResonanceToEmotion(stateSnapshot?.emotion || {}, resonance);
       const fused = fuseEmotionPrompt(emoShow, emotionLabel, this._emotionResidue, emotionLabelToPrompt);
@@ -867,6 +963,8 @@ export class Orchestrator {
         gapHours,
         nowMs,
         historyUserMessage,
+        traceStartedAt,
+        traceMetricsBefore,
       });
     }
 
@@ -987,7 +1085,7 @@ export class Orchestrator {
           samplingHints,
         })
       : undefined;
-    return {
+    const result = {
       text: reply,
       parts,
       emotionLabel,
@@ -1006,6 +1104,11 @@ export class Orchestrator {
         : null,
       ...(debug ? { debug } : {}),
     };
+    emitReplyTrace(this, {
+      opts, userMessage: historyUserMessage, result, memoryHits, promptParts, messages,
+      sceneType, stateSnapshot: stateForPrompt, traceStartedAt, traceMetricsBefore,
+    });
+    return result;
   }
 
   /**
@@ -1029,7 +1132,7 @@ export class Orchestrator {
     const {
       userMessage, opts, messages, samplingHints, turn, structured, sceneLocks, stateSnapshot,
       emotionLabel, behavior, goals, intimacyLive, relStage, bodySit, recallExplain, gapHours, nowMs,
-      historyUserMessage = userMessage,
+      historyUserMessage = userMessage, traceStartedAt = Date.now(), traceMetricsBefore = {},
     } = ctx;
     let lastPreview = '';
     let finalParts = [];
@@ -1150,6 +1253,11 @@ export class Orchestrator {
         samplingHints,
       });
     }
+    emitReplyTrace(this, {
+      opts, userMessage: historyUserMessage, result, memoryHits: ctx.memoryHits,
+      promptParts: ctx.promptParts, messages, sceneType: ctx.sceneType,
+      stateSnapshot: ctx.stateForPrompt, traceStartedAt, traceMetricsBefore,
+    });
     yield { event: 'done', ...result };
   }
 
@@ -1273,7 +1381,7 @@ export class Orchestrator {
       this.relationship.current().catch(() => null),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
-      this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
+      this.ablation.story !== false && this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
     ]);
 
     const pack =
@@ -1306,12 +1414,17 @@ export class Orchestrator {
     const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual, nowMs);
     const emotionLabel = inferEmotionLabel(
       { ...(stateSnapshot ?? {}), relationship: rel },
-      stateSnapshot?.desires,
+      this.ablation.desire === false ? {} : stateSnapshot?.desires,
       this.history.slice(-4),
     );
-    let behavior = behaviorPolicy(emotionLabel, { relationship: rel });
-    behavior = applyStageToBehavior(behavior, relStage);
-    behavior = applyBodyToBehavior(behavior, bodySit);
+    let behavior = behaviorPolicy(
+      this.ablation.behaviorPolicy === false ? '平静' : emotionLabel,
+      { relationship: this.ablation.behaviorPolicy === false ? {} : rel },
+    );
+    if (this.ablation.behaviorPolicy !== false) {
+      behavior = applyStageToBehavior(behavior, relStage);
+      behavior = applyBodyToBehavior(behavior, bodySit);
+    }
 
     // 与 reply 同一套 turnPlan（主动消息用内容包 reason 当「用户句」）
     const pseudoUser = String(effCtx.query || effCtx.reason || '想找你聊一句');
@@ -1322,7 +1435,8 @@ export class Orchestrator {
       goals: [{ kind: 'proactive', text: pack.reason, priority: 1 }],
       bodySit,
       historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
-      useMonologueDefault: ctx.useMonologue ?? this.options.useMonologue,
+      useMonologueDefault:
+        (ctx.useMonologue ?? this.options.useMonologue) && this.ablation.monologue !== false,
     });
     // 主动消息默认更短
     turn.partsBudget = Math.min(turn.partsBudget, 2);
@@ -1330,7 +1444,11 @@ export class Orchestrator {
     this._lastTurnPlan = turn;
 
     const seed = turn.recallQuery || effCtx.query || effCtx.reason || '想主动找对方聊一句';
-    const memoryResult = await this.memory.recall(seed, { debug: false }).catch(() => '');
+    const memoryResult = await this.memory.recall(seed, {
+      debug: false,
+      reconsolidate: this.ablation.reconsolidation !== false,
+      ...(this.ablation.moodGating === false ? { params: { wMood: 0 } } : {}),
+    }).catch(() => '');
     const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
 
     const promptParts = {
@@ -1347,7 +1465,7 @@ export class Orchestrator {
         now: nowMs,
       }),
       worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
-      storyPrompt: this.story ? this.story.toPrompt(storySnapshot) : '',
+      storyPrompt: this.ablation.story !== false && this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
       relationshipStagePrompt: relationshipStageToPrompt(relStage, rel),
@@ -1362,7 +1480,11 @@ export class Orchestrator {
           : sessionThreadToPrompt(this._sessionThread),
       turnBriefPrompt: turn.turnBrief || '',
       statePrompt: [
-        this.stateLayer.toPrompt(stateSnapshot) ?? '',
+        this.stateLayer.toPrompt(
+          this.ablation.desire === false && stateSnapshot
+            ? { ...stateSnapshot, desires: null }
+            : stateSnapshot,
+        ) ?? '',
         bodyStateToPrompt(bodySit, stateSnapshot?.intimacy),
         behaviorToPrompt(behavior),
       ]
@@ -1531,6 +1653,11 @@ export class Orchestrator {
     // 夜间后强制刷新常驻槽缓存（画像可能已被 updateUserProfile 更新）
     if (nightly && PARAMS.orchestrator?.residentSlots !== false) {
       results.push(...await Promise.allSettled([this.loadResidentSlots({ force: true })]));
+    }
+    if (nightly && traceRuntimeEnabled()) {
+      results.push(...await Promise.allSettled([
+        Promise.resolve(writeDailyCost(traceDay(now - 24 * 60 * 60 * 1000))),
+      ]));
     }
     for (const r of results) if (r.status === 'rejected') console.error('[maintain]', r.reason);
     return results;

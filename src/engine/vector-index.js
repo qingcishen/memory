@@ -1,3 +1,4 @@
+// @ts-check
 // M2 · 进程内向量索引。单用户 10³~10⁴ 条, brute-force 余弦几毫秒即可,
 // 自建的意义在于把检索"打开"——让 activation.js 的心情/扩散能介入排序,
 // 而不是被 pgvector 的 ORDER BY 锁死。pgvector 退化为"持久化后端"。
@@ -5,7 +6,11 @@
 // 按 modality 分桶 (text / image / audio), 为 M6 多模态预留; 查询可跨桶或限桶。
 // 纯逻辑 (不碰网络), 数据由上层喂进来。
 
-/** 余弦相似度 (假设向量未归一化, 这里现算模长)。 */
+/**
+ * 余弦相似度 (假设向量未归一化, 这里现算模长)。
+ * @param {number[] | null | undefined} a
+ * @param {number[] | null | undefined} b
+ */
 export function cosine(a, b) {
   if (!a || !b || a.length !== b.length) return 0;
   let dot = 0;
@@ -52,8 +57,8 @@ export class VectorIndex {
 
   /**
    * 查询: 返回相似度最高的 k 条记忆 (每条带 similarity)。
-   * @param queryVec 查询向量
-   * @param opts { k, modalities, minSim }
+   * @param {number[]} queryVec 查询向量
+   * @param {{ k?: number, modalities?: string[], minSim?: number }} [opts]
    */
   query(queryVec, opts = {}) {
     const k = opts.k ?? 30;

@@ -1,4 +1,5 @@
 import { llm, LLM_MODEL, PARAMS } from './config.js';
+import { recordLlmCall } from './metrics.js';
 import { normalizeMemory } from './ontology.js';
 
 const EXTRACT_SYSTEM = `你是一个记忆提取器, 服务于一个 AI 伴侣。
@@ -55,6 +56,7 @@ export async function extractMemories(turns, subjectName = '用户', companionNa
       { role: 'user', content: `对方名字: ${subjectName}\n伴侣名字: ${companionName}\n\n对话:\n${transcript}` },
     ],
   });
+  recordLlmCall('extract', res.usage);
 
   let parsed;
   try {

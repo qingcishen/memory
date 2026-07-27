@@ -12,6 +12,8 @@ import { scoreActivation } from './activation.js';
 import { attachSpread } from './graph.js';
 import { VectorIndex } from './vector-index.js';
 import { filterBySubject } from '../persona.js';
+import { setMemoryHits } from '../trace.js';
+import { reciprocalRankFusion } from '../retrieve.js';
 
 /**
  * 纯逻辑排序: 候选 → 联想扩散 → 激活打分(含心情门控) → 降序。
@@ -36,13 +38,33 @@ export async function engineRecall(userId, companionId = 'default', query, state
   const pool = opts.pool ?? PARAMS.candidatePool;
 
   const queryEmbedding = await embed(query);
-  const { data: candidates, error } = await supabase.rpc('match_memories', {
+  const vectorRequest = supabase.rpc('match_memories', {
     p_user_id: userId,
     p_companion_id: companionId,
     query_embedding: queryEmbedding,
     match_count: pool,
   });
-  if (error) throw error;
+  let candidates;
+  if (opts.hybrid ?? PARAMS.retrieval?.hybrid) {
+    const [vectorResult, keywordResult] = await Promise.all([
+      vectorRequest,
+      supabase.rpc('match_memories_keyword', {
+        p_user_id: userId,
+        p_companion_id: companionId,
+        query_text: query,
+        match_count: pool,
+      }).catch(() => ({ data: [] })),
+    ]);
+    if (vectorResult.error) throw vectorResult.error;
+    candidates = reciprocalRankFusion(
+      [vectorResult.data ?? [], keywordResult?.error ? [] : keywordResult?.data ?? []],
+      PARAMS.retrieval?.rrfK,
+    );
+  } else {
+    const result = await vectorRequest;
+    if (result.error) throw result.error;
+    candidates = result.data;
+  }
   if (!candidates || candidates.length === 0) return [];
 
   // pgvector 经 supabase-js 回来的 embedding 是字符串 "[...]", 解析成 number[] 供扩散建图。
@@ -62,6 +84,7 @@ export async function engineRecall(userId, companionId = 'default', query, state
 
   const ranked = rankCandidates(normalized, state ?? {}, { ...opts, params, topicEmbedding }).slice(0, topK);
 
+  setMemoryHits(ranked);
   await reinforce(ranked);
   return ranked;
 }

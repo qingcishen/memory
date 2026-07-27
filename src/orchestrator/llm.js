@@ -5,9 +5,20 @@
 
 import { llm, replyLlm, narrationLlm, LLM_MODEL, REPLY_MODEL, REPLY_REASONING_EFFORT, NARRATION_MODEL } from '../config.js';
 import { recordLlmCall } from '../metrics.js';
+import { appendLlmCall } from '../trace.js';
 import { INTIMATE_REPLY_STYLE_LOCK, humanizeReplyParts } from './humanizeReply.js';
 
 const REPLY_PART_TYPES = ['dialogue', 'narration'];
+
+function traceLlmCall(stage, model, startedAt, usage) {
+  appendLlmCall({
+    stage,
+    model,
+    promptTokens: usage?.prompt_tokens ?? usage?.input_tokens ?? 0,
+    completionTokens: usage?.completion_tokens ?? usage?.output_tokens ?? 0,
+    latencyMs: Math.max(0, Date.now() - startedAt),
+  });
+}
 
 const REPLY_JSON_INSTRUCTION = `【输出格式·JSON】必须只输出一个 JSON 对象，不要 markdown 代码块，不要 JSON 以外的任何文字。格式: {"parts": [{"type": "dialogue" 或 "narration", "text": "..."}]}。
 parts 至少有一个 dialogue part。dialogue = 她嘴里说的话；narration = 极短第三人称动作（只写她侧）。两者不能混 part。
@@ -113,6 +124,7 @@ export async function rewriteNarrationParts(parts, messages, { client = narratio
   if (narrationIndexes.length === 0) return source;
   if (!model) return humanizeReplyParts(source, { intimacyPhase: 'peak' });
   try {
+    const startedAt = Date.now();
     const res = await client.chat.completions.create({
       model,
       temperature: 0.55,
@@ -130,6 +142,7 @@ export async function rewriteNarrationParts(parts, messages, { client = narratio
       ],
     }, { signal });
     recordLlmCall('narration', res.usage);
+    traceLlmCall('narration', model, startedAt, res.usage);
     const parsed = JSON.parse(res.choices?.[0]?.message?.content || '{}');
     if (!Array.isArray(parsed.narrations) || parsed.narrations.length !== narrationIndexes.length) {
       return humanizeReplyParts(source, { intimacyPhase: 'peak' });
@@ -151,6 +164,7 @@ export class DefaultLLM {
     const format = opts.format === 'plain' ? 'plain' : 'json';
     const payload = buildReplyPayload(messages, { ...opts, format });
     let res;
+    let startedAt = Date.now();
     if (format === 'json') {
       try {
         res = await replyLlm.chat.completions.create({ ...payload, response_format: { type: 'json_object' } }, { signal: opts.signal });
@@ -162,11 +176,14 @@ export class DefaultLLM {
       res = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
     }
     recordLlmCall('reply', res.usage);
+    traceLlmCall('reply', payload.model, startedAt, res.usage);
     let content = res.choices[0].message.content;
     // DeepSeek 在 json_object 模式下偶发返回空 content (官方文档已知问题)。
     if (!content || !String(content).trim()) {
+      startedAt = Date.now();
       res = await replyLlm.chat.completions.create(payload, { signal: opts.signal });
       recordLlmCall('reply', res.usage);
+      traceLlmCall('reply', payload.model, startedAt, res.usage);
       content = res.choices[0].message.content;
     }
     let parts = format === 'plain' ? [dialoguePart(content)] : parseReplyParts(content);
@@ -187,8 +204,14 @@ export class DefaultLLM {
    */
   async *generateReplyStream(messages, opts = {}) {
     const format = opts.format === 'plain' ? 'plain' : 'json';
-    const payload = { ...buildReplyPayload(messages, { ...opts, format }), stream: true };
+    const payload = {
+      ...buildReplyPayload(messages, { ...opts, format }),
+      stream: true,
+      stream_options: { include_usage: true },
+    };
     let raw = '';
+    const startedAt = Date.now();
+    let streamUsage;
     try {
       let stream;
       if (format === 'json') {
@@ -206,6 +229,7 @@ export class DefaultLLM {
       }
 
       for await (const chunk of stream) {
+        if (chunk?.usage) streamUsage = chunk.usage;
         const delta = chunk?.choices?.[0]?.delta?.content ?? chunk?.choices?.[0]?.text ?? '';
         if (!delta) continue;
         raw += delta;
@@ -214,7 +238,8 @@ export class DefaultLLM {
           format === 'plain' ? raw.trim() : extractStreamingDialoguePreview(raw);
         if (preview) yield { event: 'preview', text: preview, format };
       }
-      recordLlmCall('reply', undefined);
+      recordLlmCall('reply', streamUsage);
+      traceLlmCall('reply', payload.model, startedAt, streamUsage);
     } catch {
       const full = await this.generateReply(messages, { ...opts, stream: false, format });
       const text = joinReplyParts(full.parts);
@@ -241,8 +266,10 @@ export class DefaultLLM {
   /** 生成不展示的内心独白 (便宜模型)。串行 await 在正式回复之前, 加 max_tokens 上限防止
    *  模型话痨拖长这一步的生成时间——独白本来就只要一两句话 (见 PARAMS.orchestrator.monologueMaxTokens)。 */
   async think(context, opts = {}) {
+    const startedAt = Date.now();
+    const model = opts.model ?? LLM_MODEL;
     const res = await llm.chat.completions.create({
-      model: opts.model ?? LLM_MODEL,
+      model,
       temperature: opts.temperature ?? 0.7,
       ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
       messages: [
@@ -251,6 +278,7 @@ export class DefaultLLM {
       ],
     }, { signal: opts.signal });
     recordLlmCall('think', res.usage);
+    traceLlmCall('monologue', model, startedAt, res.usage);
     return res.choices[0].message.content;
   }
 }

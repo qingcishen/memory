@@ -6,6 +6,7 @@
 -- ============================================================
 
 create extension if not exists vector;
+create extension if not exists pg_trgm;
 
 create table if not exists memories (
   id            uuid primary key default gen_random_uuid(),
@@ -505,6 +506,36 @@ as $$
     and m.superseded_by is null
     and m.embedding is not null
   order by m.embedding <=> query_embedding
+  limit match_count;
+$$;
+
+-- 关键词召回与向量召回在应用层用 RRF 融合。RPC 不可用时应用层自动退化为纯向量。
+create index if not exists memories_content_trgm_idx
+  on memories using gin (content gin_trgm_ops);
+
+create or replace function match_memories_keyword (
+  p_user_id       text,
+  query_text      text,
+  p_companion_id  text default 'default',
+  match_count     int default 30
+)
+returns table (
+  id uuid, type text, content text, fact_core text, affect_valence real,
+  affect_intensity real, narrative text, subject_kind text, fact_locked boolean,
+  importance real, emotion real, created_at timestamptz, last_accessed timestamptz,
+  access_count int, access_log jsonb, affect_origin_valence real,
+  affect_origin_intensity real, embedding vector(1536), keyword_similarity real
+)
+language sql stable
+as $$
+  select m.id, m.type, m.content, m.fact_core, m.affect_valence, m.affect_intensity,
+    m.narrative, m.subject_kind, m.fact_locked, m.importance, m.emotion, m.created_at,
+    m.last_accessed, m.access_count, m.access_log, m.affect_origin_valence,
+    m.affect_origin_intensity, m.embedding, similarity(m.content, query_text)::real
+  from memories m
+  where m.user_id = p_user_id and m.companion_id = p_companion_id
+    and m.superseded_by is null and m.content % query_text
+  order by similarity(m.content, query_text) desc
   limit match_count;
 $$;
 

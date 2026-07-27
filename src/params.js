@@ -22,6 +22,37 @@ export const DEFAULT_PARAMS = {
   // 低于这个重要性的提取结果直接丢弃
   minImportance: 3,
 
+  // 数据不足，forgetRate/importance 权重暂沿用默认；由 F3 脚本在 r² 达标后给出替换建议。
+  trace: {
+    enabled: true,
+    dailyBudgetUsd: 2,
+    pricing: {
+      default: { inputPerMillion: 0.14, outputPerMillion: 0.28 },
+      'deepseek-chat': { inputPerMillion: 0.14, outputPerMillion: 0.28 },
+    },
+  },
+  retrieval: {
+    hybrid: false,
+    rrfK: 60,
+    // 保持 v2 线上默认：activation；E1 三方实测后才允许改默认。
+    reranker: 'activation',
+    llm: {
+      maxCandidates: 20,
+      maxTokens: 400,
+      heuristicWeight: 0.35,
+      llmWeight: 0.65,
+    },
+  },
+  ablation: {
+    monologue: true,
+    moodGating: true,
+    reconsolidation: true,
+    behaviorPolicy: true,
+    narration: true,
+    story: true,
+    desire: true,
+  },
+
   // ---- M1 关系-情感状态机 ----
   state: {
     // 各字段随时间向基线回落的半衰期 (小时)。心情是瞬时的, 关系是黏着的。

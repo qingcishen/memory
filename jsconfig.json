@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "NodeNext",
+    "moduleResolution": "NodeNext",
+    "allowJs": true,
+    "checkJs": false,
+    "noEmit": true,
+    "strict": false,
+    "skipLibCheck": true
+  },
+  "include": ["src/**/*.js", "bench/**/*.js", "scripts/**/*.js", "test/**/*.js"],
+  "exclude": ["node_modules", "src/ui/dist"]
+}
