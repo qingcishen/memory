@@ -1,7 +1,12 @@
 import { createClient } from '@supabase/supabase-js';
 import OpenAI from 'openai';
+import Anthropic from '@anthropic-ai/sdk';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import dotenv from 'dotenv';
+import {
+  createAnthropicChatAdapter,
+  isAnthropicApiKey,
+} from './providers/anthropicChatAdapter.js';
 dotenv.config();
 
 export { PARAMS } from './params.js';
@@ -30,16 +35,24 @@ export const REPLY_PROXY_URL = process.env.REPLY_PROXY_URL || '';
 export const REPLY_REASONING_EFFORT =
   process.env.REPLY_REASONING_EFFORT === '' ? '' : process.env.REPLY_REASONING_EFFORT || 'low';
 const replyHttpAgent = REPLY_PROXY_URL ? new HttpsProxyAgent(REPLY_PROXY_URL) : undefined;
+const replyApiKey = process.env.REPLY_API_KEY || process.env.LLM_API_KEY || 'placeholder';
+const replyBaseURL = process.env.REPLY_BASE_URL || process.env.LLM_BASE_URL || 'https://api.deepseek.com';
 
 // ---- 回复模型独立供应商 (可选) ----
 // 路线图约定"回复用好模型, 后台杂活用便宜模型"。REPLY_BASE_URL / REPLY_API_KEY
 // 任配其一即启用独立客户端 (缺的一项回退主 LLM 的对应值); 都不配则复用主 LLM 客户端,
 // 此时 REPLY_MODEL 只是同一供应商下换个模型名 —— 与旧行为完全一致。
 export const replyLlm =
-  process.env.REPLY_BASE_URL || process.env.REPLY_API_KEY
+  isAnthropicApiKey(replyApiKey)
+    ? createAnthropicChatAdapter(new Anthropic({
+        apiKey: replyApiKey,
+        ...(process.env.REPLY_BASE_URL ? { baseURL: process.env.REPLY_BASE_URL } : {}),
+        ...(replyHttpAgent ? { httpAgent: replyHttpAgent } : {}),
+      }))
+    : process.env.REPLY_BASE_URL || process.env.REPLY_API_KEY
     ? new OpenAI({
-        apiKey: process.env.REPLY_API_KEY || process.env.LLM_API_KEY || 'placeholder',
-        baseURL: process.env.REPLY_BASE_URL || process.env.LLM_BASE_URL || 'https://api.deepseek.com',
+        apiKey: replyApiKey,
+        baseURL: replyBaseURL,
         ...(replyHttpAgent ? { httpAgent: replyHttpAgent } : {}),
       })
     : replyHttpAgent

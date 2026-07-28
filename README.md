@@ -32,7 +32,7 @@ cp .env.example .env   # 填入 Supabase / LLM / Embedding 凭证
 
 只补知识图谱数据库时,可单独执行 `sql/knowledge-graph.sql`;它会创建实体表、关系表、遍历索引和 `match_knowledge_entities` 入口查询函数,可重复执行。
 
-LLM 用 OpenAI 兼容接口,DeepSeek 直接可用;Embedding 默认 OpenAI `text-embedding-3-small`(1536 维)。换 embedding 模型记得同步改 schema 里的 `vector(维度)`。回复模型可走**独立供应商**(`REPLY_BASE_URL` / `REPLY_API_KEY`,如 OpenRouter 上的更强模型)——"回复用好模型,提取/反思等后台杂活用便宜模型";不配置则回复与后台共用同一端点。
+LLM 用 OpenAI 兼容接口,DeepSeek 直接可用;Embedding 默认 OpenAI `text-embedding-3-small`(1536 维)。换 embedding 模型记得同步改 schema 里的 `vector(维度)`。回复模型可走**独立供应商**(`REPLY_BASE_URL` / `REPLY_API_KEY`)——`REPLY_API_KEY` 为 `sk-ant-…` 时自动使用 Anthropic Messages API，其余供应商走 OpenAI-compatible 接口。"回复用好模型,提取/反思等后台杂活用便宜模型";不配置则回复与后台共用同一端点。
 
 ## 用法
 
