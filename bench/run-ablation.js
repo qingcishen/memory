@@ -14,8 +14,9 @@ export const ABLATION_FLAGS = ['monologue', 'moodGating', 'reconsolidation', 'be
 const NOISE = 0.5;
 
 export function buildReport({ baseline, rows, noise = NOISE, note = '' }) {
-  const unproven = rows.filter((row) => row.conclusion !== '保留').map((row) => row.flag);
-  return [
+  const harmful = rows.filter((row) => row.conclusion === '有害,删除').map((row) => row.flag);
+  const unproven = rows.filter((row) => row.conclusion === '无法证明增益').map((row) => row.flag);
+  const lines = [
     '# v3 消融报告',
     '',
     `> 真实管线 + LLM judge。基线 (全开) overall = ${baseline.overall.toFixed(2)}/5, judge 噪声阈值 ±${noise}。${note}`,
@@ -24,11 +25,12 @@ export function buildReport({ baseline, rows, noise = NOISE, note = '' }) {
     '|---|---:|---:|---:|---:|---|',
     ...rows.map((row) => `| ${row.flag} | ${baseline.overall.toFixed(2)} | ${row.overall.toFixed(2)} | ${row.delta >= 0 ? '+' : ''}${row.delta.toFixed(2)} | $${row.costDeltaPerScenario.toFixed(4)} | ${row.conclusion} |`),
     '',
-    unproven.length
-      ? `删除/重构名单 (|Δ| ≤ ${noise}, 数据无法证明增益): ${unproven.join(', ')}。按 v3 红线, 保留它们的唯一途径是补充能证明其价值的剧本进 E2 后重跑本报告。`
-      : '全部机制的增益均超过噪声阈值, 无删除名单。',
-    '',
-  ].join('\n');
+  ];
+  if (harmful.length) lines.push(`**立即删除** (关闭后分数显著提升 > ${noise}): ${harmful.join(', ')}。`);
+  if (unproven.length) lines.push(`**无法证明增益** (|Δ| ≤ ${noise}): ${unproven.join(', ')}。按 v3 红线, 保留唯一途径是补充能证明其价值的剧本进 E2 后重跑。`);
+  if (!harmful.length && !unproven.length) lines.push('全部机制的增益均超过噪声阈值, 无删除名单。');
+  lines.push('');
+  return lines.join('\n');
 }
 
 export async function main() {
