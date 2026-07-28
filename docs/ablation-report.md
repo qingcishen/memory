@@ -14,3 +14,7 @@
 
 **立即删除** (关闭后分数显著提升 > 0.5): monologue, behaviorPolicy。
 **无法证明增益** (|Δ| ≤ 0.5): moodGating, reconsolidation, narration, story, desire。按 v3 红线, 保留唯一途径是补充能证明其价值的剧本进 E2 后重跑。
+
+---
+
+> **T-01 重跑（进行中）**：monologue + behaviorPolicy 已从代码中禁用（commit `c25420e`）。新 E3 基线将只剩 5 个机制消融，预期基线 ≈ 3.49/5（即原结果中两个机制关闭后的得分）。结果写入时本节将自动更新。

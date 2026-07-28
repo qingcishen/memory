@@ -25,6 +25,8 @@ build/
 .cache/
 .turbo/
 
+data/models/
+
 .DS_Store
 .FsSyncLocks/
 .claude/settings.local.json
