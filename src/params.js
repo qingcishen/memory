@@ -51,7 +51,9 @@ export const DEFAULT_PARAMS = {
     moodGating: true,
     reconsolidation: true,
     behaviorPolicy: false, // E3 2026-07-28: Δ -0.51, 有害删除
-    narration: true,
+    narration: true,       // 兼容旧配置；新实验使用下面两个独立 flag
+    narrationPrompt: true,
+    narrationClassifier: true,
     story: true,
     desire: true,
     evidenceBudget: true,

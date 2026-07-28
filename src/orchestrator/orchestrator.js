@@ -85,6 +85,7 @@ import {
 } from '../trace.js';
 import { commitValidatedReply, createTurnEventId } from './turnCommit.js';
 import { createTurnContext, runTurnStage, summarizePipeline } from './turnPipeline.js';
+import { normalizeAblationFlags } from './ablation.js';
 import { perceiveTurn } from './perceive.js';
 import { interpretTurn } from './interpret.js';
 import { emptyEvidencePack, retrieveTurn } from './retrieveStage.js';
@@ -196,7 +197,7 @@ export class Orchestrator {
       place: '武汉',
       ...options,
     };
-    this.ablation = { ...(PARAMS.ablation ?? {}), ...(options.ablation ?? {}) };
+    this.ablation = normalizeAblationFlags(PARAMS.ablation, options.ablation);
     // 单一现实钟：回复时间、生活状态、跨会话间隔全部从同一个 now() 读取。
     // 测试可注入固定时刻；生产默认与用户所在现实世界等速前进。
     this.now = typeof deps.now === 'function' ? deps.now : () => Date.now();
@@ -609,7 +610,7 @@ export class Orchestrator {
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
       this.ablation.story !== false && this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
       typeof this.memory.checkProspective === 'function' ? this.memory.checkProspective({ query: userMessage }).catch(() => []) : Promise.resolve([]),
-      this.ablation.narration !== false && this.narration
+      this.ablation.narrationClassifier !== false && this.narration
         ? this.narration.classify({ userMessage, history: this.history, previousScene: this._lastSceneType, signal: opts.signal }).catch(() => 'daily')
         : Promise.resolve('daily'),
     ]);
@@ -809,7 +810,7 @@ export class Orchestrator {
         .join('\n\n'),
       goalsPrompt: goalsToPrompt(goals),
       narrationPrompt:
-        this.ablation.narration === false
+        this.ablation.narrationPrompt === false
           ? ''
           : this.narration
             ? buildNarrationPrompt(sceneType, this._config?.narrationDirectives, emotionLabel, intimacyLive?.scene_phase)

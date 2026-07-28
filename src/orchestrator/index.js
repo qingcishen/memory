@@ -10,6 +10,7 @@ export {
   isWriteStage,
 } from './turnPipeline.js';
 export { commitValidatedReply, createTurnEventId } from './turnCommit.js';
+export { normalizeAblationFlags } from './ablation.js';
 export { perceiveTurn, maxKnownGap } from './perceive.js';
 export { interpretTurn } from './interpret.js';
 export { retrieveTurn, emptyEvidencePack } from './retrieveStage.js';
