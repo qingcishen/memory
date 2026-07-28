@@ -14,6 +14,14 @@ export { perceiveTurn, maxKnownGap } from './perceive.js';
 export { interpretTurn } from './interpret.js';
 export { retrieveTurn, emptyEvidencePack } from './retrieveStage.js';
 export { deliberateTurn, planRetrievalTurn } from './deliberate.js';
+export {
+  decideActionUtility,
+  buildActionCandidates,
+  scoreActionCandidate,
+  replayActionDecision,
+  compareActionWeightSets,
+  normalizeUtilityWeights,
+} from './actionUtility.js';
 export { composeTurn, compositionFromStream } from './composeStage.js';
 export { validateTurn } from './validateStage.js';
 export {

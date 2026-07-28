@@ -62,6 +62,20 @@ trace 保存：
 `ablation.utilityDecision=false` 恢复旧的 goal priority 结果。由于 v1 是 shadow mode，
 开关本身不应改变生成回复；它用于验证候选排序与 judge 标签的相关性。
 
+## 离线反事实重放
+
+`replayActionDecision(trace.actionDecision, { weights })` 只使用 trace 中已公开的候选分量
+重新评分，不执行 Retrieve、Compose，也不调用 LLM。
+
+`compareActionWeightSets(snapshots, weightSets)` 可一次比较多个命名权重集，返回：
+
+- 每组 top-1 action 分布；
+- 相对原选择的 changed 数量；
+- 每轮完整重放结果。
+
+权重只接受已声明的九个分量，数值限制在 `[-2, 2]`；未知键被忽略。安全候选的硬优先级
+和 `cannot_initiate` 可行性不会因权重覆盖而失效。
+
 ## 升级条件
 
 在正式接管 structured plan 前至少满足：

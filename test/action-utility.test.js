@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildActionCandidates,
+  compareActionWeightSets,
   decideActionUtility,
+  normalizeUtilityWeights,
+  replayActionDecision,
   scoreActionCandidate,
 } from '../src/orchestrator/actionUtility.js';
 
@@ -41,5 +44,31 @@ describe('action utility decision', () => {
       goals: [{ kind: 'prospective', priority: 1, sourceId: 'p1' }],
     };
     expect(decideActionUtility(input)).toEqual(decideActionUtility(input));
+  });
+
+  it('replays trace candidates with alternate weights without an LLM call', () => {
+    const original = decideActionUtility({
+      userMessage: '最近怎么样',
+      goals: [{ kind: 'story', priority: 0.8 }],
+    });
+    const replay = replayActionDecision(original, {
+      weights: { interruptionCost: -2, continuity: 0 },
+    });
+    expect(replay.replay).toBe(true);
+    expect(replay.candidates).toHaveLength(original.candidates.length);
+    expect(replay.weights.interruptionCost).toBe(-2);
+  });
+
+  it('compares named weight sets and clamps unsafe numeric ranges', () => {
+    const snapshot = decideActionUtility({
+      goals: [{ kind: 'desire', priority: 0.7 }],
+    });
+    const comparison = compareActionWeightSets([snapshot], {
+      baseline: {},
+      needHeavy: { needSatisfaction: 1.5 },
+    });
+    expect(comparison.baseline.total).toBe(1);
+    expect(comparison.needHeavy.selectedCounts).toBeTruthy();
+    expect(normalizeUtilityWeights({ safetyRisk: -99 }).safetyRisk).toBe(-2);
   });
 });

@@ -15,7 +15,9 @@ const WEIGHTS = Object.freeze({
  * 不直接改写 structured plan。
  */
 export function decideActionUtility(input = {}) {
-  const candidates = buildActionCandidates(input).map(scoreActionCandidate);
+  const weights = normalizeUtilityWeights(input.weights);
+  const candidates = buildActionCandidates(input).map((candidate) =>
+    scoreActionCandidate(candidate, { weights }));
   const feasible = candidates.filter((candidate) => candidate.feasible);
   const selected = [...feasible].sort(compareCandidates)[0] ?? candidates[0] ?? null;
   return {
@@ -25,11 +27,11 @@ export function decideActionUtility(input = {}) {
     rationaleCodes: selected
       ? [
           `action:${selected.intent}`,
-          ...dominantComponents(selected.components).map((name) => `utility:${name}`),
+          ...dominantComponents(selected.components, weights).map((name) => `utility:${name}`),
           ...selected.constraints.map((constraint) => `constraint:${constraint}`),
         ]
       : ['action:respond'],
-    weights: WEIGHTS,
+    weights,
     shadow: input.shadow !== false,
   };
 }
@@ -94,12 +96,13 @@ export function buildActionCandidates(input = {}) {
   return candidates;
 }
 
-export function scoreActionCandidate(candidate = {}) {
+export function scoreActionCandidate(candidate = {}, { weights = WEIGHTS } = {}) {
+  weights = normalizeUtilityWeights(weights);
   const components = Object.fromEntries(
     Object.entries(candidate.components ?? {}).map(([key, value]) => [key, clamp01(value)]),
   );
   const feasible = !(candidate.constraints ?? []).includes('cannot_initiate');
-  const rawUtility = Object.entries(WEIGHTS).reduce(
+  const rawUtility = Object.entries(weights).reduce(
     (sum, [name, weight]) => sum + (components[name] ?? 0) * weight,
     0,
   );
@@ -115,6 +118,65 @@ export function scoreActionCandidate(candidate = {}) {
     feasible,
     utility: Number.isFinite(utility) ? round(utility) : null,
   };
+}
+
+/**
+ * 对持久 trace 中的公开候选重新打分，不需要重新 Retrieve、Compose 或调用 LLM。
+ */
+export function replayActionDecision(snapshot = {}, options = {}) {
+  const weights = normalizeUtilityWeights(options.weights);
+  const candidates = (snapshot.candidates ?? []).map((candidate) =>
+    scoreActionCandidate(
+      {
+        ...candidate,
+        hardPriority:
+          candidate.hardPriority ??
+          Number((candidate.constraints ?? []).includes('safety_override')),
+      },
+      { weights },
+    ));
+  const selected =
+    [...candidates].filter((candidate) => candidate.feasible).sort(compareCandidates)[0] ??
+    candidates[0] ??
+    null;
+  return {
+    selectedAction: selected?.intent ?? 'respond',
+    selectedCandidateId: selected?.id ?? 'respond',
+    previousSelectedAction: snapshot.selectedAction ?? null,
+    changed: Boolean(
+      snapshot.selectedAction && snapshot.selectedAction !== (selected?.intent ?? 'respond'),
+    ),
+    candidates,
+    weights,
+    replay: true,
+  };
+}
+
+export function compareActionWeightSets(snapshots = [], weightSets = {}) {
+  return Object.fromEntries(
+    Object.entries(weightSets).map(([name, weights]) => {
+      const replays = snapshots.map((snapshot) =>
+        replayActionDecision(snapshot, { weights }));
+      return [
+        name,
+        {
+          total: replays.length,
+          changed: replays.filter((replay) => replay.changed).length,
+          selectedCounts: countBy(replays.map((replay) => replay.selectedAction)),
+          replays,
+        },
+      ];
+    }),
+  );
+}
+
+export function normalizeUtilityWeights(overrides = {}) {
+  return Object.fromEntries(
+    Object.entries(WEIGHTS).map(([name, fallback]) => {
+      const value = Number(overrides?.[name]);
+      return [name, Number.isFinite(value) ? Math.max(-2, Math.min(2, value)) : fallback];
+    }),
+  );
 }
 
 function compareCandidates(a, b) {
@@ -168,12 +230,19 @@ function repetition(recent, intent) {
   return clamp01(count / 2);
 }
 
-function dominantComponents(components) {
+function dominantComponents(components, weights = WEIGHTS) {
   return Object.entries(components)
-    .filter(([name]) => WEIGHTS[name] > 0)
-    .sort((a, b) => b[1] * WEIGHTS[b[0]] - a[1] * WEIGHTS[a[0]])
+    .filter(([name]) => weights[name] > 0)
+    .sort((a, b) => b[1] * weights[b[0]] - a[1] * weights[a[0]])
     .slice(0, 2)
     .map(([name]) => name);
+}
+
+function countBy(values) {
+  return values.reduce((counts, value) => {
+    counts[value] = (counts[value] ?? 0) + 1;
+    return counts;
+  }, {});
 }
 
 function clamp01(value) {
