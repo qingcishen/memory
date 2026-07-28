@@ -100,9 +100,14 @@ describe('orchestrator trace integration', () => {
           'validate',
           'commit',
         ]);
-        expect(row.evidenceSummary.hitCount).toBe(1);
-        expect(row.rationaleCodes).toBeInstanceOf(Array);
-        expect(row.validationChecks.length).toBeGreaterThan(0);
+        expect(row.interpretEmotion.label).toBeTruthy();
+        expect(row.evidenceSummary.memoryHitCount).toBe(1);
+        expect(row.evidenceSummary.beliefCount).toBe(0);
+        expect(row.deliberateRationaleCodes).toBeInstanceOf(Array);
+        expect(row.ablationFlags).toMatchObject({
+          monologue: false,
+          behaviorPolicy: false,
+        });
       }
     } finally {
       if (previous.dir == null) delete process.env.TRACE_DIR;

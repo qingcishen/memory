@@ -198,11 +198,16 @@ export function summarizePipeline(context) {
     executionOrder: [...(context?.executionOrder ?? [])],
     commitStatus:
       context?.commit?.status ?? context?.stageResults?.commit?.status ?? 'skipped',
-    evidence: {
-      hitCount: context?.evidence?.budget?.hitCount ?? 0,
-      provenanceCount: context?.evidence?.provenance?.length ?? 0,
+    interpretEmotion: {
+      label: context?.interpretation?.emotion?.label ?? null,
+      confidence: context?.interpretation?.emotion?.confidence ?? null,
     },
-    rationaleCodes: [...(context?.decision?.rationaleCodes ?? [])],
+    evidenceSummary: {
+      memoryHitCount: context?.evidence?.memoryHits?.length ?? 0,
+      beliefCount: context?.evidence?.beliefs?.length ?? 0,
+    },
+    deliberateRationaleCodes: [...(context?.decision?.rationaleCodes ?? [])],
+    ablationFlags: { ...(context?.options?.ablation ?? {}) },
     validationChecks: (context?.validation?.checks ?? []).map((check) => ({
       id: check.id,
       passed: Boolean(check.passed),

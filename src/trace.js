@@ -85,15 +85,21 @@ export function normalizeReplyTrace(input = {}) {
     executionOrder: Array.isArray(input.executionOrder)
       ? input.executionOrder.map(String)
       : [],
-    evidenceSummary: input.evidenceSummary ?? { hitCount: 0, provenanceCount: 0 },
-    rationaleCodes: Array.isArray(input.rationaleCodes)
-      ? input.rationaleCodes.map(String)
+    interpretEmotion: {
+      label: input.interpretEmotion?.label ?? null,
+      confidence: input.interpretEmotion?.confidence != null &&
+        Number.isFinite(Number(input.interpretEmotion.confidence))
+        ? Number(input.interpretEmotion.confidence)
+        : null,
+    },
+    evidenceSummary: {
+      memoryHitCount: Number(input.evidenceSummary?.memoryHitCount ?? 0) || 0,
+      beliefCount: Number(input.evidenceSummary?.beliefCount ?? 0) || 0,
+    },
+    deliberateRationaleCodes: Array.isArray(input.deliberateRationaleCodes)
+      ? input.deliberateRationaleCodes.map(String)
       : [],
-    validationChecks: (input.validationChecks ?? []).map((check) => ({
-      id: String(check.id ?? ''),
-      passed: Boolean(check.passed),
-      reasons: Array.isArray(check.reasons) ? check.reasons.map(String) : [],
-    })),
+    ablationFlags: { ...(input.ablationFlags ?? {}) },
   };
 }
 

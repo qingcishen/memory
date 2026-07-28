@@ -121,6 +121,12 @@ export function interpretTurn(input = {}) {
     bodySituation,
     emotion: {
       label: emotionLabel,
+      confidence:
+        typeof emotionInferred === 'object' &&
+        emotionInferred.confidence != null &&
+        Number.isFinite(Number(emotionInferred.confidence))
+          ? Number(emotionInferred.confidence)
+          : null,
       residual: typeof emotionInferred === 'object' ? emotionInferred.residual ?? null : null,
     },
     emotionInferred,

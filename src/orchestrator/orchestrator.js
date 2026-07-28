@@ -159,9 +159,10 @@ function emitReplyTrace(orchestrator, {
       stages: result.pipeline?.stages ?? [],
       executionOrder: result.pipeline?.executionOrder ?? [],
       commitStatus: result.pipeline?.commitStatus ?? null,
-      evidenceSummary: result.pipeline?.evidence ?? null,
-      rationaleCodes: result.pipeline?.rationaleCodes ?? [],
-      validationChecks: result.pipeline?.validationChecks ?? [],
+      interpretEmotion: result.pipeline?.interpretEmotion ?? null,
+      evidenceSummary: result.pipeline?.evidenceSummary ?? null,
+      deliberateRationaleCodes: result.pipeline?.deliberateRationaleCodes ?? [],
+      ablationFlags: result.pipeline?.ablationFlags ?? {},
     });
   } catch {}
 }
@@ -563,7 +564,10 @@ export class Orchestrator {
       historyUserMessage: opts.historyUserMessage ?? userMessage,
       startedAt: traceStartedAt,
       now: nowMs,
-      options: opts,
+      options: {
+        ...opts,
+        ablation: { ...this.ablation },
+      },
     });
     // 先读持久历史的真实时间，再做任何情绪/场景判断。过去只看进程内时间，重启后会把
     // 几小时前加载回来的旧饭局当成“刚刚”，造成角色时间冻结。
