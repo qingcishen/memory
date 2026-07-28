@@ -46,3 +46,4 @@
 | 2026-07-28 | memory-v3 activation-hybrid | live | 0.88 | 1.00 | 1.00 | R2候选(最优MRR) / $0.0174 / runTag=ms4545os |
 | 2026-07-28 | ablation-v3 E3第一次 | live | 2.99 | — | — | 全机制基线 / $0.2823 / monologue+behaviorPolicy 有害已删 |
 | 2026-07-28 | ablation-v3 E3重跑 | live | 3.30 | — | — | 删有害机制后新基线 / $0.3205 / naturalness=2.90 / narration弱有害(-0.31) |
+| 2026-07-28 | ablation-v3 narrationPrompt | live | 3.21 | — | — | narrationPrompt 单独消融 / $0.0796 / off=3.42 Δ=-0.21 / 无法证明增益 |
