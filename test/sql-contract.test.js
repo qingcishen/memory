@@ -10,6 +10,9 @@ describe('SQL migration contract parity', () => {
     for (const sql of [schemaSql, beliefSql]) {
       expect(sql).toContain('constraint beliefs_valid_interval_check');
       expect(sql).toContain('valid_to > valid_from');
+      expect(sql).toContain('function forget_memory_beliefs(');
+      expect(sql).toContain('delete from belief_evidence');
+      expect(sql).toContain('delete from beliefs');
     }
   });
 

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import { BeliefRepository } from '../src/belief/index.js';
 
 function queryClient(rows = []) {
@@ -50,5 +50,26 @@ describe('belief repository temporal queries', () => {
     const queriedAt = Date.parse(validFrom.slice(validFrom.indexOf('.lte.') + 5));
     expect(queriedAt).toBeGreaterThanOrEqual(before);
     expect(queriedAt).toBeLessThanOrEqual(Date.now());
+  });
+
+  it('forgets memory-backed evidence through the scoped atomic RPC', async () => {
+    const rpc = vi.fn(async () => ({
+      data: { evidence_deleted: 2, beliefs_deleted: ['b1'] },
+      error: null,
+    }));
+    const repository = new BeliefRepository({ client: { rpc } });
+    const memoryId = '11111111-1111-1111-1111-111111111111';
+
+    await expect(
+      repository.forgetMemoryIds('u1', 'c1', [memoryId, memoryId, '']),
+    ).resolves.toEqual({
+      evidenceDeleted: 2,
+      beliefsDeleted: ['b1'],
+    });
+    expect(rpc).toHaveBeenCalledWith('forget_memory_beliefs', {
+      p_user_id: 'u1',
+      p_companion_id: 'c1',
+      p_memory_ids: [memoryId],
+    });
   });
 });

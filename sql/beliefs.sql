@@ -73,5 +73,79 @@ create index if not exists belief_evidence_belief_idx
 create index if not exists belief_evidence_source_idx
   on belief_evidence (user_id, companion_id, source_kind, source_id);
 
+create or replace function forget_memory_beliefs(
+  p_user_id text,
+  p_companion_id text,
+  p_memory_ids uuid[]
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  deleted_evidence_count int := 0;
+  deleted_belief_ids uuid[] := '{}'::uuid[];
+begin
+  with affected as (
+    select distinct belief_id
+    from belief_evidence
+    where user_id = p_user_id
+      and companion_id = coalesce(p_companion_id, 'default')
+      and source_memory_id = any(coalesce(p_memory_ids, '{}'::uuid[]))
+  ),
+  removed as (
+    delete from belief_evidence
+    where user_id = p_user_id
+      and companion_id = coalesce(p_companion_id, 'default')
+      and source_memory_id = any(coalesce(p_memory_ids, '{}'::uuid[]))
+    returning belief_id
+  ),
+  evidence_count as (
+    select count(*)::int as count from removed
+  ),
+  orphaned as (
+    select affected.belief_id
+    from affected
+    cross join (select count(*) from removed) removed_barrier
+    where not exists (
+      select 1 from belief_evidence
+      where belief_evidence.belief_id = affected.belief_id
+        and (
+          belief_evidence.source_memory_id is null
+          or not (
+            belief_evidence.source_memory_id =
+            any(coalesce(p_memory_ids, '{}'::uuid[]))
+          )
+        )
+    )
+  ),
+  deleted_beliefs as (
+    delete from beliefs
+    using orphaned
+    where beliefs.id = orphaned.belief_id
+      and beliefs.user_id = p_user_id
+      and beliefs.companion_id = coalesce(p_companion_id, 'default')
+    returning beliefs.id
+  )
+  select
+    evidence_count.count,
+    coalesce(array_agg(deleted_beliefs.id) filter (where deleted_beliefs.id is not null), '{}'::uuid[])
+  into deleted_evidence_count, deleted_belief_ids
+  from evidence_count
+  left join deleted_beliefs on true
+  group by evidence_count.count;
+
+  return jsonb_build_object(
+    'evidence_deleted', deleted_evidence_count,
+    'beliefs_deleted', to_jsonb(deleted_belief_ids)
+  );
+end;
+$$;
+
+revoke all on function forget_memory_beliefs(text,text,uuid[])
+  from public, anon, authenticated;
+grant execute on function forget_memory_beliefs(text,text,uuid[])
+  to service_role;
+
 alter table public.beliefs enable row level security;
 alter table public.belief_evidence enable row level security;

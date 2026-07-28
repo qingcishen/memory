@@ -372,7 +372,18 @@ export class Memory {
    * @returns 被删除的记忆列表 (可能为空)
    */
   async forget(query, opts = {}) {
-    return forgetByQuery(this.userId, this.companionId, query, opts);
+    const callerBeforeDelete = opts.beforeDelete;
+    return forgetByQuery(this.userId, this.companionId, query, {
+      ...opts,
+      beforeDelete: async (targets) => {
+        if (typeof this.beliefEngine?.forgetMemoryIds === 'function') {
+          await this.beliefEngine.forgetMemoryIds(targets.map((memory) => memory.id));
+        }
+        if (typeof callerBeforeDelete === 'function') {
+          await callerBeforeDelete(targets);
+        }
+      },
+    });
   }
 }
 

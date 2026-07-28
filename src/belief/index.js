@@ -76,6 +76,14 @@ export class BeliefEngine {
   resolve(query = {}) {
     return this.repository.resolve(this.userId, this.companionId, query);
   }
+
+  forgetMemoryIds(memoryIds = []) {
+    return this.repository.forgetMemoryIds(
+      this.userId,
+      this.companionId,
+      memoryIds,
+    );
+  }
 }
 
 export function explicitBeliefsFromMemory(memory = {}) {

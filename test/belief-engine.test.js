@@ -21,6 +21,10 @@ function repositorySpy() {
       calls.push(['resolve', ...args]);
       return { status: 'unknown', beliefs: [], provenance: [] };
     },
+    async forgetMemoryIds(...args) {
+      calls.push(['forgetMemoryIds', ...args]);
+      return { evidenceDeleted: 1, beliefsDeleted: ['b1'] };
+    },
   };
 }
 
@@ -80,10 +84,12 @@ describe('BeliefEngine API', () => {
     await engine.current({ subjectKey: 'user' });
     await engine.history({ predicate: 'likes' });
     await engine.resolve({ slotKey: 'user:preference:cilantro' });
+    await engine.forgetMemoryIds(['11111111-1111-1111-1111-111111111111']);
     expect(repository.calls.map((call) => call.slice(0, 3))).toEqual([
       ['current', 'u1', 'c1'],
       ['history', 'u1', 'c1'],
       ['resolve', 'u1', 'c1'],
+      ['forgetMemoryIds', 'u1', 'c1'],
     ]);
   });
 });

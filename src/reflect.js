@@ -125,6 +125,9 @@ export async function forgetByQuery(userId, companionId = 'default', query, opts
   const targets = selectForgettable(candidates ?? [], opts);
   if (targets.length === 0) return [];
 
+  if (typeof opts.beforeDelete === 'function') {
+    await opts.beforeDelete(targets);
+  }
   await supabase
     .from('memories')
     .delete()

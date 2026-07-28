@@ -202,6 +202,26 @@ export class BeliefRepository {
     if (error) throw error;
     return data ?? [];
   }
+
+  async forgetMemoryIds(userId, companionId = 'default', memoryIds = []) {
+    assertScope(userId, companionId);
+    const ids = [...new Set(
+      (memoryIds ?? []).map(String).filter((id) => id.trim()),
+    )];
+    if (ids.length === 0) return { evidenceDeleted: 0, beliefsDeleted: [] };
+    const { data, error } = await this.client.rpc('forget_memory_beliefs', {
+      p_user_id: userId,
+      p_companion_id: companionId,
+      p_memory_ids: ids,
+    });
+    if (error) throw error;
+    return {
+      evidenceDeleted: Number(data?.evidence_deleted) || 0,
+      beliefsDeleted: Array.isArray(data?.beliefs_deleted)
+        ? data.beliefs_deleted.map(String)
+        : [],
+    };
+  }
 }
 
 export function combineConfidence(a, b) {
