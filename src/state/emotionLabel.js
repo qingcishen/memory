@@ -67,15 +67,25 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   ) {
     return '委屈';
   }
+  // attention 积累驱动的委屈（依赖 desire 先升高后触发，不误判无 attention 的新会话）
   if (attention >= 0.72 && userText) return '委屈';
-  if (/(对不起|抱歉|我错了|原谅我|和好|别生气)/u.test(userText) && repairDebt > 0.2) return '委屈';
+  // 和好/释怀语境：repair 场景完成，余情是失落而非委屈
+  if (/(说开了|和好了|和好吧|没事了|放下了|算了)/u.test(userText) && repairDebt >= 0.1) return '失落';
+  if (/(对不起|抱歉|我错了|原谅我|别生气)/u.test(userText) && repairDebt > 0.2) return '委屈';
   // 用户表达受伤/失望 → 委屈（F2补充：侧重"让我"句式与情感词）
   if (/(让我.{0,8}(难受|伤心|失望|心寒|委屈)|说那句话|让我很|我不是小题大做|站在我这边)/u.test(userText)) {
     return '委屈';
   }
-  // 用户生病/受苦 → 心疼（扩充发烧/好累/失眠等未被覆盖的触发词）
-  if (/(我|最近|今天).{0,8}(难过|伤心|哭了|生病|发烧|不舒服|被欺负|很累|好累|崩溃|失败|失眠|睡不着|头疼|头晕)|被.{0,8}(骂|拒绝|裁员|开除)/u.test(userText) && closeness >= 0.5) {
+  // 用户生病/受苦 → 心疼（需要更高 closeness，低亲密度时倾向于失落）
+  if (/(我|最近|今天).{0,8}(难过|伤心|哭了|生病|发烧|不舒服|被欺负|很累|好累|崩溃|失败|失眠|睡不着|头疼|头晕)|被.{0,8}(骂|拒绝|裁员|开除)/u.test(userText) && closeness >= 0.6) {
     return '心疼';
+  }
+  // 用户忙碌/压力/焦虑 → 失落（F2实测: 这类场景 GLM 多标失落）
+  if (
+    /(忙疯了|加班到|顶不住|忙得|加班|这几天.{0,10}(没顾上|没时间|不|忙)|心里发慌|睡不着|睡不好|失眠|明天.{0,8}(面试|汇报|发布|交付)|发慌|忧虑)/u.test(userText) ||
+    /(陪我说说话|陪陪我)/u.test(userText)
+  ) {
+    if (valence <= 0.15) return '失落';
   }
   // 明确愤怒口吻：不依赖 tension 已升高（新会话首轮也能挂生气）
   if (/(我很生气|气死|太过分了|你凭什么)/u.test(userText) || (/(你怎么这样|算了吧)/u.test(userText) && /(生气|烦|讨厌|分手)/u.test(userText))) {
@@ -88,8 +98,17 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   if (comfort >= 0.58 && closeness >= 0.68 && tension < 0.4) return '撒娇';
   // 失落：扩大 valence 区间（F2 实测: 失落样本 valence 多在 [-0.3, 0.1]）
   if (valence <= -0.08) return tension >= 0.45 || repairDebt >= 0.35 ? '委屈' : '失落';
-  // 开心：降低 valence 门槛；撒娇门槛提高避免误分
-  if (valence >= 0.15) return warmth >= 0.75 && closeness >= 0.72 ? '撒娇' : '开心';
+  // 开心文本信号：valence ≈ 0 时才需要文本提升（v > 0.02 已有足够正向信号）
+  if (/(给你带|帮你|为你|记得我|想看看你|换我来|别跟我抢|你别担心|记得叫我|好期待|太好了|谢谢你懂我)/u.test(userText) && closeness >= 0.4 && valence <= 0.02) {
+    return warmth >= 0.92 && closeness >= 0.78 ? '撒娇' : '开心';
+  }
+  // 开心：valence 门槛适度提高到 0.25，同时排除纯问候（在吗/你好/晚安）误报
+  if (valence >= 0.25) {
+    if (/(^在吗$|^在\?$|^在？$|^你好$|^hello$|^hi$|晚安|好的|嗯|好|哦|啊|噢)/iu.test(userText.trim()) && valence < 0.55) {
+      return '平静';
+    }
+    return warmth >= 0.92 && closeness >= 0.78 ? '撒娇' : '开心';
+  }
   return '平静';
 }
 
