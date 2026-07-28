@@ -523,6 +523,8 @@ create table if not exists turn_events (
   payload        jsonb not null default '{}'::jsonb,
   result         jsonb,
   attempts       int not null default 1 check (attempts >= 1),
+  lease_token    text,
+  lease_expires_at timestamptz,
   last_error     text,
   committed_at   timestamptz,
   created_at     timestamptz not null default now(),
@@ -532,6 +534,64 @@ create table if not exists turn_events (
 create index if not exists turn_events_status_idx on turn_events (status, updated_at);
 create index if not exists turn_events_scope_idx
   on turn_events (user_id, companion_id, created_at desc);
+alter table turn_events add column if not exists lease_token text;
+alter table turn_events add column if not exists lease_expires_at timestamptz;
+
+create or replace function claim_turn_event(
+  p_user_id text,
+  p_companion_id text,
+  p_event_id text,
+  p_lease_token text,
+  p_lease_seconds int default 120,
+  p_payload jsonb default '{}'::jsonb
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  claimed turn_events%rowtype;
+begin
+  insert into turn_events (
+    user_id, companion_id, event_id, event_type, status, payload,
+    attempts, lease_token, lease_expires_at, updated_at
+  ) values (
+    p_user_id, coalesce(p_companion_id, 'default'), p_event_id, 'reply.commit',
+    'processing', coalesce(p_payload, '{}'::jsonb), 1, p_lease_token,
+    now() + make_interval(secs => greatest(10, least(coalesce(p_lease_seconds, 120), 3600))),
+    now()
+  )
+  on conflict (user_id, companion_id, event_id) do update set
+    status = 'processing',
+    payload = excluded.payload,
+    attempts = turn_events.attempts + 1,
+    lease_token = excluded.lease_token,
+    lease_expires_at = excluded.lease_expires_at,
+    last_error = null,
+    updated_at = now()
+  where turn_events.status = 'failed'
+     or (
+       turn_events.status = 'processing'
+       and turn_events.lease_expires_at is not null
+       and turn_events.lease_expires_at <= now()
+     )
+  returning * into claimed;
+
+  if claimed.id is not null then
+    return jsonb_build_object('acquired', true, 'event', to_jsonb(claimed));
+  end if;
+
+  select * into claimed
+  from turn_events
+  where user_id = p_user_id
+    and companion_id = coalesce(p_companion_id, 'default')
+    and event_id = p_event_id;
+  return jsonb_build_object('acquired', false, 'event', to_jsonb(claimed));
+end;
+$$;
+
+revoke all on function claim_turn_event(text,text,text,text,int,jsonb) from public, anon, authenticated;
+grant execute on function claim_turn_event(text,text,text,text,int,jsonb) to service_role;
 
 -- ------------------------------------------------------------
 --  世界观系统 (worldview): 动态世界状态 —— 背景剧情线/氛围随对话推进缓慢演变,

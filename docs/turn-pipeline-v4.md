@@ -368,7 +368,9 @@ Replay 默认禁止 Commit。显式传入测试 store 时才允许写入隔离�
 - Commit 同进程 eventId 幂等：完成；
 - 跨进程 Commit 竞争仲裁：完成基础版；注入 `SupabaseTurnEventStore` 后由
   `(user_id, companion_id, event_id)` 唯一键保证只有一个实例取得写权限；
-- 崩溃恢复：待完成；`processing` 事件当前宁可阻止重复副作用，也不会自动抢占重放。
+- 崩溃恢复：完成租约基础；`failed` 或租约过期的 `processing` 事件可以重新 claim，
+  `lease_token` 会阻止旧 worker 覆盖新 worker 的提交结果；
+- 投影级补偿器：待完成；恢复后的 Commit 仍需依赖各投影自身的 eventId 幂等能力。
 
 ### 9.1 Turn Event Ledger
 
@@ -385,9 +387,9 @@ get(scope)               // 查询审计状态
 `SupabaseTurnEventStore`。未注入时保留原有单进程 Set 幂等，避免旧部署在 SQL
 迁移前产生行为变化。数据库迁移见 `sql/turn_events.sql`。
 
-账本提供跨进程 duplicate suppression，但暂不宣称跨多个外部存储的 exactly-once：
-history、memory、媒体等投影尚未共享单个数据库事务。若进程在 claim 后崩溃，事件保持
-`processing`，后续恢复器应按各投影自身 eventId 幂等能力逐项补偿。
+账本通过数据库 RPC 原子 claim，并使用有限租约和 fencing token 支持崩溃接管，但暂不
+宣称跨多个外部存储的 exactly-once：history、memory、媒体等投影尚未共享单个数据库
+事务。租约过期后的新 worker 应按各投影自身 eventId 幂等能力逐项补偿。
 
 ### Slice A：流水线内核
 

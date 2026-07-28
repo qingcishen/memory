@@ -29,4 +29,25 @@ describe('turn event store', () => {
       await store.claim({ userId: 'u1', companionId: 'b', eventId: 'same' }),
     ).toMatchObject({ acquired: true });
   });
+
+  it('recovers an expired processing lease and fences the stale owner', async () => {
+    let now = 1000;
+    const store = new InMemoryTurnEventStore({ now: () => now, leaseMs: 100 });
+    const scope = { userId: 'u1', companionId: 'c1', eventId: 'evt-stale' };
+    const stale = await store.claim(scope);
+    expect((await store.claim(scope)).acquired).toBe(false);
+
+    now = 1101;
+    const recovered = await store.claim(scope);
+    expect(recovered).toMatchObject({
+      acquired: true,
+      event: { attempts: 2, status: 'processing' },
+    });
+    await expect(
+      store.complete({ ...scope, leaseToken: stale.leaseToken }),
+    ).rejects.toMatchObject({ code: 'TURN_EVENT_LEASE_LOST' });
+    await expect(
+      store.complete({ ...scope, leaseToken: recovered.leaseToken }),
+    ).resolves.toMatchObject({ status: 'committed' });
+  });
 });

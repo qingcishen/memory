@@ -38,6 +38,7 @@ export async function commitValidatedReply(orchestrator, input = {}) {
     eventId,
   };
   const eventStore = orchestrator.turnEventStore;
+  let claimedScope = eventScope;
   if (eventStore?.claim) {
     const claim = await eventStore.claim({
       ...eventScope,
@@ -57,6 +58,7 @@ export async function commitValidatedReply(orchestrator, input = {}) {
         sessionThread: orchestrator._sessionThread,
       };
     }
+    claimedScope = { ...eventScope, leaseToken: claim.leaseToken };
   }
 
   try {
@@ -119,7 +121,7 @@ export async function commitValidatedReply(orchestrator, input = {}) {
     };
     if (eventStore?.complete) {
       try {
-        await eventStore.complete(eventScope, {
+        await eventStore.complete(claimedScope, {
           historyAppended: result.history.appended,
           enqueued: result.enqueued,
         });
@@ -129,7 +131,7 @@ export async function commitValidatedReply(orchestrator, input = {}) {
     }
     return result;
   } catch (error) {
-    await eventStore?.fail?.(eventScope, error).catch(() => {});
+    await eventStore?.fail?.(claimedScope, error).catch(() => {});
     throw error;
   }
 }
