@@ -88,7 +88,7 @@ import { createTurnContext, runTurnStage, summarizePipeline } from './turnPipeli
 import { perceiveTurn } from './perceive.js';
 import { interpretTurn } from './interpret.js';
 import { emptyEvidencePack, retrieveTurn } from './retrieveStage.js';
-import { deliberateTurn } from './deliberate.js';
+import { deliberateTurn, planRetrievalTurn } from './deliberate.js';
 import { composeTurn, compositionFromStream } from './composeStage.js';
 import { validateTurn } from './validateStage.js';
 
@@ -157,7 +157,11 @@ function emitReplyTrace(orchestrator, {
       pipelineVersion: result.pipeline?.pipelineVersion ?? null,
       turnId: result.pipeline?.turnId ?? null,
       stages: result.pipeline?.stages ?? [],
+      executionOrder: result.pipeline?.executionOrder ?? [],
       commitStatus: result.pipeline?.commitStatus ?? null,
+      evidenceSummary: result.pipeline?.evidence ?? null,
+      rationaleCodes: result.pipeline?.rationaleCodes ?? [],
+      validationChecks: result.pipeline?.validationChecks ?? [],
     });
   } catch {}
 }
@@ -650,6 +654,42 @@ export class Orchestrator {
       storyBeat = await this.story.pendingShare().catch(() => null);
     }
     const planClient = this.llm?.client || this.llm?.openai || null;
+    const retrievalPlan = planRetrievalTurn({
+      userMessage,
+      stateSnapshot,
+      dueItems,
+      storyBeat,
+      intimacyLive,
+      intimacyPolicy: this.stateLayer?.stateLayer?.intimacy?.config?.proactive,
+      unfinished,
+      sceneLocks,
+      bodySituation: bodySit,
+      gapHours,
+      behavior,
+      ablation: this.ablation,
+      options: opts,
+      historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
+      useMonologueDefault:
+        this.options.useMonologue && this.ablation.monologue !== false,
+    });
+    const recallQuery = retrievalPlan.turnPlan.recallQuery || userMessage;
+    pipelineContext = await runTurnStage(
+      pipelineContext,
+      'retrieve',
+      async () => ({
+        evidence: await retrieveTurn({
+          query: recallQuery,
+          memory: this.memory,
+          options: {
+            debug: Boolean(opts.debug),
+            reconsolidate: this.ablation.reconsolidation !== false,
+            ...(this.ablation.moodGating === false ? { params: { wMood: 0 } } : {}),
+          },
+        }),
+      }),
+      { degradable: true },
+    );
+    const evidence = pipelineContext.evidence ?? emptyEvidencePack(recallQuery);
     pipelineContext = await runTurnStage(pipelineContext, 'deliberate', async () => ({
       decision: await deliberateTurn({
         userMessage,
@@ -670,6 +710,8 @@ export class Orchestrator {
           this.options.useMonologue && this.ablation.monologue !== false,
         planClient,
         signal: opts.signal,
+        retrievalPlan,
+        evidence,
       }),
     }));
     const decision = pipelineContext.decision;
@@ -796,25 +838,7 @@ export class Orchestrator {
           .catch(() => '')
       : Promise.resolve('');
 
-    const recallQuery = turn.recallQuery || userMessage;
-    pipelineContext = await runTurnStage(
-      pipelineContext,
-      'retrieve',
-      async () => ({
-        evidence: await retrieveTurn({
-          query: recallQuery,
-          memory: this.memory,
-          options: {
-            debug: Boolean(opts.debug),
-            reconsolidate: this.ablation.reconsolidation !== false,
-            ...(this.ablation.moodGating === false ? { params: { wMood: 0 } } : {}),
-          },
-        }),
-      }),
-      { degradable: true },
-    );
     const monologue = await monologuePromise;
-    const evidence = pipelineContext.evidence ?? emptyEvidencePack(recallQuery);
     const {
       memoryBlock,
       memoryHits,

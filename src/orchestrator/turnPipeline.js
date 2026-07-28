@@ -37,6 +37,7 @@ export function createTurnContext(input = {}) {
     validation: input.validation ?? null,
     commit: input.commit ?? null,
     stageResults: { ...(input.stageResults ?? {}) },
+    executionOrder: [...(input.executionOrder ?? [])],
     diagnostics: {
       warnings: [...(input.diagnostics?.warnings ?? [])],
       errors: [...(input.diagnostics?.errors ?? [])],
@@ -152,6 +153,33 @@ export async function runTurnStage(input, stage, handler, opts = {}) {
   return next;
 }
 
+/**
+ * 离线 replay。默认永不执行 Commit：
+ * - decision-replay: Deliberate → Compose → Validate
+ * - compose-replay: Compose → Validate
+ */
+export async function replayTurn(input, handlers, opts = {}) {
+  const mode = opts.mode ?? 'decision-replay';
+  const stages =
+    mode === 'compose-replay'
+      ? ['compose', 'validate']
+      : ['deliberate', 'compose', 'validate'];
+  let context = createTurnContext({
+    ...input,
+    executionOrder: [],
+    commit: null,
+  });
+  for (const stage of stages) {
+    const handler = handlers?.[stage];
+    if (typeof handler !== 'function') continue;
+    context = await runTurnStage(context, stage, handler, {
+      degradable: opts.degradable?.[stage],
+      onStage: opts.onStage,
+    });
+  }
+  return context;
+}
+
 export function summarizePipeline(context) {
   return {
     pipelineVersion: context?.version ?? TURN_PIPELINE_VERSION,
@@ -167,7 +195,19 @@ export function summarizePipeline(context) {
         errorCode: result?.error?.code ?? null,
       };
     }),
-    commitStatus: context?.stageResults?.commit?.status ?? 'skipped',
+    executionOrder: [...(context?.executionOrder ?? [])],
+    commitStatus:
+      context?.commit?.status ?? context?.stageResults?.commit?.status ?? 'skipped',
+    evidence: {
+      hitCount: context?.evidence?.budget?.hitCount ?? 0,
+      provenanceCount: context?.evidence?.provenance?.length ?? 0,
+    },
+    rationaleCodes: [...(context?.decision?.rationaleCodes ?? [])],
+    validationChecks: (context?.validation?.checks ?? []).map((check) => ({
+      id: check.id,
+      passed: Boolean(check.passed),
+      reasons: [...(check.reasons ?? [])],
+    })),
   };
 }
 
@@ -188,6 +228,7 @@ function applyStageResult(context, result) {
     ...context,
     ...result.patch,
     stageResults: { ...context.stageResults, [result.stage]: result },
+    executionOrder: [...context.executionOrder, result.stage],
     diagnostics,
   };
 }

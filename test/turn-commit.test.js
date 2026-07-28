@@ -62,4 +62,23 @@ describe('turn commit boundary', () => {
       createTurnEventId({ userId: 'u1', companionId: 'c1', now: 123 }),
     ).toMatch(/^turn:u1:c1:123:/);
   });
+
+  it('does not duplicate writes when the same event is committed twice', () => {
+    const orchestrator = fakeOrchestrator();
+    const input = {
+      eventId: 'evt-repeat',
+      historyUserMessage: 'hi',
+      reply: 'hello',
+      updateSession: (value) => value,
+    };
+    const first = commitValidatedReply(orchestrator, input);
+    const second = commitValidatedReply(orchestrator, input);
+    expect(first.idempotentReplay).toBe(false);
+    expect(second).toMatchObject({
+      status: 'already_committed',
+      idempotentReplay: true,
+    });
+    expect(orchestrator.recordHistory).toHaveBeenCalledTimes(1);
+    expect(orchestrator.afterReply).toHaveBeenCalledTimes(1);
+  });
 });

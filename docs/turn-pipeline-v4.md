@@ -1,6 +1,6 @@
 # v4 Turn Pipeline 接口契约
 
-> 状态：Draft Freeze 1  
+> 状态：Implemented Freeze 1  
 > 负责人：Codex（工程定稿），Claude（评测与数据字段复核）  
 > 适用任务：T-02、T-03  
 > 变更规则：阶段名称、Commit 边界、错误语义或 trace 字段发生变化前，先更新本文档。
@@ -357,6 +357,16 @@ Commit 不负责：
 Replay 默认禁止 Commit。显式传入测试 store 时才允许写入隔离数据。
 
 ## 9. 迁移策略
+
+当前完成度：
+
+- Slice A：完成；
+- Slice B：完成；
+- Slice C：完成；
+- Slice D：完成；
+- `decision-replay` / `compose-replay`：完成；
+- Commit 同进程 eventId 幂等：完成；
+- 跨进程 Commit 幂等：仍依赖渠道事件/持久队列，后续事件溯源阶段完善。
 
 ### Slice A：流水线内核
 

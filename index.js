@@ -1,4 +1,4 @@
-export { Memory } from './src/memory.js';
+export { Memory, projectBeliefInputs } from './src/memory.js';
 export {
   BeliefEngine,
   BeliefRepository,
@@ -220,12 +220,13 @@ export {
   createTurnContext,
   runTurnPipeline,
   runTurnStage,
+  replayTurn,
   summarizePipeline,
   isWriteStage,
 } from './src/orchestrator/turnPipeline.js';
 export { perceiveTurn, maxKnownGap } from './src/orchestrator/perceive.js';
 export { interpretTurn } from './src/orchestrator/interpret.js';
 export { retrieveTurn, emptyEvidencePack } from './src/orchestrator/retrieveStage.js';
-export { deliberateTurn } from './src/orchestrator/deliberate.js';
+export { deliberateTurn, planRetrievalTurn } from './src/orchestrator/deliberate.js';
 export { composeTurn, compositionFromStream } from './src/orchestrator/composeStage.js';
 export { validateTurn } from './src/orchestrator/validateStage.js';

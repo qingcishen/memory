@@ -20,6 +20,17 @@ export function commitValidatedReply(orchestrator, input = {}) {
     error.code = 'COMMIT_EVENT_ID_REQUIRED';
     throw error;
   }
+  orchestrator._committedTurnEvents ??= new Set();
+  if (orchestrator._committedTurnEvents.has(eventId)) {
+    return {
+      eventId,
+      status: 'already_committed',
+      history: { appended: 0 },
+      enqueued: false,
+      idempotentReplay: true,
+      sessionThread: orchestrator._sessionThread,
+    };
+  }
 
   if (input.sessionEnabled !== false) {
     orchestrator._sessionThread = input.updateSession(orchestrator._sessionThread, {
@@ -66,6 +77,7 @@ export function commitValidatedReply(orchestrator, input = {}) {
   if (photoRequested) {
     orchestrator._lastPhoto = orchestrator.maybePhoto(stateSnapshot, { requested: true });
   }
+  orchestrator._committedTurnEvents.add(eventId);
 
   return {
     eventId,
@@ -75,6 +87,7 @@ export function commitValidatedReply(orchestrator, input = {}) {
       Boolean(orchestrator._lastAfterReply) ||
       Boolean(orchestrator._lastProspectiveDismiss),
     sessionThread: orchestrator._sessionThread,
+    idempotentReplay: false,
   };
 }
 

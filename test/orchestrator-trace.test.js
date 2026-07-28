@@ -90,7 +90,19 @@ describe('orchestrator trace integration', () => {
         expect(row.stages.find((stage) => stage.stage === 'deliberate')?.status).toBe('ok');
         expect(row.stages.find((stage) => stage.stage === 'compose')?.status).toBe('ok');
         expect(row.stages.find((stage) => stage.stage === 'validate')?.status).toBe('ok');
-        expect(row.commitStatus).toBe('ok');
+        expect(row.commitStatus).toBe('committed');
+        expect(row.executionOrder).toEqual([
+          'perceive',
+          'interpret',
+          'retrieve',
+          'deliberate',
+          'compose',
+          'validate',
+          'commit',
+        ]);
+        expect(row.evidenceSummary.hitCount).toBe(1);
+        expect(row.rationaleCodes).toBeInstanceOf(Array);
+        expect(row.validationChecks.length).toBeGreaterThan(0);
       }
     } finally {
       if (previous.dir == null) delete process.env.TRACE_DIR;

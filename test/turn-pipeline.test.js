@@ -4,6 +4,7 @@ import {
   createTurnContext,
   isWriteStage,
   runTurnStage,
+  replayTurn,
   runTurnPipeline,
   summarizePipeline,
 } from '../src/orchestrator/turnPipeline.js';
@@ -31,6 +32,7 @@ describe('v4 turn pipeline', () => {
     expect(result._perceive).toBe(true);
     expect(result._commit).toBe(true);
     expect(summarizePipeline(result).stages.every((row) => row.status === 'ok')).toBe(true);
+    expect(summarizePipeline(result).executionOrder).toEqual(TURN_STAGES);
   });
 
   it('degrades optional stages but stops on compose failure', async () => {
@@ -100,5 +102,40 @@ describe('v4 turn pipeline', () => {
     expect(next.perception.normalizedMessage).toBe('hello');
     expect(next.stageResults.perceive.status).toBe('ok');
     expect(next.stageResults.interpret).toBeUndefined();
+  });
+
+  it('replays decision stages without ever committing', async () => {
+    const calls = [];
+    const result = await replayTurn(
+      createTurnContext({
+        userId: 'u1',
+        eventId: 'evt-1',
+        userMessage: 'hello',
+        perception: {},
+        interpretation: {},
+        evidence: {},
+      }),
+      {
+        deliberate: async () => {
+          calls.push('deliberate');
+          return { decision: {} };
+        },
+        compose: async () => {
+          calls.push('compose');
+          return { composition: {} };
+        },
+        validate: async () => {
+          calls.push('validate');
+          return { validation: {} };
+        },
+        commit: async () => {
+          calls.push('commit');
+          return { commit: {} };
+        },
+      },
+      { mode: 'decision-replay' },
+    );
+    expect(calls).toEqual(['deliberate', 'compose', 'validate']);
+    expect(result.commit).toBeNull();
   });
 });

@@ -5,6 +5,7 @@ export {
   createTurnContext,
   runTurnPipeline,
   runTurnStage,
+  replayTurn,
   summarizePipeline,
   isWriteStage,
 } from './turnPipeline.js';
@@ -12,7 +13,7 @@ export { commitValidatedReply, createTurnEventId } from './turnCommit.js';
 export { perceiveTurn, maxKnownGap } from './perceive.js';
 export { interpretTurn } from './interpret.js';
 export { retrieveTurn, emptyEvidencePack } from './retrieveStage.js';
-export { deliberateTurn } from './deliberate.js';
+export { deliberateTurn, planRetrievalTurn } from './deliberate.js';
 export { composeTurn, compositionFromStream } from './composeStage.js';
 export { validateTurn } from './validateStage.js';
 export {

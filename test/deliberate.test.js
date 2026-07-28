@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { deliberateTurn } from '../src/orchestrator/deliberate.js';
+import { deliberateTurn, planRetrievalTurn } from '../src/orchestrator/deliberate.js';
 
 describe('Deliberate stage', () => {
   it('returns an explicit decision and defers prospective writes', async () => {
@@ -26,5 +26,17 @@ describe('Deliberate stage', () => {
     });
     expect(decision.goals[0].kind).toBe('safety');
     expect(decision.constraints.stopIntimate).toBe(true);
+  });
+
+  it('creates a retrieval query without invoking final deliberation', () => {
+    const preliminary = planRetrievalTurn({
+      userMessage: '上次面试的事情',
+      dueItems: [{ id: 'p1', content: '问面试结果' }],
+      stateSnapshot: { desires: {}, life: {}, intimacy: {} },
+      behavior: {},
+      options: {},
+    });
+    expect(preliminary.turnPlan.recallQuery).toContain('面试');
+    expect(preliminary).not.toHaveProperty('structuredPlan');
   });
 });

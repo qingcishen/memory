@@ -13,6 +13,87 @@ import {
  * 不写状态；到期 prospective 只输出待提交 ID，由 Commit 标记 fired。
  */
 export async function deliberateTurn(input = {}) {
+  const preliminary = input.retrievalPlan ?? planRetrievalTurn(input);
+  let {
+    goals,
+    turnPlan: turn,
+    behavior,
+    constraints,
+    prospectiveToDismiss,
+  } = preliminary;
+  const {
+    userMessage = '',
+    storyBeat = null,
+    intimacyLive = null,
+    unfinished = [],
+    sceneLocks = [],
+    bodySituation = null,
+    planClient = null,
+    signal,
+  } = input;
+  let structured = planStructuredHeuristic({
+    userMessage,
+    sceneLocks,
+    goals,
+    behavior,
+    storyBeat,
+    unfinished,
+    intimacyPhase: intimacyLive?.scene_phase,
+    bodySit: bodySituation,
+  });
+  if (PARAMS.orchestrator?.structuredPlanLlm !== false && planClient) {
+    structured = await enrichStructuredPlan(
+      structured,
+      {
+        userMessage,
+        sceneLocks,
+        goals,
+        storyBeat,
+        unfinished,
+        intimacyPhase: intimacyLive?.scene_phase,
+      },
+      { client: planClient, signal },
+    ).catch(() => structured);
+  }
+  turn = applyStructuredToTurn(turn, structured, behavior);
+  if (turn._lengthHintOverride) {
+    behavior = {
+      ...behavior,
+      lengthHint: turn._lengthHintOverride,
+      partsBudget: turn.partsBudget,
+    };
+  }
+  if (turn && typeof turn === 'object') {
+    turn.intimacyPhase = intimacyLive?.scene_phase ?? null;
+  }
+  return {
+    goals,
+    candidates: goals.map((goal) => ({
+      intent: goal.kind,
+      utility: goal.priority,
+      constraints: goal.canInitiate === false ? ['cannot_initiate'] : [],
+    })),
+    selectedAction: goals[0]?.kind ?? 'respond',
+    constraints,
+    turnPlan: turn,
+    structuredPlan: structured,
+    behavior,
+    samplingHints: {},
+    rationaleCodes: goals.slice(0, 3).map((goal) => `goal:${goal.kind}`),
+    prospectiveToDismiss,
+    evidenceSummary: input.evidence
+      ? {
+          hitCount: input.evidence.memoryHits?.length ?? 0,
+          provenanceCount: input.evidence.provenance?.length ?? 0,
+        }
+      : { hitCount: 0, provenanceCount: 0 },
+  };
+}
+
+/**
+ * Retrieve 前的最小规划：只产生召回 query 所需的 goals/turn，不调用规划模型。
+ */
+export function planRetrievalTurn(input = {}) {
   const {
     userMessage = '',
     stateSnapshot = null,
@@ -29,8 +110,6 @@ export async function deliberateTurn(input = {}) {
     options = {},
     historyTurnsDefault = 6,
     useMonologueDefault = false,
-    planClient = null,
-    signal,
   } = input;
   let behavior = inputBehavior;
   const goals = buildConversationGoals({
@@ -88,59 +167,15 @@ export async function deliberateTurn(input = {}) {
     historyTurnsDefault,
     useMonologueDefault,
   });
-  let structured = planStructuredHeuristic({
-    userMessage,
-    sceneLocks,
-    goals,
-    behavior,
-    storyBeat,
-    unfinished,
-    intimacyPhase: intimacyLive?.scene_phase,
-    bodySit: bodySituation,
-  });
-  if (PARAMS.orchestrator?.structuredPlanLlm !== false && planClient) {
-    structured = await enrichStructuredPlan(
-      structured,
-      {
-        userMessage,
-        sceneLocks,
-        goals,
-        storyBeat,
-        unfinished,
-        intimacyPhase: intimacyLive?.scene_phase,
-      },
-      { client: planClient, signal },
-    ).catch(() => structured);
-  }
-  turn = applyStructuredToTurn(turn, structured, behavior);
-  if (turn._lengthHintOverride) {
-    behavior = {
-      ...behavior,
-      lengthHint: turn._lengthHintOverride,
-      partsBudget: turn.partsBudget,
-    };
-  }
-  if (turn && typeof turn === 'object') {
-    turn.intimacyPhase = intimacyLive?.scene_phase ?? null;
-  }
   return {
     goals,
-    candidates: goals.map((goal) => ({
-      intent: goal.kind,
-      utility: goal.priority,
-      constraints: goal.canInitiate === false ? ['cannot_initiate'] : [],
-    })),
-    selectedAction: goals[0]?.kind ?? 'respond',
     constraints: {
       bodyGate,
       stopIntimate: Boolean(options.stopIntimate),
       intimacyAllowed: options.intimacyAllowed !== false,
     },
     turnPlan: turn,
-    structuredPlan: structured,
     behavior,
-    samplingHints: {},
-    rationaleCodes: goals.slice(0, 3).map((goal) => `goal:${goal.kind}`),
     prospectiveToDismiss: dueItems.map((item) => item?.id).filter(Boolean),
   };
 }

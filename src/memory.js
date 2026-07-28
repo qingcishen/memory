@@ -30,12 +30,20 @@ import { updateUserProfile } from './profile.js';
  *   const block = mem.toPrompt(hits);            // 拼成注入串
  */
 export class Memory {
-  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她' }) {
+  constructor({
+    userId,
+    companionId = 'default',
+    subjectName = '对方',
+    companionName = '她',
+    beliefEngine = null,
+  }) {
     if (!userId) throw new Error('Memory 需要 userId');
     this.userId = userId;
     this.companionId = companionId;
     this.subjectName = subjectName;
     this.companionName = companionName;
+    // 显式启用：老部署未执行 beliefs.sql 时不产生额外数据库请求。
+    this.beliefEngine = beliefEngine;
   }
 
   /**
@@ -105,6 +113,12 @@ export class Memory {
     if (coupling?.careEvent) boosted = [...boosted, buildCareMemory(this.subjectName, coupling.careEvent)];
     // I4: 亲密轮次提高 preference 重要性下限敏感度（已在 extract 侧加权）
     const stored = boosted.length === 0 ? [] : await storeMemories(this.userId, this.companionId, boosted);
+    const beliefs = this.beliefEngine
+      ? await projectBeliefInputs(this.beliefEngine, {
+          memories: stored,
+          events: opts.beliefEvents,
+        })
+      : [];
     return {
       state: after,
       desires: opts.desire ? await opts.desire.snapshot().catch(() => null) : null,
@@ -114,7 +128,31 @@ export class Memory {
       scheduled,
       coupling,
       knowledge,
+      beliefs,
     };
+  }
+
+  /** 显式写入一条结构化时态信念；需要构造 Memory 时注入 beliefEngine。 */
+  async projectBelief(belief, evidence, opts) {
+    if (!this.beliefEngine) throw beliefUnavailable();
+    return this.beliefEngine.project(belief, evidence, opts);
+  }
+
+  async currentBeliefs(query = {}) {
+    if (!this.beliefEngine) return [];
+    return this.beliefEngine.current(query);
+  }
+
+  async beliefHistory(query = {}) {
+    if (!this.beliefEngine) return [];
+    return this.beliefEngine.history(query);
+  }
+
+  async resolveBelief(query = {}) {
+    if (!this.beliefEngine) {
+      return { status: 'unknown', beliefs: [], confidence: 0, provenance: [] };
+    }
+    return this.beliefEngine.resolve(query);
   }
 
   /**
@@ -336,6 +374,31 @@ export class Memory {
   async forget(query, opts = {}) {
     return forgetByQuery(this.userId, this.companionId, query, opts);
   }
+}
+
+/** Belief 投影失败隔离：不能让新表/单条证据问题拖垮原有 observe。 */
+export async function projectBeliefInputs(engine, { memories = [], events = [] } = {}) {
+  const tasks = [
+    ...(memories ?? []).map((memory) => () => engine.projectMemory(memory)),
+    ...(events ?? []).map((event) => () => engine.projectEvent(event)),
+  ];
+  const results = [];
+  for (const task of tasks) {
+    try {
+      const value = await task();
+      if (Array.isArray(value)) results.push(...value);
+      else if (value != null) results.push(value);
+    } catch {
+      // Belief 是新投影视图，失败时 memory 主记录仍是事实来源。
+    }
+  }
+  return results;
+}
+
+function beliefUnavailable() {
+  const error = new Error('Belief Engine is not enabled for this Memory instance');
+  error.code = 'BELIEF_ENGINE_DISABLED';
+  return error;
 }
 
 // ---- L4 helpers ----
