@@ -48,12 +48,12 @@ export async function engineRecall(userId, companionId = 'default', query, state
   if (opts.hybrid ?? PARAMS.retrieval?.hybrid) {
     const [vectorResult, keywordResult] = await Promise.all([
       vectorRequest,
-      supabase.rpc('match_memories_keyword', {
+      Promise.resolve(supabase.rpc('match_memories_keyword', {
         p_user_id: userId,
         p_companion_id: companionId,
         query_text: query,
         match_count: pool,
-      }).catch(() => ({ data: [] })),
+      })).catch(() => ({ data: [] })),
     ]);
     if (vectorResult.error) throw vectorResult.error;
     candidates = reciprocalRankFusion(
