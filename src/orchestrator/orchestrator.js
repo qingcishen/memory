@@ -90,6 +90,7 @@ import {
   withReplyTrace,
   writeDailyCost,
 } from '../trace.js';
+import { commitValidatedReply, createTurnEventId } from './turnCommit.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 const traceRuntimeEnabled = () =>
@@ -536,6 +537,15 @@ export class Orchestrator {
     const traceStartedAt = Date.now();
     const traceMetricsBefore = metricsSnapshot();
     await this.init();
+    opts = {
+      ...opts,
+      eventId: createTurnEventId({
+        eventId: opts.eventId,
+        userId: this.userId,
+        companionId: this.companionId,
+        now: traceStartedAt,
+      }),
+    };
     const historyUserMessage = String(opts.historyUserMessage ?? userMessage);
     const nowMs = this.now();
     // 先读持久历史的真实时间，再做任何情绪/场景判断。过去只看进程内时间，重启后会把
@@ -830,11 +840,21 @@ export class Orchestrator {
       replyStylePrompt: buildReplyStylePrompt(this._config?.replyStyle),
     };
 
-    // 短轮可对 prompt 做轻量瘦身（少塞世界线/长故事）
+    // 场景分类（用于 prompt 段落动态剪枝，T-03）
+    const _isIntimateScene = sceneLocks.some(l => ['intimate', 'car', 'bath'].includes(l.id))
+      || ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyLive?.scene_phase);
+    const _highUrgencyGoal = goals.some(g => g.priority > 0.6);
+    // compact: 短消息 + 无场景锁（同原判断）
     const compact = PARAMS.orchestrator?.compactShortTurns !== false && userMessage.trim().length <= 12 && !sceneLocks.length;
     if (compact) {
       if (promptBase.worldPrompt && promptBase.worldPrompt.length > 200) promptBase.worldPrompt = '';
       if (promptBase.storyPrompt && !askAboutDay) promptBase.storyPrompt = promptBase.storyPrompt.slice(0, 180);
+      // 短消息+无高优先级目标：目标段落对本轮无贡献
+      if (!_highUrgencyGoal) promptBase.goalsPrompt = '';
+    }
+    // 亲密场景：目标段落与 episode 对当下叙事无意义
+    if (_isIntimateScene) {
+      promptBase.goalsPrompt = '';
     }
 
     const monologuePromise = turn.useMonologue
@@ -891,7 +911,8 @@ export class Orchestrator {
 
     const promptParts = {
       ...promptBase,
-      episodePrompt: episodesToPrompt(episodeTexts),
+      // compact(短消息)或亲密场景不注入 episode，减少上下文噪声
+      episodePrompt: (compact || _isIntimateScene) ? '' : episodesToPrompt(episodeTexts),
       memoryBlock: memoryBlock ?? '',
     };
 
@@ -1025,36 +1046,18 @@ export class Orchestrator {
 
     ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
-    // 会话线落盘：用户句 + 她的回复（含她的承诺）→ 持久化
-    if (PARAMS.orchestrator?.sessionThread !== false) {
-      this._sessionThread = updateSessionThread(this._sessionThread, {
-        userMessage: historyUserMessage,
-        reply,
-        sceneLocks,
-        now: nowMs,
-      });
-      this.persistSessionThread();
-    }
-    this.persistEmotionResidue();
-
-    this.recordHistory([
-      { role: 'user', content: historyUserMessage },
-      { role: 'assistant', content: reply },
-    ], { eventId: opts.eventId });
-
-    this._lastAfterReply = this.afterReply(historyUserMessage, reply, {
-      history: this.history,
+    commitValidatedReply(this, {
+      eventId: opts.eventId,
+      historyUserMessage,
+      reply,
       sceneLocks,
+      nowMs,
       relationshipStage: relStage,
+      stateSnapshot,
+      photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
+      sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
+      updateSession: updateSessionThread,
     });
-
-    // 每日穿搭成片（后台，不阻塞）
-    this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
-
-    // 动作计划：对方要看 / structured 决策 wantPhoto
-    if (PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto) {
-      this._lastPhoto = this.maybePhoto(stateSnapshot, { requested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto });
-    }
 
     const sessionDrift = detectSessionDrift(reply, this._sessionThread);
     const debug = opts.debug
@@ -1194,35 +1197,18 @@ export class Orchestrator {
 
     ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
-    if (PARAMS.orchestrator?.sessionThread !== false) {
-      this._sessionThread = updateSessionThread(this._sessionThread, {
-        userMessage: historyUserMessage,
-        reply,
-        sceneLocks,
-        now: nowMs,
-      });
-      this.persistSessionThread();
-    }
-    this.persistEmotionResidue();
-
-    this.recordHistory(
-      [
-        { role: 'user', content: historyUserMessage },
-        { role: 'assistant', content: reply },
-      ],
-      { eventId: opts.eventId },
-    );
-    this._lastAfterReply = this.afterReply(historyUserMessage, reply, {
-      history: this.history,
+    commitValidatedReply(this, {
+      eventId: opts.eventId,
+      historyUserMessage,
+      reply,
       sceneLocks,
+      nowMs,
       relationshipStage: relStage,
+      stateSnapshot,
+      photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
+      sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
+      updateSession: updateSessionThread,
     });
-    this.maybeDailyLookPhoto(stateSnapshot).catch((e) => console.error('[maybeDailyLookPhoto]', e));
-    if (PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto) {
-      this._lastPhoto = this.maybePhoto(stateSnapshot, {
-        requested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
-      });
-    }
 
     const result = {
       text: reply,
