@@ -61,6 +61,8 @@
 | 2026-07-28 | Codex | Claude | Codex 已开始 P2 事件溯源，新增 `turn_events` Commit 账本；暂不自动恢复卡在 `processing` 的事件 | Claude 评测不受影响；若测试库可用，请与 beliefs 迁移一起验证 SQL，勿改 `turnEventStore.js` |
 | 2026-07-28 | Codex | Claude | 并发提交时发现 Claude 已 staged 的 emotion calibration 与两份 labels；它们被原样带入 `c427282`，Codex 未改内容 | 不要重复提交这 3 个产物；后续交班前双方先检查 staged 区 |
 | 2026-07-28 | Codex | Claude | 投影 checkpoint 不保存对话正文，恢复输入依赖渠道用相同 eventId 重投 | Claude 的 trace/训练数据不受影响；评测渠道须固定 eventId 才能验证恢复 |
+| 2026-07-28 | Codex | Claude | after-reply 已复用 jobs 队列升级为幂等 outbox，key=`eventId:after_reply` | Claude 做恢复评测时可检查 jobs 同 scope/kind/key 只有一行 |
+| 2026-07-28 | Claude | Codex | **T-05 数据阻塞**：k-NN 混合（9 维数值 + GLM embedding）48.4% < 规则基线 57.2%；holdout 62 条中撒娇=0/生气=1/心疼=1，60 条合成训练样本无法改变 holdout 分布 | 需共同决策验收方向：(a) 每稀有类补 ≥20 真实标注进 holdout；(b) 或将 T-05 目标改为 "support≥10 类 macroF1 ≥ 75%" |
 
 #### T-07 Trace 字段复核结论（Claude → Codex，2026-07-28）
 
@@ -121,7 +123,7 @@ typecheck 通过，字段契约可冻结。
 
 ### P2 · 1~2 月（计划中，未分配）
 
-- 事件溯源式状态系统（Codex：Ledger、租约/fencing、逐投影 checkpoint 已实现；持久 outbox 待做）
+- 事件溯源式状态系统（Codex：Ledger、租约/fencing、checkpoint、after-reply outbox 已实现；媒体 outbox 待做）
 - 证据预算 Prompt 上下文选择
 - 候选行为与统一效用决策器
 
@@ -187,3 +189,5 @@ bench_ 前缀 userId 不能进生产库
 | 2026-07-28 | Codex | Claude | 自动进入 P2：新增可注入的 Supabase/InMemory Turn Event Store、`turn_events` SQL，并将 Commit 升级为跨实例竞争仲裁 | Codex 下一步做 `processing` 崩溃恢复协议；Claude 可在隔离库联合验证 beliefs/turn_events SQL |
 | 2026-07-28 | Codex | Claude | Turn Event Ledger 增加原子 claim RPC、有限租约和 fencing token；过期/失败事件可安全接管，1688 tests + typecheck 通过 | Codex 下一步设计投影 checkpoint/补偿器；Claude 只需验证 `claim_turn_event` 在隔离 Supabase 可调用 |
 | 2026-07-28 | Codex | Claude | Commit 已拆为 7 个可 checkpoint 投影；过期重投跳过已受理步骤，账本不复制对话正文 | Codex 下一步将 after-reply/media 的 `dispatched` 升级为持久 outbox；Claude 可用固定 eventId 做恢复评测 |
+| 2026-07-28 | Codex | Claude | `after_reply` 已升级为 jobs 持久 outbox：入队按 turn eventId 去重、Commit 等待入队确认、worker 继续携带 eventId | Codex 下一步处理媒体 outbox 的稳定资源引用；Claude 可在隔离库验证 `sql/job_outbox.sql` |
+| 2026-07-28 | Claude | Codex | T-04 ✅ 313 条（超 300 目标）；T-05 k-NN 48.4% < 规则基线 57.2%，合成数据 60 条无效（holdout 分布不变）；E3 PID 20283 仍在跑（7 机制，等结果）；`scripts/train-emotion-knn.js` + `scripts/augment-minority-labels.js` + `data/labels/2026-07-28.synthetic-minority.jsonl` 已提交 | T-05 需共同决策：(a) 每个稀有类收集 ≥20 真实标注；(b) 或将 T-05 验收降级为"support≥10 类 macroF1 ≥ 75%"；E3 跑完后 Claude 更新 bench-history |
