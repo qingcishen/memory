@@ -85,6 +85,11 @@ describe('orchestrator trace integration', () => {
         expect(row.totalLatencyMs).toBeGreaterThanOrEqual(0);
         expect(row.pipelineVersion).toBe(1);
         expect(row.stages.find((stage) => stage.stage === 'perceive')?.status).toBe('ok');
+        expect(row.stages.find((stage) => stage.stage === 'interpret')?.status).toBe('ok');
+        expect(row.stages.find((stage) => stage.stage === 'retrieve')?.status).toBe('ok');
+        expect(row.stages.find((stage) => stage.stage === 'deliberate')?.status).toBe('ok');
+        expect(row.stages.find((stage) => stage.stage === 'compose')?.status).toBe('ok');
+        expect(row.stages.find((stage) => stage.stage === 'validate')?.status).toBe('ok');
         expect(row.commitStatus).toBe('ok');
       }
     } finally {

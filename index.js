@@ -224,3 +224,8 @@ export {
   isWriteStage,
 } from './src/orchestrator/turnPipeline.js';
 export { perceiveTurn, maxKnownGap } from './src/orchestrator/perceive.js';
+export { interpretTurn } from './src/orchestrator/interpret.js';
+export { retrieveTurn, emptyEvidencePack } from './src/orchestrator/retrieveStage.js';
+export { deliberateTurn } from './src/orchestrator/deliberate.js';
+export { composeTurn, compositionFromStream } from './src/orchestrator/composeStage.js';
+export { validateTurn } from './src/orchestrator/validateStage.js';

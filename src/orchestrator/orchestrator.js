@@ -40,29 +40,24 @@ import { emotionDecayOverridesFromConfig } from '../state/affect.js';
 import { fuseEmotionPrompt } from '../emotion.js';
 import { behaviorPolicy, behaviorToPrompt } from '../state/behavior.js';
 import { StoryEngine } from '../story/index.js';
-import { buildConversationGoals, goalsToPrompt } from './goals.js';
-import { prepareIntimacyForTurn, defaultIntimacy, mergeIntimacyConfig } from '../state/intimacy.js';
+import { goalsToPrompt } from './goals.js';
+import { mergeIntimacyConfig } from '../state/intimacy.js';
 import { normalizeWardrobe } from '../state/outfit.js';
-import { detectSceneLocks, sceneCoherenceToPrompt, extractUnfinishedHooks, nonSequiturRepairHint } from '../companion/sceneCoherence.js';
+import { sceneCoherenceToPrompt, extractUnfinishedHooks } from '../companion/sceneCoherence.js';
 import { inferRelationshipStage, relationshipStageToPrompt, applyStageToBehavior } from '../companion/relationshipStage.js';
 import { buildEpisodeHeuristic, episodesToPrompt, synthesizeEpisodeChain } from '../companion/episode.js';
 import { companyCast, companyStoryFacts, companyToPrompt } from '../company/index.js';
 import { buildProactiveContentPack, PROACTIVE_STYLE_GUIDE } from '../companion/proactiveContent.js';
-import { inferBodySituation, bodyStateToPrompt, applyBodyToBehavior, bodyIntimacyGate } from '../companion/bodyState.js';
+import { inferBodySituation, bodyStateToPrompt, applyBodyToBehavior } from '../companion/bodyState.js';
 import {
   planTurn,
   applyBehaviorSampling,
   enforcePartsBudget,
   stripStockEndingsFromParts,
 } from './turnPlan.js';
-import { humanizeReplyParts, isRepetitiveReply, stripRepeatedParts } from './humanizeReply.js';
-import { explainRecallHits, formatRecallExplanation } from './explainRecall.js';
-import {
-  planStructuredHeuristic,
-  enrichStructuredPlan,
-  applyStructuredToTurn,
-  structuredPlanToPrompt,
-} from './structuredPlan.js';
+import { humanizeReplyParts, stripRepeatedParts } from './humanizeReply.js';
+import { formatRecallExplanation } from './explainRecall.js';
+import { structuredPlanToPrompt } from './structuredPlan.js';
 import {
   synthesizeRelationshipNarrative,
   relationshipNarrativeToPrompt,
@@ -73,7 +68,6 @@ import {
   emptySessionThread,
   updateSessionThread,
   sessionThreadToPrompt,
-  sessionHooksToUnfinished,
   shouldResetSession,
   detectSessionDrift,
   normalizeSessionThread,
@@ -92,6 +86,11 @@ import {
 import { commitValidatedReply, createTurnEventId } from './turnCommit.js';
 import { createTurnContext, runTurnStage, summarizePipeline } from './turnPipeline.js';
 import { perceiveTurn } from './perceive.js';
+import { interpretTurn } from './interpret.js';
+import { emptyEvidencePack, retrieveTurn } from './retrieveStage.js';
+import { deliberateTurn } from './deliberate.js';
+import { composeTurn, compositionFromStream } from './composeStage.js';
+import { validateTurn } from './validateStage.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 const traceRuntimeEnabled = () =>
@@ -606,174 +605,78 @@ export class Orchestrator {
     const recoverBias =
       emotionDecayOverridesFromConfig(this._config)?.recoverBias ??
       this.stateLayer?.stateLayer?.emotionDecayOverrides?.recoverBias;
-    const emotionInferred = inferEmotionLabel(
-      { ...(stateSnapshot ?? {}), relationship: relState?.relationship ?? relState ?? {} },
-      this.ablation.desire === false ? {} : stateSnapshot?.desires,
-      [...this.history.slice(-4), { role: 'user', content: userMessage }],
-      {
-        previousResidual: this._emotionResidue,
+    pipelineContext = await runTurnStage(pipelineContext, 'interpret', async () => ({
+      interpretation: interpretTurn({
         userMessage,
-        recoverBias,
-        withResidual: true,
+        history: this.history,
+        stateSnapshot,
+        relState,
+        sceneType,
         now: nowMs,
-      },
-    );
-    const emotionLabel = typeof emotionInferred === 'string' ? emotionInferred : emotionInferred.label;
+        config: this._config,
+        ablation: this.ablation,
+        behaviorState: opts.behaviorState,
+        previousEmotionResidual: this._emotionResidue,
+        sessionThread: this._sessionThread,
+        sessionThreadEnabled: PARAMS.orchestrator?.sessionThread !== false,
+        intimacyConfig: this.stateLayer?.stateLayer?.intimacy?.config ?? PARAMS.intimacy,
+        recoverBias,
+      }),
+    }));
+    const interpretation = pipelineContext.interpretation;
+    const {
+      emotionInferred,
+      intimacyLive,
+      stateForPrompt,
+      relationship: rel,
+      relationshipStage: relStage,
+      bodySituation: bodySit,
+      behavior: interpretedBehavior,
+      sceneLocks,
+      sessionPeek,
+      unfinished,
+    } = interpretation;
+    let behavior = interpretedBehavior;
+    const emotionLabel = interpretation.emotion.label;
     if (emotionInferred && typeof emotionInferred === 'object' && emotionInferred.residual) {
       const prevRes = this._emotionResidue;
       this.applyEmotionSideEffects(prevRes, emotionInferred.residual, { userMessage, source: 'turn' });
     }
     this._lastEmotionLabel = emotionLabel;
-    // I2: 回复前预演亲密阶段（不写库），驱动旁白细分与 prompt 指引
-    const intimacyLive =
-      PARAMS.intimacy?.enabled !== false
-        ? prepareIntimacyForTurn(
-            stateSnapshot?.intimacy ?? defaultIntimacy(),
-            {
-              userMessage,
-              sceneType,
-              relationship: relState?.relationship ?? relState ?? stateSnapshot?.relationship,
-              life: stateSnapshot?.life,
-              desires: stateSnapshot?.desires,
-            },
-            this.stateLayer?.stateLayer?.intimacy?.config ?? PARAMS.intimacy
-          )
-        : stateSnapshot?.intimacy ?? null;
-    const stateForPrompt = stateSnapshot
-      ? {
-          ...stateSnapshot,
-          ...(this.ablation.desire === false ? { desires: null } : {}),
-          intimacy: intimacyLive ?? stateSnapshot.intimacy,
-        }
-      : stateSnapshot;
-    const rel = relState?.relationship ?? relState ?? {};
-    const relStage = inferRelationshipStage(rel);
-    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual, nowMs);
-    let behavior = behaviorPolicy(
-      this.ablation.behaviorPolicy === false ? '平静' : emotionLabel,
-      { relationship: this.ablation.behaviorPolicy === false ? {} : rel, ...(opts.behaviorState ?? {}) },
-    );
-    if (this.ablation.behaviorPolicy !== false) {
-      behavior = applyStageToBehavior(behavior, relStage);
-      behavior = applyBodyToBehavior(behavior, bodySit);
-    }
-    // 场景连贯锁（纯逻辑）：从历史+本轮+亲密阶段推断，注入最高优先级 prompt
-    const sceneLocks = detectSceneLocks(userMessage, this.history, intimacyLive?.scene_phase);
     this._lastSceneLocks = sceneLocks;
-    // 会话线 peek：仅用户句预览（不写回），合并历史未完钩子 + 本场问题/约定
-    const sessionPeek =
-      PARAMS.orchestrator?.sessionThread === false
-        ? null
-        : updateSessionThread(this._sessionThread, {
-            userMessage,
-            sceneLocks,
-            now: nowMs,
-          });
-    const unfinished = [
-      ...extractUnfinishedHooks(this.history),
-      ...(sessionPeek ? sessionHooksToUnfinished(sessionPeek) : []),
-    ].slice(0, 4);
     // 故事 beat：今日 + 未分享的 pending 都可作内容源
     let storyBeat = storySnapshot?.today ?? null;
     if (this.ablation.story !== false && !storyBeat && typeof this.story?.pendingShare === 'function') {
       storyBeat = await this.story.pendingShare().catch(() => null);
     }
-    // dueItems (如周年纪念日) 一旦被喂进 goals 就标记 fired——checkProspective 的注释写着
-    // "决定提起后用 dismissProspective 标记", 但这一步在对话回复链路里从来没人调用过,
-    // 只有独立的主动推送(scheduler.js)会标记。结果是同一条到期提醒(比如"记得我们
-    // 第一次聊天吗")每一轮都重新判定成 due, 在对话里被反复提起, 哪怕已经问过、对方
-    // 也已经回答过。这里补上这一步; annual 类型标记后 markFired 会把它顺延到明年,
-    // 不是永久消失。
-    if (dueItems?.length) {
-      this.memory.dismissProspective?.(dueItems.map((item) => item?.id).filter(Boolean)).catch(() => {});
-    }
-    const goals = buildConversationGoals({
-      dueItems,
-      desires: this.ablation.desire === false ? {} : stateSnapshot?.desires,
-      storyBeat: this.ablation.story === false ? null : storyBeat,
-      intimacy: intimacyLive ?? stateSnapshot?.intimacy,
-      intimacyPolicy: this.stateLayer?.stateLayer?.intimacy?.config?.proactive,
-      unfinished,
-      outfit: stateSnapshot?.outfit,
-      userMessage,
-      sceneLocks,
-    });
-    // 身体门控：病中/经期时砍掉高主动亲密意图
-    const bodyGate = bodyIntimacyGate(bodySit);
-    if (!bodyGate.allowIntimateInit) {
-      for (const g of goals) {
-        if (g.kind === 'intimacy' && g.canInitiate) {
-          g.canInitiate = false;
-          g.text = '身体不适：可黏可要抱抱，别主动推高热；对方坚持也温柔设限。';
-          g.priority = Math.min(g.priority, 0.35);
-        }
-      }
-      goals.sort((a, b) => b.priority - a.priority);
-    }
-    // 产品安全门：停止词 / 亲密关闭（来自 Telegram/飞书/UI 的 gateIncomingMessage）
-    if (opts.stopIntimate || opts.intimacyAllowed === false) {
-      for (const g of goals) {
-        if (g.kind === 'intimacy') {
-          g.canInitiate = false;
-          g.text = opts.stopIntimate
-            ? '对方已表示停止/冷静：立刻降热，先确认边界，不继续身体推进。'
-            : '当前亲密内容策略关闭：保持情感陪伴，不进入高热描写。';
-          g.priority = 0.95;
-        }
-      }
-      goals.unshift({
-        kind: 'safety',
-        priority: 1,
-        text: opts.stopIntimate
-          ? '安全停止：承认并停下亲密推进，语气稳、给台阶，别质问。'
-          : '亲密策略限制中：正常聊天即可。',
-      });
-      goals.sort((a, b) => b.priority - a.priority);
-    }
-
-    // 本轮计划：历史深度 / 独白 / 召回 query / parts 预算 / 简报
-    let turn = planTurn({
-      userMessage,
-      sceneLocks,
-      behavior,
-      goals,
-      intimacyPhase: intimacyLive?.scene_phase,
-      bodySit,
-      gapHours,
-      historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
-      useMonologueDefault: this.options.useMonologue && this.ablation.monologue !== false,
-    });
-    // 两阶段：结构化决策（启发式 + 可选便宜模型）
-    let structured = planStructuredHeuristic({
-      userMessage,
-      sceneLocks,
-      goals,
-      behavior,
-      storyBeat,
-      unfinished,
-      intimacyPhase: intimacyLive?.scene_phase,
-      bodySit,
-    });
-    // enrich：仅真实 LLM 客户端（OpenAI 兼容）才二次规划；DefaultLLM mock / 无 client 跳过
     const planClient = this.llm?.client || this.llm?.openai || null;
-    if (PARAMS.orchestrator?.structuredPlanLlm !== false && planClient) {
-      structured = await enrichStructuredPlan(
-        structured,
-        {
-          userMessage,
-          sceneLocks,
-          goals,
-          storyBeat,
-          unfinished,
-          intimacyPhase: intimacyLive?.scene_phase,
-        },
-        { client: planClient, signal: opts.signal },
-      ).catch(() => structured);
-    }
-    turn = applyStructuredToTurn(turn, structured, behavior);
-    if (turn._lengthHintOverride) {
-      behavior = { ...behavior, lengthHint: turn._lengthHintOverride, partsBudget: turn.partsBudget };
-    }
+    pipelineContext = await runTurnStage(pipelineContext, 'deliberate', async () => ({
+      decision: await deliberateTurn({
+        userMessage,
+        stateSnapshot,
+        dueItems,
+        storyBeat,
+        intimacyLive,
+        intimacyPolicy: this.stateLayer?.stateLayer?.intimacy?.config?.proactive,
+        unfinished,
+        sceneLocks,
+        bodySituation: bodySit,
+        gapHours,
+        behavior,
+        ablation: this.ablation,
+        options: opts,
+        historyTurnsDefault: this.options.historyTurns ?? DEFAULT_HISTORY_TURNS,
+        useMonologueDefault:
+          this.options.useMonologue && this.ablation.monologue !== false,
+        planClient,
+        signal: opts.signal,
+      }),
+    }));
+    const decision = pipelineContext.decision;
+    const goals = decision.goals;
+    const turn = decision.turnPlan;
+    const structured = decision.structuredPlan;
+    behavior = decision.behavior;
     if (turn.replyFormat) opts = { ...opts, replyFormat: opts.replyFormat || turn.replyFormat };
     this._lastTurnPlan = turn;
     this._lastStructured = structured;
@@ -893,19 +796,31 @@ export class Orchestrator {
           .catch(() => '')
       : Promise.resolve('');
 
-    const memoryPromise = this.memory
-      .recall(turn.recallQuery || userMessage, {
-        debug: Boolean(opts.debug),
-        reconsolidate: this.ablation.reconsolidation !== false,
-        ...(this.ablation.moodGating === false ? { params: { wMood: 0 } } : {}),
-      })
-      .catch(() => '');
-
-    const [monologue, memoryResult] = await Promise.all([monologuePromise, memoryPromise]);
-    const memoryBlock = memoryResult && typeof memoryResult === 'object' && 'block' in memoryResult ? memoryResult.block : memoryResult;
-    const memoryHits = memoryResult && typeof memoryResult === 'object' && Array.isArray(memoryResult.hits) ? memoryResult.hits : [];
-    const episodeTexts = extractEpisodeTexts(memoryHits);
-    const recallExplain = explainRecallHits(memoryHits, turn.recallQuery || userMessage);
+    const recallQuery = turn.recallQuery || userMessage;
+    pipelineContext = await runTurnStage(
+      pipelineContext,
+      'retrieve',
+      async () => ({
+        evidence: await retrieveTurn({
+          query: recallQuery,
+          memory: this.memory,
+          options: {
+            debug: Boolean(opts.debug),
+            reconsolidate: this.ablation.reconsolidation !== false,
+            ...(this.ablation.moodGating === false ? { params: { wMood: 0 } } : {}),
+          },
+        }),
+      }),
+      { degradable: true },
+    );
+    const monologue = await monologuePromise;
+    const evidence = pipelineContext.evidence ?? emptyEvidencePack(recallQuery);
+    const {
+      memoryBlock,
+      memoryHits,
+      episodeTexts,
+      recallExplain,
+    } = evidence;
 
     // E4 触景生情：只扰动本轮展示 emotion，重写 statePrompt 中的情绪段
     const resonance = this.ablation.moodGating === false
@@ -994,6 +909,7 @@ export class Orchestrator {
         emotionLabel,
         behavior,
         goals,
+        decision,
         memoryHits,
         recallExplain,
         promptParts,
@@ -1008,62 +924,33 @@ export class Orchestrator {
       });
     }
 
-    let { text: reply, parts } = normalizeReplyResult(
-      await this.llm.generateReply(messages, { ...samplingHints, signal: opts.signal })
-    );
-
-    // 一致性检改：默认开启（params.orchestrator.coherenceRetry）
-    const allowRetry = opts.skipCoherenceRetry !== true && PARAMS.orchestrator?.coherenceRetry !== false;
-    const temporalCoherence = {
-      gapHours,
-      userMessage,
-      currentActivity: stateSnapshot?.life?.current_activity,
-    };
-    const repair = nonSequiturRepairHint(reply, sceneLocks, temporalCoherence);
-    if (repair.needsRetry && allowRetry) {
-      try {
-        const retryMessages = [
-          ...messages,
-          { role: 'assistant', content: reply },
-          { role: 'user', content: repair.hint },
-        ];
-        const retried = normalizeReplyResult(
-          await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
-        );
-        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks, temporalCoherence).needsRetry) {
-          reply = retried.text;
-          parts = retried.parts;
-        }
-      } catch {
-        /* 保持原稿 */
-      }
-    }
-
-    // 复读/空嗯重试：连续「嗯…」或同一套拽衣襟模板时强制换新
-    if (allowRetry && isRepetitiveReply(reply, this.history)) {
-      try {
-        const retryMessages = [
-          ...messages,
-          { role: 'assistant', content: reply },
-          {
-            role: 'user',
-            content:
-              '（系统）你刚才在复读上一轮：同一套动作或只回「嗯…」。请完全换新的身体细节和台词，禁止拽衣襟/膝盖贴腿/半跪/腿软模板，禁止空省略号。像真人接住对方刚说的话。',
-          },
-        ];
-        const retried = normalizeReplyResult(
-          await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
-        );
-        if (retried?.text && !isRepetitiveReply(retried.text, this.history)) {
-          reply = retried.text;
-          parts = retried.parts;
-        }
-      } catch {
-        /* 保持原稿 */
-      }
-    }
-
-    ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
+    pipelineContext = await runTurnStage(pipelineContext, 'compose', async () => ({
+      composition: await composeTurn({
+        llm: this.llm,
+        messages,
+        samplingHints,
+        promptParts,
+        signal: opts.signal,
+      }),
+    }));
+    pipelineContext = await runTurnStage(pipelineContext, 'validate', async () => ({
+      validation: await validateTurn({
+        composition: pipelineContext.composition,
+        llm: this.llm,
+        messages,
+        samplingHints,
+        signal: opts.signal,
+        userMessage,
+        history: this.history,
+        sceneLocks,
+        gapHours,
+        currentActivity: stateSnapshot?.life?.current_activity,
+        skipCoherenceRetry: opts.skipCoherenceRetry,
+        postProcess: (draftReply, draftParts) =>
+          this._postProcessParts(draftReply, draftParts, turn, sceneLocks),
+      }),
+    }));
+    const { finalText: reply, finalParts: parts, repair } = pipelineContext.validation;
 
     pipelineContext = await runTurnStage(pipelineContext, 'commit', async (_ctx, tools) => {
       tools.assertCanWrite();
@@ -1077,6 +964,7 @@ export class Orchestrator {
           relationshipStage: relStage,
           stateSnapshot,
           photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
+          prospectiveToDismiss: decision.prospectiveToDismiss,
           sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
           updateSession: updateSessionThread,
         }),
@@ -1164,16 +1052,13 @@ export class Orchestrator {
       pipelineContext: initialPipelineContext,
     } = ctx;
     let pipelineContext = initialPipelineContext;
-    let lastPreview = '';
     let finalParts = [];
     let finalText = '';
     let streamed = true;
-    let repair = { needsRetry: false, reasons: [] };
 
     try {
       for await (const ev of this.llm.generateReplyStream(messages, { ...samplingHints, signal: opts.signal })) {
         if (ev.event === 'delta' || ev.event === 'preview') {
-          if (ev.event === 'preview') lastPreview = ev.text || lastPreview;
           yield ev;
         } else if (ev.event === 'done') {
           finalParts = ev.parts || [];
@@ -1191,38 +1076,34 @@ export class Orchestrator {
       yield { event: 'preview', text: finalText };
     }
 
-    let reply = finalText;
-    let parts = finalParts;
-
-    // 流式完成后一致性检改（默认同非流式）
-    const allowRetry = opts.skipCoherenceRetry !== true && PARAMS.orchestrator?.coherenceRetry !== false;
-    const temporalCoherence = {
-      gapHours,
-      userMessage,
-      currentActivity: stateSnapshot?.life?.current_activity,
-    };
-    repair = nonSequiturRepairHint(reply, sceneLocks, temporalCoherence);
-    if (repair.needsRetry && allowRetry) {
-      try {
-        const retryMessages = [
-          ...messages,
-          { role: 'assistant', content: reply },
-          { role: 'user', content: repair.hint },
-        ];
-        const retried = normalizeReplyResult(
-          await this.llm.generateReply(retryMessages, { ...samplingHints, signal: opts.signal })
-        );
-        if (retried?.text && !nonSequiturRepairHint(retried.text, sceneLocks, temporalCoherence).needsRetry) {
-          reply = retried.text;
-          parts = retried.parts;
-          yield { event: 'preview', text: reply };
-        }
-      } catch {
-        /* 保持原稿 */
-      }
-    }
-
-    ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
+    pipelineContext = await runTurnStage(pipelineContext, 'compose', async () => ({
+      composition: compositionFromStream({
+        text: finalText,
+        parts: finalParts,
+        streamed,
+        messages,
+        promptParts: ctx.promptParts,
+      }),
+    }));
+    pipelineContext = await runTurnStage(pipelineContext, 'validate', async () => ({
+      validation: await validateTurn({
+        composition: pipelineContext.composition,
+        llm: this.llm,
+        messages,
+        samplingHints,
+        signal: opts.signal,
+        userMessage,
+        history: this.history,
+        sceneLocks,
+        gapHours,
+        currentActivity: stateSnapshot?.life?.current_activity,
+        skipCoherenceRetry: opts.skipCoherenceRetry,
+        postProcess: (draftReply, draftParts) =>
+          this._postProcessParts(draftReply, draftParts, turn, sceneLocks),
+      }),
+    }));
+    const { finalText: reply, finalParts: parts, repair } = pipelineContext.validation;
+    if (reply !== finalText) yield { event: 'preview', text: reply };
 
     pipelineContext = await runTurnStage(pipelineContext, 'commit', async (_ctx, tools) => {
       tools.assertCanWrite();
@@ -1236,6 +1117,7 @@ export class Orchestrator {
           relationshipStage: relStage,
           stateSnapshot,
           photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
+          prospectiveToDismiss: ctx.decision?.prospectiveToDismiss,
           sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
           updateSession: updateSessionThread,
         }),
@@ -1901,15 +1783,6 @@ function activityReason(life) {
 function buildProactiveSituation(ctx = {}) {
   const reason = ctx.reason ? ` (${ctx.reason})` : '';
   return `这一刻不是对方发消息过来, 是你自己想主动找对方说点什么${reason}。`;
-}
-
-/** 从召回 hits 里抽出 episode/篇章类记忆文本，供 prompt 注入。 */
-function extractEpisodeTexts(hits = []) {
-  return (hits || [])
-    .filter((h) => h && (h.type === 'episode' || /【篇章】|篇章/.test(String(h.fact_core || h.content || h.narrative || ''))))
-    .map((h) => h.narrative || h.content || h.fact_core)
-    .filter(Boolean)
-    .slice(0, 3);
 }
 
 /** 对外暴露的本轮计划摘要（debug / API） */

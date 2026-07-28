@@ -12,6 +12,7 @@ export function commitValidatedReply(orchestrator, input = {}) {
     relationshipStage,
     stateSnapshot,
     photoRequested = false,
+    prospectiveToDismiss = [],
   } = input;
 
   if (!eventId) {
@@ -46,6 +47,18 @@ export function commitValidatedReply(orchestrator, input = {}) {
     relationshipStage,
   });
 
+  if (
+    prospectiveToDismiss.length &&
+    typeof orchestrator.memory?.dismissProspective === 'function'
+  ) {
+    orchestrator._lastProspectiveDismiss = Promise.resolve(
+      orchestrator.memory.dismissProspective(prospectiveToDismiss),
+    ).catch((error) => {
+      console.error('[commit.dismissProspective]', error);
+      return null;
+    });
+  }
+
   orchestrator
     .maybeDailyLookPhoto(stateSnapshot)
     .catch((error) => console.error('[maybeDailyLookPhoto]', error));
@@ -58,7 +71,9 @@ export function commitValidatedReply(orchestrator, input = {}) {
     eventId,
     status: 'committed',
     history: { appended: 2 },
-    enqueued: Boolean(orchestrator._lastAfterReply),
+    enqueued:
+      Boolean(orchestrator._lastAfterReply) ||
+      Boolean(orchestrator._lastProspectiveDismiss),
     sessionThread: orchestrator._sessionThread,
   };
 }
