@@ -221,6 +221,20 @@ export function summarizePipeline(context) {
         .filter(Boolean),
     },
     deliberateRationaleCodes: [...(context?.decision?.rationaleCodes ?? [])],
+    actionDecision: {
+      selectedAction: context?.decision?.actionDecision?.selectedAction ?? null,
+      selectedCandidateId:
+        context?.decision?.actionDecision?.selectedCandidateId ?? null,
+      shadow: context?.decision?.actionDecision?.shadow !== false,
+      candidates: (context?.decision?.actionDecision?.candidates ?? []).map((candidate) => ({
+        id: candidate.id ?? null,
+        intent: candidate.intent ?? null,
+        utility: candidate.utility ?? null,
+        feasible: candidate.feasible !== false,
+        constraints: [...(candidate.constraints ?? [])],
+        components: { ...(candidate.components ?? {}) },
+      })),
+    },
     ablationFlags: { ...(context?.options?.ablation ?? {}) },
     validationChecks: (context?.validation?.checks ?? []).map((check) => ({
       id: check.id,

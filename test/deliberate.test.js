@@ -15,6 +15,9 @@ describe('Deliberate stage', () => {
     expect(decision.prospectiveToDismiss).toEqual(['p1']);
     expect(decision.turnPlan).toBeTruthy();
     expect(decision.structuredPlan).toBeTruthy();
+    expect(decision.actionDecision).toMatchObject({ shadow: true });
+    expect(decision.candidates.length).toBeGreaterThan(0);
+    expect(decision.rationaleCodes.some((code) => code.startsWith('action:'))).toBe(true);
   });
 
   it('turns an intimacy stop into a top safety constraint', async () => {
@@ -26,6 +29,7 @@ describe('Deliberate stage', () => {
     });
     expect(decision.goals[0].kind).toBe('safety');
     expect(decision.constraints.stopIntimate).toBe(true);
+    expect(decision.selectedAction).toBe('safety_stop');
   });
 
   it('creates a retrieval query without invoking final deliberation', () => {

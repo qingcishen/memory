@@ -7,6 +7,7 @@ import {
   enrichStructuredPlan,
   applyStructuredToTurn,
 } from './structuredPlan.js';
+import { decideActionUtility } from './actionUtility.js';
 
 /**
  * Deliberate 阶段：生成目标、候选约束和最终本轮计划。
@@ -66,20 +67,30 @@ export async function deliberateTurn(input = {}) {
   if (turn && typeof turn === 'object') {
     turn.intimacyPhase = intimacyLive?.scene_phase ?? null;
   }
+  const actionDecision =
+    input.ablation?.utilityDecision === false
+      ? legacyActionDecision(goals)
+      : decideActionUtility({
+          goals,
+          userMessage,
+          sceneLocks,
+          recentActionIntents: input.recentActionIntents,
+          shadow: true,
+        });
   return {
     goals,
-    candidates: goals.map((goal) => ({
-      intent: goal.kind,
-      utility: goal.priority,
-      constraints: goal.canInitiate === false ? ['cannot_initiate'] : [],
-    })),
-    selectedAction: goals[0]?.kind ?? 'respond',
+    candidates: actionDecision.candidates,
+    selectedAction: actionDecision.selectedAction,
+    actionDecision,
     constraints,
     turnPlan: turn,
     structuredPlan: structured,
     behavior,
     samplingHints: {},
-    rationaleCodes: goals.slice(0, 3).map((goal) => `goal:${goal.kind}`),
+    rationaleCodes: [
+      ...goals.slice(0, 3).map((goal) => `goal:${goal.kind}`),
+      ...actionDecision.rationaleCodes,
+    ],
     prospectiveToDismiss,
     evidenceSummary: input.evidence
       ? {
@@ -87,6 +98,25 @@ export async function deliberateTurn(input = {}) {
           provenanceCount: input.evidence.provenance?.length ?? 0,
         }
       : { hitCount: 0, provenanceCount: 0 },
+  };
+}
+
+function legacyActionDecision(goals = []) {
+  const selectedAction = goals[0]?.kind ?? 'respond';
+  return {
+    selectedAction,
+    selectedCandidateId: goals[0] ? `goal:${goals[0].kind}:0` : 'respond',
+    candidates: goals.map((goal, index) => ({
+      id: `goal:${goal.kind}:${index}`,
+      intent: goal.kind,
+      utility: goal.priority,
+      constraints: goal.canInitiate === false ? ['cannot_initiate'] : [],
+      feasible: goal.canInitiate !== false,
+      components: {},
+    })),
+    rationaleCodes: [`action:${selectedAction}`, 'decision:legacy_priority'],
+    weights: {},
+    shadow: true,
   };
 }
 

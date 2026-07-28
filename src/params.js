@@ -55,6 +55,7 @@ export const DEFAULT_PARAMS = {
     story: true,
     desire: true,
     evidenceBudget: true,
+    utilityDecision: true,
   },
 
   // ---- M1 关系-情感状态机 ----

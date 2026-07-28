@@ -115,6 +115,10 @@ describe('orchestrator trace integration', () => {
           droppedCount: 0,
         });
         expect(row.deliberateRationaleCodes).toBeInstanceOf(Array);
+        expect(row.actionDecision).toMatchObject({
+          shadow: true,
+        });
+        expect(row.actionDecision.candidates.length).toBeGreaterThan(0);
         expect(row.ablationFlags).toMatchObject({
           monologue: false,
           behaviorPolicy: false,

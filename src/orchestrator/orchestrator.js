@@ -163,6 +163,7 @@ function emitReplyTrace(orchestrator, {
       evidenceSummary: result.pipeline?.evidenceSummary ?? null,
       evidenceBudget: result.pipeline?.evidenceBudget ?? null,
       deliberateRationaleCodes: result.pipeline?.deliberateRationaleCodes ?? [],
+      actionDecision: result.pipeline?.actionDecision ?? null,
       ablationFlags: result.pipeline?.ablationFlags ?? {},
     });
   } catch {}
@@ -722,9 +723,14 @@ export class Orchestrator {
         signal: opts.signal,
         retrievalPlan,
         evidence,
+        recentActionIntents: this._recentActionIntents ?? [],
       }),
     }));
     const decision = pipelineContext.decision;
+    this._recentActionIntents = [
+      ...(this._recentActionIntents ?? []),
+      decision.selectedAction,
+    ].slice(-6);
     const goals = decision.goals;
     const turn = decision.turnPlan;
     const structured = decision.structuredPlan;

@@ -115,6 +115,26 @@ export function normalizeReplyTrace(input = {}) {
     deliberateRationaleCodes: Array.isArray(input.deliberateRationaleCodes)
       ? input.deliberateRationaleCodes.map(String)
       : [],
+    actionDecision: {
+      selectedAction: input.actionDecision?.selectedAction ?? null,
+      selectedCandidateId: input.actionDecision?.selectedCandidateId ?? null,
+      shadow: input.actionDecision?.shadow !== false,
+      candidates: (input.actionDecision?.candidates ?? []).map((candidate) => ({
+        id: candidate.id ?? null,
+        intent: candidate.intent ?? null,
+        utility: candidate.utility == null ? null : Number(candidate.utility),
+        feasible: candidate.feasible !== false,
+        constraints: Array.isArray(candidate.constraints)
+          ? candidate.constraints.map(String)
+          : [],
+        components: Object.fromEntries(
+          Object.entries(candidate.components ?? {}).map(([key, value]) => [
+            key,
+            Number(value) || 0,
+          ]),
+        ),
+      })),
+    },
     ablationFlags: { ...(input.ablationFlags ?? {}) },
   };
 }
