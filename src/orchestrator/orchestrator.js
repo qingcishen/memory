@@ -161,6 +161,7 @@ function emitReplyTrace(orchestrator, {
       commitStatus: result.pipeline?.commitStatus ?? null,
       interpretEmotion: result.pipeline?.interpretEmotion ?? null,
       evidenceSummary: result.pipeline?.evidenceSummary ?? null,
+      evidenceBudget: result.pipeline?.evidenceBudget ?? null,
       deliberateRationaleCodes: result.pipeline?.deliberateRationaleCodes ?? [],
       ablationFlags: result.pipeline?.ablationFlags ?? {},
     });
@@ -688,6 +689,10 @@ export class Orchestrator {
           options: {
             debug: Boolean(opts.debug),
             reconsolidate: this.ablation.reconsolidation !== false,
+            evidenceBudget:
+              this.ablation.evidenceBudget === false
+                ? false
+                : opts.evidenceBudget ?? PARAMS.retrieval?.evidenceBudget,
             ...(this.ablation.moodGating === false ? { params: { wMood: 0 } } : {}),
           },
         }),

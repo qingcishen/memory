@@ -9,7 +9,13 @@ function dependencies() {
   return {
     memory: {
       async recall() {
-        const hits = [{ id: 'm1', type: 'preference', similarity: 0.9, _score: 0.8 }];
+        const hits = [{
+          id: 'm1',
+          type: 'preference',
+          content: '对方不吃香菜',
+          similarity: 0.9,
+          _score: 0.8,
+        }];
         setMemoryHits(hits);
         return { block: '你记得：对方不吃香菜', hits };
       },
@@ -103,6 +109,11 @@ describe('orchestrator trace integration', () => {
         expect(row.interpretEmotion.label).toBeTruthy();
         expect(row.evidenceSummary.memoryHitCount).toBe(1);
         expect(row.evidenceSummary.beliefCount).toBe(0);
+        expect(row.evidenceBudget).toMatchObject({
+          rawHitCount: 1,
+          selectedCount: 1,
+          droppedCount: 0,
+        });
         expect(row.deliberateRationaleCodes).toBeInstanceOf(Array);
         expect(row.ablationFlags).toMatchObject({
           monologue: false,

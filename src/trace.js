@@ -96,6 +96,22 @@ export function normalizeReplyTrace(input = {}) {
       memoryHitCount: Number(input.evidenceSummary?.memoryHitCount ?? 0) || 0,
       beliefCount: Number(input.evidenceSummary?.beliefCount ?? 0) || 0,
     },
+    evidenceBudget: {
+      rawHitCount: Number(input.evidenceBudget?.rawHitCount ?? 0) || 0,
+      selectedCount: Number(input.evidenceBudget?.selectedCount ?? 0) || 0,
+      droppedCount: Number(input.evidenceBudget?.droppedCount ?? 0) || 0,
+      usedChars: Number(input.evidenceBudget?.usedChars ?? 0) || 0,
+      maxChars: input.evidenceBudget?.maxChars == null
+        ? null
+        : Number(input.evidenceBudget.maxChars) || 0,
+      estimatedTokens: Number(input.evidenceBudget?.estimatedTokens ?? 0) || 0,
+      selectedReasonCodes: Array.isArray(input.evidenceBudget?.selectedReasonCodes)
+        ? input.evidenceBudget.selectedReasonCodes.map(String)
+        : [],
+      droppedReasonCodes: Array.isArray(input.evidenceBudget?.droppedReasonCodes)
+        ? input.evidenceBudget.droppedReasonCodes.map(String)
+        : [],
+    },
     deliberateRationaleCodes: Array.isArray(input.deliberateRationaleCodes)
       ? input.deliberateRationaleCodes.map(String)
       : [],

@@ -35,6 +35,10 @@ export const DEFAULT_PARAMS = {
     hybrid: true,  // R2: activation-hybrid MRR=1.00 p95=3429ms, 2026-07-28
     rrfK: 60,
     reranker: 'activation',
+    evidenceBudget: {
+      maxChars: 2200,
+      maxItems: 7,
+    },
     llm: {
       maxCandidates: 20,
       maxTokens: 400,
@@ -50,6 +54,7 @@ export const DEFAULT_PARAMS = {
     narration: true,
     story: true,
     desire: true,
+    evidenceBudget: true,
   },
 
   // ---- M1 关系-情感状态机 ----

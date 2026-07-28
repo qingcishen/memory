@@ -206,6 +206,20 @@ export function summarizePipeline(context) {
       memoryHitCount: context?.evidence?.memoryHits?.length ?? 0,
       beliefCount: context?.evidence?.beliefs?.length ?? 0,
     },
+    evidenceBudget: {
+      rawHitCount: context?.evidence?.budget?.rawHitCount ?? 0,
+      selectedCount: context?.evidence?.budget?.hitCount ?? 0,
+      droppedCount: context?.evidence?.budget?.droppedCount ?? 0,
+      usedChars: context?.evidence?.budget?.usedChars ?? 0,
+      maxChars: context?.evidence?.budget?.maxChars ?? null,
+      estimatedTokens: context?.evidence?.budget?.estimatedTokens ?? 0,
+      selectedReasonCodes: (context?.evidence?.budget?.decisions ?? [])
+        .map((decision) => decision.reason)
+        .filter(Boolean),
+      droppedReasonCodes: (context?.evidence?.budget?.dropped ?? [])
+        .map((decision) => decision.reason)
+        .filter(Boolean),
+    },
     deliberateRationaleCodes: [...(context?.decision?.rationaleCodes ?? [])],
     ablationFlags: { ...(context?.options?.ablation ?? {}) },
     validationChecks: (context?.validation?.checks ?? []).map((check) => ({
