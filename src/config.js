@@ -20,10 +20,17 @@ export const supabase = createClient(SB_URL, SB_KEY);
 
 // ---- LLM (提取 / reflection / 矛盾判断) ----
 // DeepSeek 完全兼容 OpenAI SDK: baseURL 填 https://api.deepseek.com
-export const llm = new OpenAI({
-  apiKey: process.env.LLM_API_KEY || 'placeholder',
-  baseURL: process.env.LLM_BASE_URL || 'https://api.deepseek.com',
-});
+// Anthropic key (sk-ant-) 自动切换到 Anthropic Messages API
+const _llmApiKey = process.env.LLM_API_KEY || 'placeholder';
+export const llm = isAnthropicApiKey(_llmApiKey)
+  ? createAnthropicChatAdapter(new Anthropic({
+      apiKey: _llmApiKey,
+      ...(process.env.LLM_BASE_URL ? { baseURL: process.env.LLM_BASE_URL } : {}),
+    }))
+  : new OpenAI({
+      apiKey: _llmApiKey,
+      baseURL: process.env.LLM_BASE_URL || 'https://api.deepseek.com',
+    });
 export const LLM_MODEL = process.env.LLM_MODEL || 'deepseek-chat';
 // 编排器回复模型 (好模型, 可与 LLM_MODEL 不同 provider); 未配置时退回 LLM_MODEL。
 export const REPLY_MODEL = process.env.REPLY_MODEL || LLM_MODEL;
