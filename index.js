@@ -1,4 +1,23 @@
 export { Memory } from './src/memory.js';
+export {
+  BeliefEngine,
+  BeliefRepository,
+  BELIEF_KINDS,
+  EPISTEMIC_STATUSES,
+  EVIDENCE_SOURCE_KINDS,
+  beliefKey,
+  normalizeBelief,
+  normalizeEvidence,
+  sameBelief,
+  combineConfidence,
+  explicitBeliefsFromMemory,
+  BeliefKindSchema,
+  EpistemicStatusSchema,
+  EvidenceSourceKindSchema,
+  BeliefRecordSchema,
+  BeliefEvidenceSchema,
+  BeliefQuerySchema,
+} from './src/belief/index.js';
 export { extractMemories } from './src/extract.js';
 export { storeMemories } from './src/store.js';
 export {
@@ -195,3 +214,11 @@ export {
   pickSilenceTier,
   pickBedtimeTier,
 } from './src/orchestrator/index.js';
+export {
+  TURN_PIPELINE_VERSION,
+  TURN_STAGES,
+  createTurnContext,
+  runTurnPipeline,
+  summarizePipeline,
+  isWriteStage,
+} from './src/orchestrator/turnPipeline.js';

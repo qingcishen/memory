@@ -140,6 +140,78 @@ create index if not exists knowledge_relations_memory_idx
   on knowledge_relations (source_memory_id) where source_memory_id is not null;
 
 -- ------------------------------------------------------------
+--  B4 · Temporal Belief Engine。
+--  memories 保存自然语言经历；beliefs 保存可查询的时态信念。
+--  一条信念必须保留 provenance，且区分用户陈述、助手陈述、外部来源与模型推断。
+-- ------------------------------------------------------------
+create table if not exists beliefs (
+  id                 uuid primary key default gen_random_uuid(),
+  user_id            text not null,
+  companion_id       text not null default 'default',
+  belief_key         text not null, -- 规范化 subject/predicate/object 的稳定指纹
+  slot_key           text,          -- 单值槽冲突域；为空表示同 predicate 可多值并存
+  subject_key        text not null,
+  subject_label      text not null,
+  predicate          text not null,
+  object_value       jsonb not null,
+  object_text        text not null,
+  belief_kind        text not null default 'general'
+                     check (belief_kind in ('identity','preference','event','commitment','relationship','general')),
+  epistemic_status   text not null default 'asserted'
+                     check (epistemic_status in ('asserted','inferred','uncertain')),
+  confidence         real not null default 0.7 check (confidence >= 0 and confidence <= 1),
+  status             text not null default 'active'
+                     check (status in ('active','superseded','retracted')),
+  valid_from         timestamptz,
+  valid_to           timestamptz,
+  first_observed_at  timestamptz not null default now(),
+  last_confirmed_at  timestamptz not null default now(),
+  observation_count  int not null default 1 check (observation_count >= 1),
+  superseded_by      uuid references beliefs(id) on delete set null,
+  metadata           jsonb not null default '{}'::jsonb,
+  created_at         timestamptz not null default now(),
+  updated_at         timestamptz not null default now()
+);
+-- Draft 早期曾使用全历史 unique，无法表达“喜欢→不喜欢→又喜欢”；升级时移除。
+alter table beliefs drop constraint if exists beliefs_user_id_companion_id_belief_key_key;
+
+create table if not exists belief_evidence (
+  id                 uuid primary key default gen_random_uuid(),
+  belief_id          uuid not null references beliefs(id) on delete cascade,
+  user_id            text not null,
+  companion_id       text not null default 'default',
+  source_kind        text not null
+                     check (source_kind in ('user','assistant','external','inference','memory','system')),
+  source_id          text,
+  source_memory_id   uuid references memories(id) on delete set null,
+  evidence_text      text,
+  evidence_hash      text not null,
+  supports           boolean not null default true,
+  confidence         real not null default 0.7 check (confidence >= 0 and confidence <= 1),
+  observed_at        timestamptz not null default now(),
+  metadata           jsonb not null default '{}'::jsonb,
+  created_at         timestamptz not null default now(),
+  unique (belief_id, evidence_hash)
+);
+
+create index if not exists beliefs_current_subject_idx
+  on beliefs (user_id, companion_id, subject_key, predicate, updated_at desc)
+  where status = 'active';
+-- 同一事实在当前视图只保留一条；历史允许“喜欢→不喜欢→又喜欢”产生三个时态版本。
+create unique index if not exists beliefs_current_key_unique_idx
+  on beliefs (user_id, companion_id, belief_key)
+  where status = 'active';
+create index if not exists beliefs_current_slot_idx
+  on beliefs (user_id, companion_id, slot_key, updated_at desc)
+  where status = 'active' and slot_key is not null;
+create index if not exists beliefs_history_idx
+  on beliefs (user_id, companion_id, subject_key, predicate, created_at desc);
+create index if not exists belief_evidence_belief_idx
+  on belief_evidence (belief_id, observed_at desc);
+create index if not exists belief_evidence_source_idx
+  on belief_evidence (user_id, companion_id, source_kind, source_id);
+
+-- ------------------------------------------------------------
 --  M1 · 关系-情感状态机 (见 docs/DEVELOPMENT.md §1.1, M1)
 --  一个用户一行: 她当下的心情 + 你俩关系的状态。
 --  写入与读取见 src/state/affect.js; mood 随时间回落, relationship 主要被事件改变。
@@ -627,7 +699,7 @@ do $$
 declare table_name text;
 begin
   foreach table_name in array array[
-    'memories','knowledge_entities','knowledge_relations','affective_state','life_state',
+    'memories','knowledge_entities','knowledge_relations','beliefs','belief_evidence','affective_state','life_state',
     'affective_state_history','prospective','proactive_rate_limits','behavior_state','story_lines',
     'companions','appearance_assets','companion_card_assets','album_custom_entries',
     'jobs','chat_history','chat_session_state','chat_emotion_residue','channel_events','world_state'

@@ -1,5 +1,14 @@
 export { Orchestrator } from './orchestrator.js';
 export {
+  TURN_PIPELINE_VERSION,
+  TURN_STAGES,
+  createTurnContext,
+  runTurnPipeline,
+  summarizePipeline,
+  isWriteStage,
+} from './turnPipeline.js';
+export { commitValidatedReply, createTurnEventId } from './turnCommit.js';
+export {
   MemoryAdapter,
   StateLayerAdapter,
   RelationshipAdapter,

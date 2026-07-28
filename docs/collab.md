@@ -39,8 +39,9 @@
 |---|---|---|---|
 | F2 情绪分类器 ML 升级 | Claude | 待开始 | 需先补充标注集至 300 条 |
 | 模型对比实验（GLM-4-Flash vs Haiku） | Claude | 待开始 | 等 E3 重跑（删机制后）确认基线 |
-| Orchestrator 七阶段流水线重构 | Codex | 设计阶段 | 需与 Claude 对齐接口契约 |
-| Temporal Belief Engine v1 | Codex | 设计阶段 | 需 DB schema 设计 |
+| Prompt 动态剪枝 v1 | Codex / Claude | 实现已落地，待 E3 复核 | 短轮与亲密场景剪掉低价值 goals/episode；需 Claude 跑 naturalness |
+| Orchestrator 七阶段流水线重构 | Codex | T-07 接口空壳已完成；Commit 迁移进行中 | 等 Claude 复核评测字段；其余阶段尚未从旧 Orchestrator 搬出 |
+| Temporal Belief Engine v1 | Codex | T-08 schema 交付完成；投影/查询 API 初版完成 | 尚未对真实 Supabase 跑迁移与集成测试 |
 
 ### 待讨论
 
@@ -60,7 +61,7 @@
 |---|---|---|---|
 | T-01 | 重跑 E3（删 monologue + behaviorPolicy 之后的新基线） | Claude | E3 baseline > 3.3/5 |
 | T-02 | `docs/technical-upgrade-audit.md` 合并提交 | Claude | `git commit` |
-| T-03 | Prompt 动态剪枝 v1（`assemble.js` 场景化条件） | Codex | vitest 全绿；E3 naturalness ≥ 3.0 |
+| T-03 | Prompt 动态剪枝 v1（`assemble.js` 场景化条件） | Codex | **待 Claude 评测**；vitest 全绿；E3 naturalness ≥ 3.0 |
 
 ### P1 · 2~4 周
 
@@ -69,8 +70,8 @@
 | T-04 | F2 标注集扩充（204 → 300+ goldLabel） | Claude | `data/labels/` 达 300 条，脚本可跑 |
 | T-05 | F2 嵌入分类器（k-NN / MLP） | Claude | F2 准确率 ≥ 85%，替换 `inferEmotionLabelRaw` |
 | T-06 | 模型层对比（GLM-4-Flash vs Claude Haiku 4.5，同剧本） | Claude | 量化 Δ，出结论文档 |
-| T-07 | Orchestrator 七阶段流水线接口定义（TurnContext 等结构） | Codex | 空壳可跑，有接口签名文档 |
-| T-08 | Temporal Belief Engine v1 DB schema | Codex | `sql/beliefs.sql` + Zod schema |
+| T-07 | Orchestrator 七阶段流水线接口定义（TurnContext 等结构） | Codex | **待 Claude 复核**；空壳可跑，有接口签名文档 |
+| T-08 | Temporal Belief Engine v1 DB schema | Codex | **已完成（待真实 DB 验证）**；`sql/beliefs.sql` + Zod schema |
 | T-09 | 多 judge + 盲化消融（同剧本 3 次，bootstrap CI） | Claude | 消融结论置信度可量化 |
 
 ### P2 · 1~2 月（计划中，未分配）
@@ -96,6 +97,9 @@ docs/collab.md                           ← 双方共同维护（本文件）
 
 // 代码修改边界
 src/orchestrator/orchestrator.js         ← Codex 主导重构，Claude 不做结构性改动
+src/orchestrator/turnPipeline.js         ← Codex 主导，Claude 复核 trace/评测字段
+src/orchestrator/turnCommit.js           ← Codex 主导，统一长期写边界
+src/belief/ sql/beliefs.sql              ← Codex 主导，Claude 负责后续 T-09 评测
 src/state/emotionLabel.js                ← Claude 主导，Codex review
 bench/ scripts/ data/                    ← Claude 主导，Codex 可提 issue
 
@@ -126,3 +130,5 @@ bench_ 前缀 userId 不能进生产库
 | 时间 | 从 | 到 | 最后做到 | 下次入口 |
 |---|---|---|---|---|
 | 2026-07-28 | Claude | Codex/Claude | 合并 `technical-upgrade-audit.md`，新增 `collab.md` | T-01 重跑 E3 基线；T-03 `assemble.js` 剪枝；T-04 F2 标注扩充 |
+| 2026-07-28 | Codex | Claude | T-07 七阶段契约与可运行空壳已落地；T-08 已有初版 schema、ontology、repository；Commit 正在从 Orchestrator 收口 | 请复核 `docs/turn-pipeline-v4.md` 的评测字段；Codex 继续 T-03 与 T-08 |
+| 2026-07-28 | Codex | Claude | T-07 新增七阶段 runner/契约并统一流式与非流式 Commit；T-08 新增 `sql/beliefs.sql`、Zod、时态 schema、投影与查询 API；全量 1666 tests + typecheck 通过 | 运行 T-03 E3 naturalness；复核 Turn Pipeline trace 字段；有测试库时执行 beliefs SQL 集成验证 |
