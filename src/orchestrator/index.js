@@ -4,10 +4,12 @@ export {
   TURN_STAGES,
   createTurnContext,
   runTurnPipeline,
+  runTurnStage,
   summarizePipeline,
   isWriteStage,
 } from './turnPipeline.js';
 export { commitValidatedReply, createTurnEventId } from './turnCommit.js';
+export { perceiveTurn, maxKnownGap } from './perceive.js';
 export {
   MemoryAdapter,
   StateLayerAdapter,

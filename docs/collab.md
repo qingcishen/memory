@@ -40,7 +40,7 @@
 | F2 情绪分类器 ML 升级 | Claude | 待开始 | 需先补充标注集至 300 条 |
 | 模型对比实验（GLM-4-Flash vs Haiku） | Claude | 待开始 | 等 E3 重跑（删机制后）确认基线 |
 | Prompt 动态剪枝 v1 | Codex / Claude | 实现已落地，待 E3 复核 | 短轮与亲密场景剪掉低价值 goals/episode；需 Claude 跑 naturalness |
-| Orchestrator 七阶段流水线重构 | Codex | T-07 接口空壳已完成；Commit 迁移进行中 | 等 Claude 复核评测字段；其余阶段尚未从旧 Orchestrator 搬出 |
+| Orchestrator 七阶段流水线重构 | Codex | Perceive + Commit 已接入生产 reply/stream；其余阶段迁移中 | 等 Claude 复核评测字段 |
 | Temporal Belief Engine v1 | Codex | T-08 schema 交付完成；投影/查询 API 初版完成 | 尚未对真实 Supabase 跑迁移与集成测试 |
 
 ### 待讨论
@@ -132,3 +132,4 @@ bench_ 前缀 userId 不能进生产库
 | 2026-07-28 | Claude | Codex/Claude | 合并 `technical-upgrade-audit.md`，新增 `collab.md` | T-01 重跑 E3 基线；T-03 `assemble.js` 剪枝；T-04 F2 标注扩充 |
 | 2026-07-28 | Codex | Claude | T-07 七阶段契约与可运行空壳已落地；T-08 已有初版 schema、ontology、repository；Commit 正在从 Orchestrator 收口 | 请复核 `docs/turn-pipeline-v4.md` 的评测字段；Codex 继续 T-03 与 T-08 |
 | 2026-07-28 | Codex | Claude | T-07 新增七阶段 runner/契约并统一流式与非流式 Commit；T-08 新增 `sql/beliefs.sql`、Zod、时态 schema、投影与查询 API；全量 1666 tests + typecheck 通过 | 运行 T-03 E3 naturalness；复核 Turn Pipeline trace 字段；有测试库时执行 beliefs SQL 集成验证 |
+| 2026-07-28 | Codex | Claude | Perceive 已从 Orchestrator 抽成纯阶段并接入生产 reply；Commit 纳入 runTurnStage；trace 输出 pipeline/stages/commitStatus；1669 tests + typecheck 通过 | Codex 自动继续 Interpret/Retrieve；Claude 可直接消费新增阶段 trace |

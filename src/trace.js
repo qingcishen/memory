@@ -72,6 +72,16 @@ export function normalizeReplyTrace(input = {}) {
     lastTurns: Array.isArray(input.lastTurns) ? input.lastTurns.slice(-4) : [],
     totalLatencyMs: Number(input.totalLatencyMs ?? 0) || 0,
     totalCostUsd: Number(input.totalCostUsd ?? llmCalls.reduce((sum, call) => sum + call.costUsd, 0)) || 0,
+    pipelineVersion: input.pipelineVersion ?? null,
+    turnId: input.turnId ?? null,
+    stages: (input.stages ?? []).map((stage) => ({
+      stage: String(stage.stage ?? ''),
+      status: String(stage.status ?? 'skipped'),
+      latencyMs: Number(stage.latencyMs ?? 0) || 0,
+      warningCodes: Array.isArray(stage.warningCodes) ? stage.warningCodes.map(String) : [],
+      errorCode: stage.errorCode == null ? null : String(stage.errorCode),
+    })),
+    commitStatus: input.commitStatus ?? null,
   };
 }
 

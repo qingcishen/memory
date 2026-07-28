@@ -219,6 +219,8 @@ export {
   TURN_STAGES,
   createTurnContext,
   runTurnPipeline,
+  runTurnStage,
   summarizePipeline,
   isWriteStage,
 } from './src/orchestrator/turnPipeline.js';
+export { perceiveTurn, maxKnownGap } from './src/orchestrator/perceive.js';

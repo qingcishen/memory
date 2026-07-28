@@ -104,6 +104,54 @@ export async function runTurnPipeline(input, handlers, opts = {}) {
   return context;
 }
 
+/** 渐进迁移入口：在现有 Orchestrator 中一次迁入一个阶段，同时复用完整错误语义。 */
+export async function runTurnStage(input, stage, handler, opts = {}) {
+  if (!TURN_STAGES.includes(stage)) throw new Error(`Unknown turn stage: ${stage}`);
+  let output = null;
+  const handlers = { [stage]: handler };
+  const context = createTurnContext(input);
+  const startedAt = Date.now();
+  try {
+    const raw = await handlers[stage](context, stageTools(stage));
+    const normalized = normalizeHandlerResult(raw);
+    output = stageResult(
+      stage,
+      normalized.status,
+      startedAt,
+      Date.now(),
+      normalized.patch,
+      normalized.warnings,
+      null,
+    );
+  } catch (error) {
+    const safeError = serializeStageError(error);
+    const canDegrade = opts.degradable ?? defaultDegradable(stage);
+    output = stageResult(
+      stage,
+      canDegrade ? 'degraded' : 'failed',
+      startedAt,
+      Date.now(),
+      {},
+      [],
+      safeError,
+    );
+    const degraded = applyStageResult(context, output);
+    opts.onStage?.(output, degraded);
+    if (!canDegrade) {
+      const pipelineError = new Error(`${stage} stage failed: ${safeError.message}`);
+      pipelineError.name = 'TurnPipelineError';
+      pipelineError.stage = stage;
+      pipelineError.cause = error;
+      pipelineError.context = degraded;
+      throw pipelineError;
+    }
+    return degraded;
+  }
+  const next = applyStageResult(context, output);
+  opts.onStage?.(output, next);
+  return next;
+}
+
 export function summarizePipeline(context) {
   return {
     pipelineVersion: context?.version ?? TURN_PIPELINE_VERSION,

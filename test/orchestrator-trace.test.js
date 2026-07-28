@@ -83,6 +83,9 @@ describe('orchestrator trace integration', () => {
         expect(row.promptBytes.total).toBeGreaterThan(0);
         expect(row.totalCostUsd).toBeGreaterThan(0);
         expect(row.totalLatencyMs).toBeGreaterThanOrEqual(0);
+        expect(row.pipelineVersion).toBe(1);
+        expect(row.stages.find((stage) => stage.stage === 'perceive')?.status).toBe('ok');
+        expect(row.commitStatus).toBe('ok');
       }
     } finally {
       if (previous.dir == null) delete process.env.TRACE_DIR;

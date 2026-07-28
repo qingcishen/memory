@@ -8,7 +8,6 @@
 import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter } from './adapters.js';
 import { DefaultLLM, normalizeReplyResult, joinReplyParts, pickReplyFormat } from './llm.js';
 import { assemble, buildMonologueContext, buildTimePrompt } from './assemble.js';
-import { hoursSince } from '../decay.js';
 import { getCompanion } from '../companion.js';
 import { Selfie, decidePhoto, canSendSelfie } from '../appearance/index.js';
 import { listReferenceImages, referenceFilePath } from '../appearance/references.js';
@@ -91,6 +90,8 @@ import {
   writeDailyCost,
 } from '../trace.js';
 import { commitValidatedReply, createTurnEventId } from './turnCommit.js';
+import { createTurnContext, runTurnStage, summarizePipeline } from './turnPipeline.js';
+import { perceiveTurn } from './perceive.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 const traceRuntimeEnabled = () =>
@@ -154,6 +155,10 @@ function emitReplyTrace(orchestrator, {
         .slice(-4)
         .map(({ role, content }) => ({ role, content })),
       totalLatencyMs: Math.max(0, Date.now() - traceStartedAt),
+      pipelineVersion: result.pipeline?.pipelineVersion ?? null,
+      turnId: result.pipeline?.turnId ?? null,
+      stages: result.pipeline?.stages ?? [],
+      commitStatus: result.pipeline?.commitStatus ?? null,
     });
   } catch {}
 }
@@ -546,8 +551,17 @@ export class Orchestrator {
         now: traceStartedAt,
       }),
     };
-    const historyUserMessage = String(opts.historyUserMessage ?? userMessage);
     const nowMs = this.now();
+    let pipelineContext = createTurnContext({
+      eventId: opts.eventId,
+      userId: this.userId,
+      companionId: this.companionId,
+      userMessage,
+      historyUserMessage: opts.historyUserMessage ?? userMessage,
+      startedAt: traceStartedAt,
+      now: nowMs,
+      options: opts,
+    });
     // 先读持久历史的真实时间，再做任何情绪/场景判断。过去只看进程内时间，重启后会把
     // 几小时前加载回来的旧饭局当成“刚刚”，造成角色时间冻结。
     const storedLastUserMessageAt =
@@ -556,21 +570,25 @@ export class Orchestrator {
             .lastUserMessageAt({ userId: this.userId, companionId: this.companionId })
             .catch(() => null)
         : null;
-    const memoryIdleHours = this._lastUserMessageAt ? Math.max(0, (nowMs - this._lastUserMessageAt) / 3600000) : null;
-    const storedGapHours = storedLastUserMessageAt != null ? hoursSince(storedLastUserMessageAt, nowMs) : null;
-    const gapHours = maxKnown(memoryIdleHours, storedGapHours);
-    // 长时间沉默后清历史: 旧消息的事实仍可由长期记忆召回，但旧物理现场必须结束。
-    if (gapHours != null && gapHours >= 4 && this.history.length > 0) {
-      this.history = [];
-      this._lastSceneType = null; // 隔了这么久, 场景连续性提示也该重新开始判断, 不该沿用几小时前的场景
-      this._sessionThread = emptySessionThread(); // 新会话线
-      this.persistSessionThread();
-    }
-    // 会话线超时重置（即使 history 已空）
-    if (PARAMS.orchestrator?.sessionThread !== false && shouldResetSession(this._sessionThread, nowMs)) {
-      this._sessionThread = emptySessionThread(nowMs);
-      this.persistSessionThread();
-    }
+    pipelineContext = await runTurnStage(pipelineContext, 'perceive', async () => ({
+      perception: perceiveTurn({
+        userMessage,
+        historyUserMessage: opts.historyUserMessage ?? userMessage,
+        history: this.history,
+        lastUserMessageAt: this._lastUserMessageAt,
+        storedLastUserMessageAt,
+        now: nowMs,
+        sessionThread: this._sessionThread,
+        sessionThreadEnabled: PARAMS.orchestrator?.sessionThread !== false,
+        previousSceneType: this._lastSceneType,
+      }),
+    }));
+    const perception = pipelineContext.perception;
+    const historyUserMessage = perception.historyUserMessage;
+    const gapHours = perception.gapHours;
+    this.history = perception.history;
+    this._sessionThread = perception.sessionThread;
+    this._lastSceneType = perception.previousSceneType;
     this._lastUserMessageAt = nowMs;
 
     // 先并行拉状态/场景；记忆召回用 turnPlan 增强 query，故分两段（状态极快，不显著增延迟）
@@ -986,6 +1004,7 @@ export class Orchestrator {
         historyUserMessage,
         traceStartedAt,
         traceMetricsBefore,
+        pipelineContext,
       });
     }
 
@@ -1046,17 +1065,22 @@ export class Orchestrator {
 
     ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
-    commitValidatedReply(this, {
-      eventId: opts.eventId,
-      historyUserMessage,
-      reply,
-      sceneLocks,
-      nowMs,
-      relationshipStage: relStage,
-      stateSnapshot,
-      photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
-      sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
-      updateSession: updateSessionThread,
+    pipelineContext = await runTurnStage(pipelineContext, 'commit', async (_ctx, tools) => {
+      tools.assertCanWrite();
+      return {
+        commit: commitValidatedReply(this, {
+          eventId: opts.eventId,
+          historyUserMessage,
+          reply,
+          sceneLocks,
+          nowMs,
+          relationshipStage: relStage,
+          stateSnapshot,
+          photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
+          sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
+          updateSession: updateSessionThread,
+        }),
+      };
     });
 
     const sessionDrift = detectSessionDrift(reply, this._sessionThread);
@@ -1105,6 +1129,7 @@ export class Orchestrator {
       emotionResidue: this._emotionResidue
         ? { label: this._emotionResidue.label, intensity: this._emotionResidue.intensity }
         : null,
+      pipeline: summarizePipeline(pipelineContext),
       ...(debug ? { debug } : {}),
     };
     emitReplyTrace(this, {
@@ -1136,7 +1161,9 @@ export class Orchestrator {
       userMessage, opts, messages, samplingHints, turn, structured, sceneLocks, stateSnapshot,
       emotionLabel, behavior, goals, intimacyLive, relStage, bodySit, recallExplain, gapHours, nowMs,
       historyUserMessage = userMessage, traceStartedAt = Date.now(), traceMetricsBefore = {},
+      pipelineContext: initialPipelineContext,
     } = ctx;
+    let pipelineContext = initialPipelineContext;
     let lastPreview = '';
     let finalParts = [];
     let finalText = '';
@@ -1197,17 +1224,22 @@ export class Orchestrator {
 
     ({ reply, parts } = this._postProcessParts(reply, parts, turn, sceneLocks));
 
-    commitValidatedReply(this, {
-      eventId: opts.eventId,
-      historyUserMessage,
-      reply,
-      sceneLocks,
-      nowMs,
-      relationshipStage: relStage,
-      stateSnapshot,
-      photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
-      sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
-      updateSession: updateSessionThread,
+    pipelineContext = await runTurnStage(pipelineContext, 'commit', async (_ctx, tools) => {
+      tools.assertCanWrite();
+      return {
+        commit: commitValidatedReply(this, {
+          eventId: opts.eventId,
+          historyUserMessage,
+          reply,
+          sceneLocks,
+          nowMs,
+          relationshipStage: relStage,
+          stateSnapshot,
+          photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
+          sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
+          updateSession: updateSessionThread,
+        }),
+      };
     });
 
     const result = {
@@ -1227,6 +1259,7 @@ export class Orchestrator {
       emotionResidue: this._emotionResidue
         ? { label: this._emotionResidue.label, intensity: this._emotionResidue.intensity }
         : null,
+      pipeline: summarizePipeline(pipelineContext),
       streamed,
     };
     if (opts.debug) {
@@ -1848,12 +1881,6 @@ function mergeStoryCast(...groups) {
     out.push(member);
   }
   return out;
-}
-
-/** 取已知间隔中的较大值：进程内时钟与持久历史任一发现跨时段，都必须结束旧物理场景。 */
-function maxKnown(...values) {
-  const known = values.map(Number).filter(Number.isFinite).filter((n) => n >= 0);
-  return known.length ? Math.max(...known) : null;
 }
 
 function buildProactiveInstruction(ctx = {}) {

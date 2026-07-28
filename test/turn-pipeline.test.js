@@ -3,6 +3,7 @@ import {
   TURN_STAGES,
   createTurnContext,
   isWriteStage,
+  runTurnStage,
   runTurnPipeline,
   summarizePipeline,
 } from '../src/orchestrator/turnPipeline.js';
@@ -85,5 +86,19 @@ describe('v4 turn pipeline', () => {
     expect(b.diagnostics.warnings).toEqual([]);
     expect(a.version).toBe(1);
     expect(a.companionId).toBe('default');
+  });
+
+  it('supports migrating one production stage at a time', async () => {
+    const initial = createTurnContext({
+      userId: 'u1',
+      eventId: 'evt-1',
+      userMessage: 'hello',
+    });
+    const next = await runTurnStage(initial, 'perceive', async () => ({
+      perception: { normalizedMessage: 'hello' },
+    }));
+    expect(next.perception.normalizedMessage).toBe('hello');
+    expect(next.stageResults.perceive.status).toBe('ok');
+    expect(next.stageResults.interpret).toBeUndefined();
   });
 });
