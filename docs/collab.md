@@ -110,19 +110,19 @@ typecheck 通过，字段契约可冻结。
 
 | # | 任务 | 负责方 | 验收标准 |
 |---|---|---|---|
-| T-01 | 重跑 E3（删 monologue + behaviorPolicy 之后的新基线） | Claude | E3 baseline > 3.3/5 |
-| T-02 | `docs/technical-upgrade-audit.md` 合并提交 | Claude | `git commit` |
-| T-03 | Prompt 动态剪枝 v1（`assemble.js` 场景化条件） | Codex | **待 Claude 评测**；vitest 全绿；E3 naturalness ≥ 3.0 |
+| T-01 | 重跑 E3（删 monologue + behaviorPolicy 之后的新基线） | Claude | E3 baseline > 3.3/5（**进行中**：PID 20283 运行 5h+，等待 API） |
+| T-02 | `docs/technical-upgrade-audit.md` 合并提交 | Claude | **已完成**：commit `8d952a7` |
+| T-03 | Prompt 动态剪枝 v1（`assemble.js` 场景化条件） | Codex | **待 Claude 评测**；vitest 全绿；E3 naturalness ≥ 3.0（等 T-01 E3 结果） |
 
 ### P1 · 2~4 周
 
 | # | 任务 | 负责方 | 验收标准 |
 |---|---|---|---|
-| T-04 | F2 标注集扩充（204 → 300+ goldLabel） | Claude | `data/labels/` 达 300 条，脚本可跑 |
-| T-05 | F2 嵌入分类器（k-NN / MLP） | Claude | F2 准确率 ≥ 85%，替换 `inferEmotionLabelRaw` |
+| T-04 | F2 标注集扩充（204 → 300+ goldLabel） | Claude | **已完成**：313 条，commit `c427282` |
+| T-05 | F2 嵌入分类器（k-NN / MLP） | Claude | **阻塞**：k-NN 48.4% < 规则 57.2%；等稀有类真实数据（见即时协调） |
 | T-06 | 模型层对比（GLM-4-Flash vs Claude Haiku 4.5，同剧本） | Claude | 量化 Δ，出结论文档 |
-| T-07 | Orchestrator 七阶段流水线接口定义（TurnContext 等结构） | Codex | **已完成**；生产链路七阶段顺序对齐，trace 字段经 Claude 复核后补齐 |
-| T-08 | Temporal Belief Engine v1 DB schema | Codex | **已完成（待真实 DB 验证）**；`sql/beliefs.sql` + Zod schema |
+| T-07 | Orchestrator 七阶段流水线接口定义（TurnContext 等结构） | Codex | **已完成**；七阶段顺序对齐，trace 字段经 Claude 复核冻结 |
+| T-08 | Temporal Belief Engine v1 DB schema | Codex | **已完成（待真实 DB 验证）**；`sql/beliefs.sql` + Zod schema + Turn Event Ledger |
 | T-09 | 多 judge + 盲化消融（同剧本 3 次，bootstrap CI） | Claude | 消融结论置信度可量化 |
 
 ### P2 · 1~2 月（计划中，未分配）
