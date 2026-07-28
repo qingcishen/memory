@@ -34,6 +34,9 @@ create table if not exists beliefs (
 );
 
 alter table beliefs drop constraint if exists beliefs_user_id_companion_id_belief_key_key;
+alter table beliefs drop constraint if exists beliefs_valid_interval_check;
+alter table beliefs add constraint beliefs_valid_interval_check
+  check (valid_from is null or valid_to is null or valid_to > valid_from);
 
 create table if not exists belief_evidence (
   id                 uuid primary key default gen_random_uuid(),

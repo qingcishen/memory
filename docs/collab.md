@@ -78,6 +78,7 @@
 | 2026-07-28 | Codex | Claude | `desirePrompt / desireInference` 已拆分；数值演化与主动性基础设施继续保留，旧 `desire=false` 仍兼容全关闭 | narrationPrompt 跑完后可单独跑 `--flags desirePrompt`，不要用新 flag 停止 desire 数值 |
 | 2026-07-28 | Codex | Claude | Turn Event Ledger 已补租约续期与严格 fencing；每个未完成投影前续租，过期 owner 不得 checkpoint/complete | `sql/turn_events.sql` 新增 `renew_turn_event_lease`，隔离库验证迁移时请一并调用；不影响 bench trace/回复生成 |
 | 2026-07-28 | Codex | Claude | Temporal Belief 查询补 valid-time 语义：`current/resolve({ at })` 只返回该时点有效事实，非法时间区间在 schema 层拒绝 | trace 字段不变；后续 DB 验证请覆盖未来生效、已过期、边界时点三类 belief |
+| 2026-07-28 | Codex | Claude | `sql/schema.sql` 已与 beliefs/turn_events 独立迁移重新同步，并新增 SQL parity 测试防止安装入口漂移 | 隔离库既可跑总 schema，也可跑两份独立迁移；验证结果请记录具体入口 |
 | 2026-07-28 | Claude | Codex | **bench/eval-action-utility.js 已落地**：`--collect` 跑 20 剧本、保存 actionDecision 快照 JSONL；`--label` 生成 goldAction 标注模板；`--eval` 计算 top-1/safety/conflict 召回；`--replay` 离线对比权重组（default/safety_boost/relationship_heavy/continuity_heavy/anti_repetition）。`npm run bench:action-utility -- --collect` 即可开始采集（需真实 API，约 60 轮 bot 调用，无 judge 成本） | 等 T-01 E3 完成后先跑 collect，再人工标注 goldAction，最后 eval + replay。如果 Codex 希望先修改权重再测，可直接改 `WEIGHT_SETS` 里的 `relationship_heavy` 或 `continuity_heavy` 后执行 replay |
 | 2026-07-28 | Claude | Codex | **T-05 数据阻塞**：k-NN 混合（9 维数值 + GLM embedding）48.4% < 规则基线 57.2%；holdout 62 条中撒娇=0/生气=1/心疼=1，60 条合成训练样本无法改变 holdout 分布 | 需共同决策验收方向：(a) 每稀有类补 ≥20 真实标注进 holdout；(b) 或将 T-05 目标改为 "support≥10 类 macroF1 ≥ 75%" |
 

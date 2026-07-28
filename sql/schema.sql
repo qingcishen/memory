@@ -174,6 +174,9 @@ create table if not exists beliefs (
 );
 -- Draft 早期曾使用全历史 unique，无法表达“喜欢→不喜欢→又喜欢”；升级时移除。
 alter table beliefs drop constraint if exists beliefs_user_id_companion_id_belief_key_key;
+alter table beliefs drop constraint if exists beliefs_valid_interval_check;
+alter table beliefs add constraint beliefs_valid_interval_check
+  check (valid_from is null or valid_to is null or valid_to > valid_from);
 
 create table if not exists belief_evidence (
   id                 uuid primary key default gen_random_uuid(),
@@ -598,6 +601,44 @@ $$;
 revoke all on function claim_turn_event(text,text,text,text,int,jsonb) from public, anon, authenticated;
 grant execute on function claim_turn_event(text,text,text,text,int,jsonb) to service_role;
 
+create or replace function renew_turn_event_lease(
+  p_user_id text,
+  p_companion_id text,
+  p_event_id text,
+  p_lease_token text,
+  p_lease_seconds int default 120
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  next_expiry timestamptz;
+begin
+  update turn_events
+  set lease_expires_at =
+        now() + make_interval(secs => greatest(10, least(coalesce(p_lease_seconds, 120), 3600))),
+      updated_at = now()
+  where user_id = p_user_id
+    and companion_id = coalesce(p_companion_id, 'default')
+    and event_id = p_event_id
+    and status = 'processing'
+    and lease_token = p_lease_token
+    and lease_expires_at > now()
+  returning lease_expires_at into next_expiry;
+
+  return jsonb_build_object(
+    'updated', next_expiry is not null,
+    'lease_expires_at', next_expiry
+  );
+end;
+$$;
+
+revoke all on function renew_turn_event_lease(text,text,text,text,int)
+  from public, anon, authenticated;
+grant execute on function renew_turn_event_lease(text,text,text,text,int)
+  to service_role;
+
 create or replace function checkpoint_turn_projection(
   p_user_id text,
   p_companion_id text,
@@ -626,6 +667,7 @@ begin
     and event_id = p_event_id
     and status = 'processing'
     and lease_token = p_lease_token
+    and lease_expires_at > now()
   returning projection_state into next_state;
 
   return jsonb_build_object(
