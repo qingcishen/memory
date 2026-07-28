@@ -44,6 +44,20 @@ export class SupabaseTurnEventStore {
     return data ?? null;
   }
 
+  async renew(scope = {}) {
+    requireIdentity(scope.userId, scope.eventId);
+    const { data, error } = await this.client.rpc('renew_turn_event_lease', {
+      p_user_id: String(scope.userId),
+      p_companion_id: String(scope.companionId ?? 'default'),
+      p_event_id: String(scope.eventId),
+      p_lease_token: String(scope.leaseToken ?? ''),
+      p_lease_seconds: this.leaseSeconds,
+    });
+    if (error) throw error;
+    if (!data?.updated) throw leaseLostError('renewal');
+    return data;
+  }
+
   complete(scope = {}, result = {}) {
     return this.update(scope, {
       status: 'committed',
@@ -73,9 +87,7 @@ export class SupabaseTurnEventStore {
     });
     if (error) throw error;
     if (!data?.updated) {
-      const leaseError = new Error('turn event lease lost before checkpoint');
-      leaseError.code = 'TURN_EVENT_LEASE_LOST';
-      throw leaseError;
+      throw leaseLostError('checkpoint');
     }
     return data.projection_state ?? {};
   }
@@ -88,15 +100,18 @@ export class SupabaseTurnEventStore {
       .eq('user_id', String(userId))
       .eq('companion_id', String(companionId))
       .eq('event_id', String(eventId));
-    if (leaseToken) query = query.eq('lease_token', String(leaseToken));
+    if (leaseToken) {
+      query = query
+        .eq('status', 'processing')
+        .eq('lease_token', String(leaseToken))
+        .gt('lease_expires_at', new Date().toISOString());
+    }
     const { data, error } = await query
       .select('event_id,status,attempts,committed_at,last_error')
       .maybeSingle();
     if (error) throw error;
     if (!data) {
-      const leaseError = new Error('turn event lease lost before update');
-      leaseError.code = 'TURN_EVENT_LEASE_LOST';
-      throw leaseError;
+      throw leaseLostError('update');
     }
     return data;
   }
@@ -135,6 +150,20 @@ export class InMemoryTurnEventStore {
 
   async get(scope = {}) {
     return this.events.get(eventKey(scope)) ?? null;
+  }
+
+  async renew(scope = {}) {
+    const key = eventKey(scope);
+    const current = this.assertLease(scope);
+    const next = {
+      ...current,
+      lease_expires_at: this.now() + this.leaseMs,
+    };
+    this.events.set(key, next);
+    return {
+      updated: true,
+      lease_expires_at: next.lease_expires_at,
+    };
   }
 
   async complete(scope = {}, result = {}) {
@@ -176,10 +205,14 @@ export class InMemoryTurnEventStore {
 
   assertLease(scope) {
     const current = this.events.get(eventKey(scope));
-    if (scope.leaseToken && current?.lease_token !== scope.leaseToken) {
-      const error = new Error('turn event lease lost before update');
-      error.code = 'TURN_EVENT_LEASE_LOST';
-      throw error;
+    if (
+      scope.leaseToken && (
+        current?.lease_token !== scope.leaseToken ||
+        current?.status !== 'processing' ||
+        current?.lease_expires_at <= this.now()
+      )
+    ) {
+      throw leaseLostError('update');
     }
     return current;
   }
@@ -192,4 +225,10 @@ function eventKey({ userId, companionId = 'default', eventId } = {}) {
 function requireIdentity(userId, eventId) {
   if (!String(userId ?? '').trim()) throw new Error('turn event requires userId');
   if (!String(eventId ?? '').trim()) throw new Error('turn event requires eventId');
+}
+
+function leaseLostError(operation) {
+  const error = new Error(`turn event lease lost before ${operation}`);
+  error.code = 'TURN_EVENT_LEASE_LOST';
+  return error;
 }

@@ -50,4 +50,28 @@ describe('turn event store', () => {
       store.complete({ ...scope, leaseToken: recovered.leaseToken }),
     ).resolves.toMatchObject({ status: 'committed' });
   });
+
+  it('renews an active lease and rejects renewal after expiry', async () => {
+    let now = 1000;
+    const store = new InMemoryTurnEventStore({ now: () => now, leaseMs: 100 });
+    const scope = { userId: 'u1', companionId: 'c1', eventId: 'evt-renew' };
+    const claim = await store.claim(scope);
+
+    now = 1050;
+    await expect(
+      store.renew({ ...scope, leaseToken: claim.leaseToken }),
+    ).resolves.toMatchObject({ updated: true, lease_expires_at: 1150 });
+
+    now = 1151;
+    await expect(
+      store.renew({ ...scope, leaseToken: claim.leaseToken }),
+    ).rejects.toMatchObject({ code: 'TURN_EVENT_LEASE_LOST' });
+    await expect(
+      store.checkpoint(
+        { ...scope, leaseToken: claim.leaseToken },
+        'history',
+        { status: 'applied' },
+      ),
+    ).rejects.toMatchObject({ code: 'TURN_EVENT_LEASE_LOST' });
+  });
 });

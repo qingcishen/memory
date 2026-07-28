@@ -151,4 +151,22 @@ describe('turn commit boundary', () => {
 
     expect(result.projections.state.after_reply.status).toBe('enqueued');
   });
+
+  it('renews the ledger lease before every unfinished projection', async () => {
+    const turnEventStore = new InMemoryTurnEventStore();
+    const renew = vi.spyOn(turnEventStore, 'renew');
+    const orchestrator = { ...fakeOrchestrator(), turnEventStore };
+
+    const result = await commitValidatedReply(orchestrator, {
+      eventId: 'evt-heartbeat',
+      historyUserMessage: 'hi',
+      reply: 'hello',
+      photoRequested: false,
+      updateSession: (value) => value,
+    });
+
+    expect(result.status).toBe('committed');
+    expect(renew).toHaveBeenCalledTimes(7);
+    expect(renew.mock.calls.every(([scope]) => scope.leaseToken)).toBe(true);
+  });
 });

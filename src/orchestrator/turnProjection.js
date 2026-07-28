@@ -18,6 +18,9 @@ export function createTurnProjectionRunner({
       if (TERMINAL_PROJECTION_STATES.has(previous?.status)) {
         return { name, skipped: true, checkpoint: previous };
       }
+      if (eventStore?.renew) {
+        await eventStore.renew(scope);
+      }
       if (skip) {
         const checkpoint = await save(name, { status: 'skipped' });
         return { name, skipped: true, checkpoint };
