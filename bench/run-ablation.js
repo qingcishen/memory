@@ -11,6 +11,8 @@ import { BudgetExceededError, CostMeter, ablationConclusion, requireEnv } from '
 import { liveDeps, loadScenarios, runDialogueEval } from './run-dialogue-eval.js';
 
 export const ABLATION_FLAGS = ['monologue', 'moodGating', 'reconsolidation', 'behaviorPolicy', 'narration', 'story', 'desire'];
+// 可独立测试但不进默认 E3 的机制
+const EXTRA_FLAGS = ['evidenceBudget'];
 const NOISE = 0.5;
 
 export function buildReport({ baseline, rows, noise = NOISE, note = '' }) {
@@ -43,8 +45,9 @@ export async function main() {
   requireEnv(['SUPABASE_URL', 'SUPABASE_KEY', 'LLM_API_KEY', 'JUDGE_API_KEY', 'JUDGE_BASE_URL', 'JUDGE_MODEL']);
   const force = process.argv.includes('--force');
   const flagsArg = process.argv.find((a) => a.startsWith('--flags'));
+  const allKnownFlags = [...ABLATION_FLAGS, ...EXTRA_FLAGS];
   const flags = flagsArg
-    ? (flagsArg.split('=')[1] ?? process.argv[process.argv.indexOf(flagsArg) + 1] ?? '').split(',').filter((f) => ABLATION_FLAGS.includes(f))
+    ? (flagsArg.split('=')[1] ?? process.argv[process.argv.indexOf(flagsArg) + 1] ?? '').split(',').filter((f) => allKnownFlags.includes(f))
     : ABLATION_FLAGS;
   const { metricsSnapshot } = await import('../src/metrics.js');
   const { PARAMS } = await import('../src/params.js');
