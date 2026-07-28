@@ -47,6 +47,7 @@
     "bench:retrieval": "node --env-file=.env bench/run-retrieval-comparison.js",
     "eval:dialogue": "node --env-file=.env bench/run-dialogue-eval.js",
     "bench:ablation": "node --env-file=.env bench/run-ablation.js",
+    "bench:action-utility": "node --env-file=.env bench/eval-action-utility.js",
     "bench:clean": "node --env-file=.env bench/clean.js",
     "labels:prepare": "node scripts/label-from-traces.js",
     "labels:label": "node scripts/label-from-traces.js label",
