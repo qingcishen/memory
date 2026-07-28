@@ -13,7 +13,7 @@ const DEFAULT_REVIEW_RATE = 0.2;
 const DEFAULT_MIN_GOLD = 300;
 const LABEL_KINDS = new Set(['emotion', 'importance']);
 const PRIVATE_KEY_RE = /(?:^|_)(?:user|companion|event)?_?id$|name|email|phone|token|secret|password|address|url/i;
-const STATE_KEYS = new Set(['emotion', 'mood', 'relationship', 'life', 'intimacy']);
+const STATE_KEYS = new Set(['emotion', 'mood', 'relationship', 'life']);
 const DESIRE_KEYS = new Set(['attention', 'comfort', 'security', 'novelty', 'intimacy', 'autonomy']);
 
 export function redactText(value, maxLength = 2000) {
@@ -244,9 +244,11 @@ export function prepareCandidates(options = {}) {
 
 function annotationPayload(row) {
   if (row.kind === 'emotion') {
+    // 去掉 intimacy 避免国内模型内容过滤拒绝整个批次
+    const { intimacy: _drop, ...safeSnapshot } = row.stateSnapshot ?? {};
     return {
       candidateId: row.candidateId,
-      stateSnapshot: row.stateSnapshot,
+      stateSnapshot: safeSnapshot,
       desires: row.desires,
       lastTurns: row.lastTurns,
     };
@@ -274,21 +276,27 @@ function parseModelLabels(content, batch, kind) {
   }
   if (!Array.isArray(parsed?.labels)) throw new Error('标注模型返回缺少 labels 数组');
   const byId = new Map(parsed.labels.map((item) => [item?.candidateId, item]));
-  return batch.map((row) => {
+  return batch.flatMap((row) => {
     const item = byId.get(row.candidateId);
-    if (!item) throw new Error(`标注模型漏掉 candidateId=${row.candidateId}`);
+    if (!item) {
+      // 模型跳过了这条 (内容过滤或无法判断) — 记录并跳过，不 crash 整批
+      console.error(`[label-from-traces] 跳过 ${row.candidateId}: 模型未返回标注`);
+      return [];
+    }
     const label = kind === 'emotion' ? item.label : Number(item.label);
     if (kind === 'emotion' && !EMOTION_LABELS.includes(label)) {
-      throw new Error(`非法情绪标签：${String(label)}`);
+      console.error(`[label-from-traces] 跳过 ${row.candidateId}: 非法情绪标签 ${String(label)}`);
+      return [];
     }
     if (kind === 'importance' && (!Number.isInteger(label) || label < 1 || label > 10)) {
-      throw new Error(`非法重要性标签：${String(item.label)}`);
+      console.error(`[label-from-traces] 跳过 ${row.candidateId}: 非法重要性标签 ${String(item.label)}`);
+      return [];
     }
-    return {
+    return [{
       ...row,
       initialLabel: label,
       labelReason: redactText(item.reason, 200),
-    };
+    }];
   });
 }
 
@@ -302,7 +310,12 @@ export async function annotateCandidates(rows, {
   if (!model) throw new Error('缺少强模型名（LABEL_MODEL 或 --model）');
   const output = [];
   for (const kind of ['emotion', 'importance']) {
-    const pending = rows.filter((row) => row.kind === kind);
+    const pending = rows.filter((row) => {
+      if (row.kind !== kind) return false;
+      // 跳过内容缺失的坏数据: emotion 需要 stateSnapshot, importance 需要 content
+      if (kind === 'emotion') return row.stateSnapshot && Object.keys(row.stateSnapshot).length > 0;
+      return row.content != null;
+    });
     for (let offset = 0; offset < pending.length; offset += batchSize) {
       const batch = pending.slice(offset, offset + batchSize);
       const response = await client.chat.completions.create({

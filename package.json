@@ -63,6 +63,7 @@
     }
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@fontsource/archivo": "^5.2.8",
     "@fontsource/noto-sans-sc": "^5.2.9",
     "@larksuiteoapi/node-sdk": "^1.70.0",

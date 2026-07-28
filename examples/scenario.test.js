@@ -184,7 +184,7 @@ console.log('场景 4: 同话题情绪相反的记忆 → _lowConfidence (#4), �
 
   const block = formatForPrompt(withConfidence, '诗雅');
   ok('冲突记忆在 prompt 里改口"我记得好像"', block.includes('我记得好像诗雅讨厌香菜') && block.includes('我记得好像诗雅后来说还挺爱吃香菜的'));
-  ok('不冲突的记忆保持确定口吻', block.includes('- 诗雅在备考雅思'));
+  ok('不冲突的记忆保持确定口吻', block.includes('诗雅在备考雅思') && !block.includes('我记得好像诗雅在备考雅思'));
 }
 
 console.log(`\nScenario 全部 ${passed} 条断言通过 ✅`);

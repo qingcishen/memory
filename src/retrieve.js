@@ -113,12 +113,12 @@ export async function retrieveMemories(userId, companionId = 'default', query, o
   if (opts.hybrid ?? PARAMS.retrieval?.hybrid) {
     const [vectorResult, keywordResult] = await Promise.all([
       vectorRequest,
-      supabase.rpc('match_memories_keyword', {
+      Promise.resolve(supabase.rpc('match_memories_keyword', {
         p_user_id: userId,
         p_companion_id: companionId,
         query_text: query,
         match_count: pool,
-      }).catch(() => ({ data: [] })),
+      })).catch(() => ({ data: [] })),
     ]);
     if (vectorResult.error) throw vectorResult.error;
     candidates = reciprocalRankFusion(
@@ -255,7 +255,11 @@ export function formatForPrompt(mems, subjectName = '对方') {
         { ...m, narrative: text, fact_core: text },
         { lowConfidence: Boolean(m._lowConfidence) },
       );
-      return tiered || (m._lowConfidence ? `- 我记得好像${text}` : `- ${text}`);
+      const line = tiered || (m._lowConfidence ? `- 我记得好像${text}` : `- ${text}`);
+      if (!line) return '';
+      // 把记录日期注入「- 」后，帮助模型回答"什么时候"类时序问题
+      const dateTag = m.created_at ? `[${String(m.created_at).slice(0, 10)}] ` : '';
+      return dateTag ? line.replace(/^- /, `- ${dateTag}`) : line;
     })
     .filter(Boolean)
     .join('\n');
