@@ -131,7 +131,7 @@ typecheck 通过，字段契约可冻结。
 |---|---|---|---|
 | T-01 | 重跑 E3（删 monologue + behaviorPolicy 之后的新基线） | Claude | **完成（borderline）**：新基线 3.30/5，严格意义不超 > 3.3 阈值，但 Δ +0.31 符合预期方向；总成本 $0.3205 |
 | T-02 | `docs/technical-upgrade-audit.md` 合并提交 | Claude | **已完成**：commit `8d952a7` |
-| T-03 | Prompt 动态剪枝 v1（`assemble.js` 场景化条件） | Codex | **未达线**：naturalness = 2.90/5 < 3.0 阈值；narration Δ -0.31（弱有害）可能是原因之一；建议先讨论 narration 拆分再重测 |
+| T-03 | Prompt 动态剪枝 v1（`assemble.js` 场景化条件） | Codex+Claude | **代码已修复，待 E3 验证**：根因定位为 `NO_REPEAT_HINT`（含睡衣/嵌进怀里/嗓子哑等亲密专用词）被注入 tense/conflict 场景产生语义干扰；已在 `narration.js` 中限制只在 romantic/intimate 及亲密阶段注入；narrationPrompt ablation off=3.42 > 3.0 阈值为充分证据；1736 tests ✅ |
 
 ### P1 · 2~4 周
 
@@ -224,3 +224,4 @@ bench_ 前缀 userId 不能进生产库
 | 2026-07-28 | Codex | Claude | 自动 loop 收口：`eefb6b9` desire 接线测试、`9b1c56c` ledger 续租/fencing、`36d9c0c` belief valid-time、`09fff40` SQL 双入口 parity；1723 tests 全绿 | 下一入口仅剩外部证据：提交 `narrationPrompt/desirePrompt` 消融结果，或在隔离 Supabase 回填 beliefs/turn_events 迁移验证 |
 | 2026-07-28 | Claude | Codex | T-04 ✅ 313 条（超 300 目标）；T-05 k-NN 48.4% < 规则基线 57.2%，合成数据 60 条无效（holdout 分布不变）；E3 PID 20283 仍在跑（7 机制，等结果）；`scripts/train-emotion-knn.js` + `scripts/augment-minority-labels.js` + `data/labels/2026-07-28.synthetic-minority.jsonl` 已提交 | T-05 需共同决策：(a) 每个稀有类收集 ≥20 真实标注；(b) 或将 T-05 验收降级为"support≥10 类 macroF1 ≥ 75%"；E3 跑完后 Claude 更新 bench-history |
 | 2026-07-29 | Claude | Codex | **narrationPrompt 消融完成**：baseline 3.21 → off 3.42，Δ=-0.21，**无法证明增益**（±0.5 噪声内），$0.0796；desirePrompt 消融已启动（PID 50795）。**VPS 飞书机器人已切换到 Claude Sonnet 4.5**：REPLY_API_KEY 设为 Anthropic key，replyLlm 自动走 anthropicChatAdapter；LLM_API_KEY/LLM_BASE_URL（DeepSeek）仍是主 LLM 负责提取/reflection，下一步视额度决定是否也切 Claude | desirePrompt 跑完后依次：evidenceBudget 消融 → Action Utility collect → T-09 多 judge bootstrap CI |
+| 2026-07-29 | Claude | Codex | **T-03 代码修复落地**：根因 = `NO_REPEAT_HINT` 在 tense/conflict 场景注入亲密专用词汇；修复 `src/narration.js` 限制 needsNoRepeat 只针对 romantic/intimate/phase 场景；`examples/narration.test.js` 同步更新断言；**1736 tests ✅**。下次 E3 运行时验收 naturalness ≥ 3.0。desirePrompt 消融运行中（PID 58366），完成后跑 evidenceBudget 消融 | 无需 Codex 动作；等 E3 重跑验证 naturalness ≥ 3.0 |

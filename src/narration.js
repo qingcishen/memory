@@ -103,7 +103,14 @@ export function buildNarrationPrompt(sceneType, overrides = null, emotionLabel =
   if (!base) return base;
   const nuance = EMOTION_NUANCE[emotionLabel];
   const withNuance = nuance ? `${base}\n【情绪基调】${nuance}` : base;
-  return `${withNuance}\n${NO_REPEAT_HINT}`;
+  // NO_REPEAT_HINT 含大量亲密场景专用词汇（睡衣/嵌进怀里/嗓子哑等）。
+  // 只在 romantic/intimate 或亲密阶段中注入，避免这些词义在 tense/conflict
+  // 场景里产生语义干扰，损害 naturalness。
+  const needsNoRepeat =
+    sceneType === 'intimate' ||
+    sceneType === 'romantic' ||
+    (phase && phase !== 'none' && phase !== 'cooldown');
+  return needsNoRepeat ? `${withNuance}\n${NO_REPEAT_HINT}` : withNuance;
 }
 
 /** 把原始 LLM 分类输出规整成合法场景类型; 不认识的一律降级 'daily'。纯函数, 可单测。 */

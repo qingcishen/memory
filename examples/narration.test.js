@@ -46,7 +46,7 @@ console.log('buildNarrationPrompt: emotionLabel 情绪基调叠加 (接入 B 行
   const withNuance = buildNarrationPrompt('tense', null, '委屈');
   ok('场景本有旁白 + 情绪标签有细节 -> 叠加基调段', withNuance.includes('【旁白') && withNuance.includes('【情绪基调】') && withNuance.includes(EMOTION_NUANCE.委屈));
   ok('daily 场景即使情绪标签有细节也不强加旁白', buildNarrationPrompt('daily', null, '委屈') === '');
-  ok('情绪标签为空不叠加', buildNarrationPrompt('tense', null, null) === `${NARRATION_DIRECTIVES.tense}\n${NO_REPEAT_HINT}`);
+  ok('情绪标签为空不叠加(tense 无 NO_REPEAT_HINT)', buildNarrationPrompt('tense', null, null) === NARRATION_DIRECTIVES.tense);
   ok('情绪标签不在细节表里 (如 平静/开心) 不叠加', buildNarrationPrompt('romantic', null, '开心') === `${NARRATION_DIRECTIVES.romantic}\n${NO_REPEAT_HINT}`);
   ok('吃醋/撒娇/心疼都在细节表里', ['吃醋', '撒娇', '心疼'].every((k) => typeof EMOTION_NUANCE[k] === 'string' && EMOTION_NUANCE[k]));
   const overridden = buildNarrationPrompt('romantic', { romantic: '角色专属写法' }, '撒娇');

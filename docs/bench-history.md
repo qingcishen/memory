@@ -47,3 +47,4 @@
 | 2026-07-28 | ablation-v3 E3第一次 | live | 2.99 | — | — | 全机制基线 / $0.2823 / monologue+behaviorPolicy 有害已删 |
 | 2026-07-28 | ablation-v3 E3重跑 | live | 3.30 | — | — | 删有害机制后新基线 / $0.3205 / naturalness=2.90 / narration弱有害(-0.31) |
 | 2026-07-28 | ablation-v3 narrationPrompt | live | 3.21 | — | — | narrationPrompt 单独消融 / $0.0796 / off=3.42 Δ=-0.21 / 无法证明增益 |
+| 2026-07-29 | T-03 pruning-fix | code | — | — | — | NO_REPEAT_HINT 从 tense/conflict 场景移除（含亲密专用词汇，注入非亲密场景损害 naturalness）；romantic/intimate 保留；1736 tests ✅；预期 naturalness ≥ 3.0，下次 E3 验证 |
