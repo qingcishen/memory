@@ -55,7 +55,9 @@ export const DEFAULT_PARAMS = {
     narrationPrompt: true,
     narrationClassifier: true,
     story: true,
-    desire: true,
+    desire: true,          // 兼容旧配置；false 仍关闭整个 desire 机制
+    desirePrompt: true,    // 只控制状态 Prompt 中的 desire 描述
+    desireInference: true, // 只控制情绪推断是否读取 desire
     evidenceBudget: true,
     utilityDecision: true,
   },

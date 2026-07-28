@@ -39,4 +39,26 @@ describe('Interpret stage', () => {
     });
     expect(result.stateForPrompt.desires).toBeNull();
   });
+
+  it('can remove desire only from prompt while retaining the source snapshot', () => {
+    const stateSnapshot = {
+      desires: { attention: 0.9 },
+      life: {},
+      relationship: {},
+    };
+    const result = interpretTurn({
+      userMessage: '你好',
+      stateSnapshot,
+      relState: {},
+      ablation: {
+        desire: true,
+        desirePrompt: false,
+        desireInference: true,
+        behaviorPolicy: false,
+      },
+      sessionThreadEnabled: false,
+    });
+    expect(result.stateForPrompt.desires).toBeNull();
+    expect(stateSnapshot.desires.attention).toBe(0.9);
+  });
 });

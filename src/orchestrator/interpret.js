@@ -43,10 +43,14 @@ export function interpretTurn(input = {}) {
     intimacyConfig = PARAMS.intimacy,
     recoverBias,
   } = input;
+  const desireInferenceEnabled =
+    ablation.desire !== false && ablation.desireInference !== false;
+  const desirePromptEnabled =
+    ablation.desire !== false && ablation.desirePrompt !== false;
   const rel = relState?.relationship ?? relState ?? {};
   const emotionInferred = inferEmotionLabel(
     { ...(stateSnapshot ?? {}), relationship: rel },
-    ablation.desire === false ? {} : stateSnapshot?.desires,
+    desireInferenceEnabled ? stateSnapshot?.desires : {},
     [...history.slice(-4), { role: 'user', content: userMessage }],
     {
       previousResidual: previousEmotionResidual,
@@ -76,7 +80,7 @@ export function interpretTurn(input = {}) {
   const stateForPrompt = stateSnapshot
     ? {
         ...stateSnapshot,
-        ...(ablation.desire === false ? { desires: null } : {}),
+        ...(!desirePromptEnabled ? { desires: null } : {}),
         intimacy: intimacyLive ?? stateSnapshot.intimacy,
       }
     : stateSnapshot;

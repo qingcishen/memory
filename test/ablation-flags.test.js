@@ -6,6 +6,9 @@ describe('ablation flag compatibility', () => {
     narration: true,
     narrationPrompt: true,
     narrationClassifier: true,
+    desire: true,
+    desirePrompt: true,
+    desireInference: true,
   };
 
   it('maps the legacy narration flag to both split mechanisms', () => {
@@ -35,6 +38,24 @@ describe('ablation flag compatibility', () => {
     ).toMatchObject({
       narrationPrompt: false,
       narrationClassifier: true,
+    });
+  });
+
+  it('maps legacy desire=false to both prompt and inference flags', () => {
+    expect(normalizeAblationFlags(defaults, { desire: false })).toMatchObject({
+      desire: false,
+      desirePrompt: false,
+      desireInference: false,
+    });
+  });
+
+  it('can remove desire from prompt while retaining inference and numeric state', () => {
+    expect(
+      normalizeAblationFlags(defaults, { desirePrompt: false }),
+    ).toMatchObject({
+      desire: true,
+      desirePrompt: false,
+      desireInference: true,
     });
   });
 });

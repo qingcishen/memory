@@ -1356,7 +1356,9 @@ export class Orchestrator {
     const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual, nowMs);
     const emotionLabel = inferEmotionLabel(
       { ...(stateSnapshot ?? {}), relationship: rel },
-      this.ablation.desire === false ? {} : stateSnapshot?.desires,
+      this.ablation.desire !== false && this.ablation.desireInference !== false
+        ? stateSnapshot?.desires
+        : {},
       this.history.slice(-4),
     );
     let behavior = behaviorPolicy(
@@ -1423,7 +1425,7 @@ export class Orchestrator {
       turnBriefPrompt: turn.turnBrief || '',
       statePrompt: [
         this.stateLayer.toPrompt(
-          this.ablation.desire === false && stateSnapshot
+          (this.ablation.desire === false || this.ablation.desirePrompt === false) && stateSnapshot
             ? { ...stateSnapshot, desires: null }
             : stateSnapshot,
         ) ?? '',

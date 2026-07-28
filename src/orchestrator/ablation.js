@@ -17,5 +17,18 @@ export function normalizeAblationFlags(defaults = {}, overrides = {}) {
   if (!hasClassifier && (hasLegacy || merged.narration === false)) {
     merged.narrationClassifier = hasLegacy ? overrides.narration : false;
   }
+
+  const hasLegacyDesire = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'desire');
+  const hasDesirePrompt = Object.prototype.hasOwnProperty.call(overrides ?? {}, 'desirePrompt');
+  const hasDesireInference = Object.prototype.hasOwnProperty.call(
+    overrides ?? {},
+    'desireInference',
+  );
+  if (!hasDesirePrompt && (hasLegacyDesire || merged.desire === false)) {
+    merged.desirePrompt = hasLegacyDesire ? overrides.desire : false;
+  }
+  if (!hasDesireInference && (hasLegacyDesire || merged.desire === false)) {
+    merged.desireInference = hasLegacyDesire ? overrides.desire : false;
+  }
   return merged;
 }
