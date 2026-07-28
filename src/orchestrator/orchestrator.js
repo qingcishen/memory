@@ -92,6 +92,7 @@ import { emptyEvidencePack, retrieveTurn } from './retrieveStage.js';
 import { deliberateTurn, planRetrievalTurn } from './deliberate.js';
 import { composeTurn, compositionFromStream } from './composeStage.js';
 import { validateTurn } from './validateStage.js';
+import { createTurnSerialExecutor } from './turnSerial.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 const traceRuntimeEnabled = () =>
@@ -543,7 +544,8 @@ export class Orchestrator {
    * 任一子系统加载失败都降级为空, 不影响回复 (见编排器设计方案 §9)。
    */
   reply(userMessage, opts = {}) {
-    return withReplyTrace(() => this._reply(userMessage, opts));
+    this._turnSerial ??= createTurnSerialExecutor();
+    return this._turnSerial.run(() => withReplyTrace(() => this._reply(userMessage, opts)));
   }
 
   async _reply(userMessage, opts = {}) {
