@@ -58,9 +58,13 @@ async function retryOnError(fn, maxRetries = 8) {
  */
 export async function runDialogueEval(scenarios, deps) {
   const transcripts = [];
-  for (const scenario of scenarios) {
+  const total = scenarios.length;
+  const label = deps.label ?? '';
+  for (let si = 0; si < total; si++) {
+    const scenario = scenarios[si];
     const bot = await deps.makeBot(scenario);
     const turns = [];
+    console.error(`[eval:dialogue] ${label ? label + ' ' : ''}剧本 ${si + 1}/${total} (${scenario.id}) 开始`);
     for (const message of scenario.turns) {
       const res = await retryOnError(() => bot.reply(message));
       await Promise.resolve(bot._lastAfterReply).catch(() => {});
@@ -68,6 +72,7 @@ export async function runDialogueEval(scenarios, deps) {
       deps.checkBudget?.();
     }
     transcripts.push({ id: scenario.id, focus: scenario.focus ?? '', turns });
+    console.error(`[eval:dialogue] ${label ? label + ' ' : ''}剧本 ${si + 1}/${total} (${scenario.id}) 完成，开始 judge`);
   }
 
   const judgeAll = async () => {

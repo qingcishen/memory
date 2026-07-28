@@ -66,7 +66,8 @@ export async function main() {
     const before = metricsSnapshot();
     const costBefore = meter.totalUsd;
     const deps = await liveDeps({ runTag, meter, ablation });
-    const result = await runDialogueEval(scenarios, deps);
+    console.error(`[bench:ablation] === ${label} 开始 ===`);
+    const result = await runDialogueEval(scenarios, { ...deps, label });
     meter.settleMetricsDiff(before, metricsSnapshot());
     return { ...result, runCostUsd: meter.totalUsd - costBefore };
   };
