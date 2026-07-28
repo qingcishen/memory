@@ -32,9 +32,8 @@ export const DEFAULT_PARAMS = {
     },
   },
   retrieval: {
-    hybrid: false,
+    hybrid: true,  // R2: activation-hybrid MRR=1.00 p95=3429ms, 2026-07-28
     rrfK: 60,
-    // 保持 v2 线上默认：activation；E1 三方实测后才允许改默认。
     reranker: 'activation',
     llm: {
       maxCandidates: 20,
@@ -44,10 +43,10 @@ export const DEFAULT_PARAMS = {
     },
   },
   ablation: {
-    monologue: true,
+    monologue: false,      // E3 2026-07-28: Δ -0.51, 有害删除
     moodGating: true,
     reconsolidation: true,
-    behaviorPolicy: true,
+    behaviorPolicy: false, // E3 2026-07-28: Δ -0.51, 有害删除
     narration: true,
     story: true,
     desire: true,
