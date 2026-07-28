@@ -325,13 +325,48 @@ npm run test:reconsolidate # M3 灵魂: 和好后旧怨回暖, 但 fact_core 一
 
 ```bash
 npm run bench:memory       # 记忆检索基准，输出 Recall@5/10 与 MRR
-npm run eval:dialogue      # 15 类多轮场景的五维 rubric 报告
+npm run eval:dialogue      # 多轮场景的五维 rubric 报告
 npm run bench:ablation     # 七项机制消融报告
 npm run inspect -- trace 2026-07-27  # 查看逐轮 trace 与当日成本
 npm run labels:prepare -- 2026-07-27 # 从真实 trace 生成脱敏待标注集
 ```
 
-结果写入 `bench/results/`，历史口径见 `docs/bench-history.md`。仓库内置结果是**离线流水线基线**，只证明工具可复现运行，不冒充线上质量结论。情绪准确率、强模型裁判分、真实成本和遗忘率拟合必须使用生产 trace 与人工复核标签；遗忘率只有在拟合 `r² >= 0.6` 时才建议替换参数。
+### 最新基准（2026-07-28，真实管线 + GLM-4-Flash 回复 + Claude Haiku judge）
+
+**记忆检索 R1/R2 对比**（50 题，默认配置：activation-hybrid）
+
+| 配置 | Overall | Recall@5 | MRR | p95(ms) | Cost/run |
+|------|---------|---------|-----|---------|----------|
+| heuristic-vector（基准） | 0.92 | 1.00 | 0.9625 | 5152 | $0.0172 |
+| heuristic-hybrid | 0.92 | 1.00 | 0.9625 | 6831 | $0.0172 |
+| llm-hybrid | 0.90 | 1.00 | 0.9750 | 13941 | $0.0194 |
+| **activation-hybrid（当前默认）** | 0.88 | 1.00 | **1.0000** | **3429** | $0.0174 |
+
+hybrid p95 超 150ms 门槛故未切换；activation-hybrid MRR 满分且延迟最低，已设为默认。
+
+**机制消融 E3**（20 剧本，基线 overall 2.99/5，总成本 $0.28）
+
+| 机制 | 关闭后分 | Δ | 结论 |
+|------|---------|---|------|
+| monologue | 3.49 | −0.51 | **已删除**（有害） |
+| behaviorPolicy | 3.49 | −0.51 | **已删除**（有害） |
+| moodGating | 3.32 | −0.33 | 无法证明增益 |
+| reconsolidation | 3.13 | −0.15 | 无法证明增益 |
+| narration | 2.97 | +0.01 | 无法证明增益 |
+| story | 3.19 | −0.20 | 无法证明增益 |
+| desire | 3.28 | −0.29 | 无法证明增益 |
+
+完整报告见 [docs/ablation-report.md](docs/ablation-report.md)。5 个"无法证明增益"机制已追加针对性 E2 剧本，重跑中。
+
+**情绪推断 F2 baseline**（204 条 F1 人工标注，inferEmotionLabel 规则）
+
+| 总体准确率 | 平静 | 开心 | 失落 | 委屈 | 吃醋 |
+|-----------|------|------|------|------|------|
+| 40.7% | 85% | 19% | 0% | 0% | 0% |
+
+主要问题：状态快照为空时分类器退化为"平静"，失落/委屈/吃醋规则未覆盖对话文本特征。F2 校准目标 ≥ 85%。
+
+结果写入 `bench/results/`，历史口径见 `docs/bench-history.md`。情绪准确率、裁判分、遗忘率拟合必须使用生产 trace 与人工复核标签；遗忘率只有在拟合 `r² ≥ 0.6` 时才替换参数。
 
 逐轮 trace 写入 `logs/traces/YYYY-MM-DD.jsonl`，夜间维护汇总到 `logs/cost-daily.jsonl`。写盘失败不会阻断回复；超过 `PARAMS.trace.dailyBudgetUsd` 会告警。混合检索可由 `PARAMS.retrieval.hybrid` 开启，关键词通道不可用时自动退回纯向量召回。
 

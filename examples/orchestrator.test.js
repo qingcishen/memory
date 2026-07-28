@@ -309,7 +309,7 @@ console.log('Orchestrator.reply 完整管线 (deps 全 mock)');
   );
   ok('stateLayer.snapshot 被调用', deps.stateLayer.snapshotCalls === 1);
   ok('relationship.current 被调用', deps.relationship.currentCalls === 1);
-  ok('useMonologue 默认开启, llm.think 被调用一次', deps.llm.thinkCalls.length === 1);
+  ok('monologue 已禁用 (E3 消融结论), llm.think 不被调用', deps.llm.thinkCalls.length === 0);
 
   const { messages: messages1, opts: opts1 } = deps.llm.generateCalls[0];
   ok('messages 第一条是 system', messages1[0].role === 'system');
@@ -317,7 +317,7 @@ console.log('Orchestrator.reply 完整管线 (deps 全 mock)');
   ok('system 含状态层段', messages1[0].content.includes('状态:0.5/0.4'));
   ok('system 含关系段', messages1[0].content.includes('关系:0.6'));
   ok('system 含记忆块', messages1[0].content.includes('诗雅讨厌香菜'));
-  ok('system 含内心独白标记', messages1[0].content.includes('你此刻的想法'));
+  ok('system 不含内心独白标记 (monologue 已禁用)', !messages1[0].content.includes('你此刻的想法'));
   ok('generateReply 收到 stateLayer samplingHints', opts1.temperature === 0.91 && opts1.maxTokens === 333);
   ok('最后一条是当前用户消息', messages1.at(-1).role === 'user' && messages1.at(-1).content === '诗雅最近怎么样?');
 
@@ -544,9 +544,7 @@ console.log('Orchestrator.proactiveTick (主动性入口复用组装链路)');
   const msg = await orch.proactiveTick({ reason: '很久没聊天', style: '轻一点' });
   ok('主动消息返回 text + parts', msg.text === '嗯嗯, 我记得呀!' && msg.parts[0].type === 'dialogue');
   ok('主动消息会检索记忆', deps.memory.recallCalls.length === 1);
-  ok('主动消息默认也会生成内心独白', deps.llm.thinkCalls.length === 1);
-  ok('主动独白输入不把主动开场指令当成"对方刚说"', !deps.llm.thinkCalls[0].includes('对方刚说'));
-  ok('主动独白输入描述的是"自己想主动找对方"的情境', deps.llm.thinkCalls[0].includes('你自己想主动找对方说点什么'));
+  ok('monologue 已禁用, 主动消息不生成内心独白', deps.llm.thinkCalls.length === 0);
   const { messages, opts } = deps.llm.generateCalls[0];
   ok('主动 prompt 最后一条是内部主动开场指令', messages.at(-1).role === 'user' && messages.at(-1).content.includes('主动找对方'));
   ok('主动 prompt 带入 reason/style', messages.at(-1).content.includes('很久没聊天') && messages.at(-1).content.includes('轻一点'));

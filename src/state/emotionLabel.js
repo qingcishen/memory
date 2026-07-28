@@ -52,10 +52,11 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   const userText = recentText(lastTurns, 'user');
   const companionText = recentText(lastTurns, 'assistant');
 
-  // 吃醋：放宽「一个…女同事」中间修饰（很漂亮的）
+  // 吃醋：放宽 closeness 门槛（F2 实测: 全部吃醋样本 closeness ≤ 0.6）；
+  // 同时补充「新来的女同事」等无量词前缀的常见说法
   if (
-    closeness >= 0.62 &&
-    /(别的|其他|那个|有个|一个|一位).{0,16}(女生|女孩|姑娘|小姐姐|女同事|女朋友)|前女友|她好漂亮|跟她约会|喜欢上她|漂亮的女/u.test(userText)
+    closeness >= 0.45 &&
+    (/(别的|其他|那个|有个|一个|一位|新来的|来了.{0,3}个).{0,16}(女生|女孩|姑娘|小姐姐|女同事|女朋友)|前女友|她好漂亮|跟她约会|喜欢上她|漂亮的女|女同事.{0,10}(找我|聊|讨论)/u.test(userText))
   ) {
     return '吃醋';
   }
@@ -68,7 +69,12 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   }
   if (attention >= 0.72 && userText) return '委屈';
   if (/(对不起|抱歉|我错了|原谅我|和好|别生气)/u.test(userText) && repairDebt > 0.2) return '委屈';
-  if (/(我|最近|今天).{0,8}(难过|伤心|哭了|生病|不舒服|被欺负|很累|崩溃|失败|失眠)|被.{0,8}(骂|拒绝|裁员|开除)/u.test(userText) && closeness >= 0.5) {
+  // 用户表达受伤/失望 → 委屈（F2补充：侧重"让我"句式与情感词）
+  if (/(让我.{0,8}(难受|伤心|失望|心寒|委屈)|说那句话|让我很|我不是小题大做|站在我这边)/u.test(userText)) {
+    return '委屈';
+  }
+  // 用户生病/受苦 → 心疼（扩充发烧/好累/失眠等未被覆盖的触发词）
+  if (/(我|最近|今天).{0,8}(难过|伤心|哭了|生病|发烧|不舒服|被欺负|很累|好累|崩溃|失败|失眠|睡不着|头疼|头晕)|被.{0,8}(骂|拒绝|裁员|开除)/u.test(userText) && closeness >= 0.5) {
     return '心疼';
   }
   // 明确愤怒口吻：不依赖 tension 已升高（新会话首轮也能挂生气）
@@ -80,8 +86,10 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   }
   if (security >= 0.58 && closeness >= 0.55 && tension < 0.55) return '委屈';
   if (comfort >= 0.58 && closeness >= 0.68 && tension < 0.4) return '撒娇';
-  if (valence <= -0.35) return tension >= 0.45 || repairDebt >= 0.35 ? '委屈' : '失落';
-  if (valence >= 0.35) return warmth >= 0.7 && closeness >= 0.65 ? '撒娇' : '开心';
+  // 失落：扩大 valence 区间（F2 实测: 失落样本 valence 多在 [-0.3, 0.1]）
+  if (valence <= -0.08) return tension >= 0.45 || repairDebt >= 0.35 ? '委屈' : '失落';
+  // 开心：降低 valence 门槛；撒娇门槛提高避免误分
+  if (valence >= 0.15) return warmth >= 0.75 && closeness >= 0.72 ? '撒娇' : '开心';
   return '平静';
 }
 

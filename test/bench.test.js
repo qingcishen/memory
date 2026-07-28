@@ -203,7 +203,7 @@ describe('E3 ablation report', () => {
     ];
     const report = buildReport({ baseline: { overall: 4.0 }, rows });
     expect(report).toContain('| monologue | 4.00 | 3.10 | +0.90 |');
-    expect(report).toContain('删除/重构名单');
+    expect(report).toContain('无法证明增益');
     expect(report).toContain('story');
     expect(report).not.toContain('无删除名单');
   });
