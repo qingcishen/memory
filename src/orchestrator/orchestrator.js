@@ -235,6 +235,7 @@ export class Orchestrator {
     this.persona = deps.persona ?? new PersonaAdapter({ userId, companionId, subjectName: companionName });
     this.llm = deps.llm ?? new DefaultLLM();
     this.historyStore = deps.historyStore ?? null;
+    this.turnEventStore = deps.turnEventStore ?? null;
 
     // A1 拍照分享 (自拍 + 随手拍): 需要 onPhoto 投递回调才会启用 —— 没有投递渠道就不生成,
     // 这也让全 mock 的编排器测试默认离线 (不注入 onPhoto 即跳过)。photo 能力默认用真实 Selfie。
@@ -983,7 +984,7 @@ export class Orchestrator {
     pipelineContext = await runTurnStage(pipelineContext, 'commit', async (_ctx, tools) => {
       tools.assertCanWrite();
       return {
-        commit: commitValidatedReply(this, {
+        commit: await commitValidatedReply(this, {
           eventId: opts.eventId,
           historyUserMessage,
           reply,
@@ -1136,7 +1137,7 @@ export class Orchestrator {
     pipelineContext = await runTurnStage(pipelineContext, 'commit', async (_ctx, tools) => {
       tools.assertCanWrite();
       return {
-        commit: commitValidatedReply(this, {
+        commit: await commitValidatedReply(this, {
           eventId: opts.eventId,
           historyUserMessage,
           reply,

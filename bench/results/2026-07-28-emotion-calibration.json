@@ -1,0 +1,69 @@
+{
+  "date": "2026-07-28",
+  "classifier": "rule-based-v2 (inferEmotionLabelRaw)",
+  "dataset": "data/labels/2026-07-27.labeled.jsonl",
+  "totalSamples": 313,
+  "split": "all",
+  "accuracy": 0.5718849840255591,
+  "macroF1": 0.34584996264056955,
+  "pairF1": {
+    "委屈_vs_生气": 0.33962264150943394,
+    "撒娇_vs_开心": 0.14705882352941177
+  },
+  "perLabel": {
+    "平静": {
+      "support": 136,
+      "precision": 0.6121212121212121,
+      "recall": 0.7426470588235294,
+      "f1": 0.6710963455149502
+    },
+    "开心": {
+      "support": 57,
+      "precision": 0.3333333333333333,
+      "recall": 0.2631578947368421,
+      "f1": 0.29411764705882354
+    },
+    "委屈": {
+      "support": 25,
+      "precision": 0.6428571428571429,
+      "recall": 0.72,
+      "f1": 0.6792452830188679
+    },
+    "吃醋": {
+      "support": 15,
+      "precision": 0.7777777777777778,
+      "recall": 0.4666666666666667,
+      "f1": 0.5833333333333334
+    },
+    "生气": {
+      "support": 1,
+      "precision": 0,
+      "recall": 0,
+      "f1": 0
+    },
+    "失落": {
+      "support": 78,
+      "precision": 0.6031746031746031,
+      "recall": 0.48717948717948717,
+      "f1": 0.5390070921985816
+    },
+    "撒娇": {
+      "support": 0,
+      "precision": 0,
+      "recall": 0,
+      "f1": 0
+    },
+    "心疼": {
+      "support": 1,
+      "precision": 0,
+      "recall": 0,
+      "f1": 0
+    }
+  },
+  "note": "撒娇/生气/心疼 支持度极低（0/1/1），T-05 pairF1 无法达到目标阈值。需要数据增补。",
+  "thresholds": {
+    "accuracy": 0.85,
+    "confusingPairF1": 0.8
+  },
+  "pass": false
+}

@@ -511,6 +511,28 @@ create table if not exists channel_events (
 );
 create index if not exists channel_events_created_idx on channel_events (created_at);
 
+-- Turn Commit 账本：唯一键用于跨进程竞争仲裁，状态用于审计与后续恢复。
+create table if not exists turn_events (
+  id             bigint generated always as identity primary key,
+  user_id        text not null,
+  companion_id   text not null default 'default',
+  event_id       text not null,
+  event_type     text not null default 'reply.commit',
+  status         text not null default 'processing'
+                 check (status in ('processing','committed','failed')),
+  payload        jsonb not null default '{}'::jsonb,
+  result         jsonb,
+  attempts       int not null default 1 check (attempts >= 1),
+  last_error     text,
+  committed_at   timestamptz,
+  created_at     timestamptz not null default now(),
+  updated_at     timestamptz not null default now(),
+  unique (user_id, companion_id, event_id)
+);
+create index if not exists turn_events_status_idx on turn_events (status, updated_at);
+create index if not exists turn_events_scope_idx
+  on turn_events (user_id, companion_id, created_at desc);
+
 -- ------------------------------------------------------------
 --  世界观系统 (worldview): 动态世界状态 —— 背景剧情线/氛围随对话推进缓慢演变,
 --  不是写死的设定文档。大多数寻常对话不推进, 只有出现值得记的世界级进展才更新
@@ -702,7 +724,7 @@ begin
     'memories','knowledge_entities','knowledge_relations','beliefs','belief_evidence','affective_state','life_state',
     'affective_state_history','prospective','proactive_rate_limits','behavior_state','story_lines',
     'companions','appearance_assets','companion_card_assets','album_custom_entries',
-    'jobs','chat_history','chat_session_state','chat_emotion_residue','channel_events','world_state'
+    'jobs','chat_history','chat_session_state','chat_emotion_residue','channel_events','turn_events','world_state'
   ] loop
     if to_regclass('public.' || table_name) is not null then
       execute format('alter table public.%I enable row level security', table_name);

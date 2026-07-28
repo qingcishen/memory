@@ -366,7 +366,28 @@ Replay 默认禁止 Commit。显式传入测试 store 时才允许写入隔离�
 - Slice D：完成；
 - `decision-replay` / `compose-replay`：完成；
 - Commit 同进程 eventId 幂等：完成；
-- 跨进程 Commit 幂等：仍依赖渠道事件/持久队列，后续事件溯源阶段完善。
+- 跨进程 Commit 竞争仲裁：完成基础版；注入 `SupabaseTurnEventStore` 后由
+  `(user_id, companion_id, event_id)` 唯一键保证只有一个实例取得写权限；
+- 崩溃恢复：待完成；`processing` 事件当前宁可阻止重复副作用，也不会自动抢占重放。
+
+### 9.1 Turn Event Ledger
+
+`src/orchestrator/turnEventStore.js` 定义 Commit 账本接口：
+
+```js
+claim(scope)             // 原子取得事件写权限
+complete(scope, result)  // 标记投影提交完成
+fail(scope, error)       // 标记同步提交失败
+get(scope)               // 查询审计状态
+```
+
+生产环境通过 `deps.turnEventStore` 向 Orchestrator 注入
+`SupabaseTurnEventStore`。未注入时保留原有单进程 Set 幂等，避免旧部署在 SQL
+迁移前产生行为变化。数据库迁移见 `sql/turn_events.sql`。
+
+账本提供跨进程 duplicate suppression，但暂不宣称跨多个外部存储的 exactly-once：
+history、memory、媒体等投影尚未共享单个数据库事务。若进程在 claim 后崩溃，事件保持
+`processing`，后续恢复器应按各投影自身 eventId 幂等能力逐项补偿。
 
 ### Slice A：流水线内核
 
