@@ -12,7 +12,7 @@ import { liveDeps, loadScenarios, runDialogueEval } from './run-dialogue-eval.js
 
 export const ABLATION_FLAGS = ['monologue', 'moodGating', 'reconsolidation', 'behaviorPolicy', 'narration', 'story', 'desire'];
 // 可独立测试但不进默认 E3 的机制
-const EXTRA_FLAGS = ['evidenceBudget', 'utilityDecision', 'narrationPrompt', 'narrationClassifier'];
+const EXTRA_FLAGS = ['evidenceBudget', 'utilityDecision', 'narrationPrompt', 'narrationClassifier', 'desirePrompt', 'desireInference'];
 const NOISE = 0.5;
 
 export function buildReport({ baseline, rows, noise = NOISE, note = '' }) {
