@@ -39,6 +39,7 @@ export async function commitValidatedReply(orchestrator, input = {}) {
   };
   const eventStore = orchestrator.turnEventStore;
   let claimedScope = eventScope;
+  let priorProjectionState = {};
   if (eventStore?.claim) {
     const claim = await eventStore.claim({
       ...eventScope,
@@ -59,10 +60,17 @@ export async function commitValidatedReply(orchestrator, input = {}) {
       };
     }
     claimedScope = { ...eventScope, leaseToken: claim.leaseToken };
+    priorProjectionState = claim.event?.projection_state ?? {};
   }
 
   try {
-    if (input.sessionEnabled !== false) {
+    const projections = createTurnProjectionRunner({
+      eventStore,
+      scope: claimedScope,
+      priorState: priorProjectionState,
+    });
+
+    await projections.run('session', () => {
       orchestrator._sessionThread = input.updateSession(orchestrator._sessionThread, {
         userMessage: historyUserMessage,
         reply,
@@ -70,52 +78,68 @@ export async function commitValidatedReply(orchestrator, input = {}) {
         now: nowMs,
       });
       orchestrator.persistSessionThread();
-    }
-    orchestrator.persistEmotionResidue();
+    }, { skip: input.sessionEnabled === false });
 
-    orchestrator.recordHistory(
-      [
-        { role: 'user', content: historyUserMessage },
-        { role: 'assistant', content: reply },
-      ],
-      { eventId },
-    );
-
-    orchestrator._lastAfterReply = orchestrator.afterReply(historyUserMessage, reply, {
-      eventId,
-      history: orchestrator.history,
-      sceneLocks,
-      relationshipStage,
+    await projections.run('emotion', () => orchestrator.persistEmotionResidue(), {
+      successStatus: 'dispatched',
     });
 
-    if (
-      prospectiveToDismiss.length &&
-      typeof orchestrator.memory?.dismissProspective === 'function'
-    ) {
+    const historyProjection = await projections.run('history', () =>
+      orchestrator.recordHistory(
+        [
+          { role: 'user', content: historyUserMessage },
+          { role: 'assistant', content: reply },
+        ],
+        { eventId },
+      ));
+
+    await projections.run('after_reply', () => {
+      orchestrator._lastAfterReply = orchestrator.afterReply(historyUserMessage, reply, {
+        eventId,
+        history: orchestrator.history,
+        sceneLocks,
+        relationshipStage,
+      });
+    }, { successStatus: 'dispatched' });
+
+    await projections.run('prospective', () => {
       orchestrator._lastProspectiveDismiss = Promise.resolve(
         orchestrator.memory.dismissProspective(prospectiveToDismiss),
       ).catch((error) => {
         console.error('[commit.dismissProspective]', error);
         return null;
       });
-    }
+    }, {
+      successStatus: 'dispatched',
+      skip:
+        !prospectiveToDismiss.length ||
+        typeof orchestrator.memory?.dismissProspective !== 'function',
+    });
 
-    orchestrator
-      .maybeDailyLookPhoto(stateSnapshot)
-      .catch((error) => console.error('[maybeDailyLookPhoto]', error));
+    await projections.run('daily_photo', () => {
+      orchestrator
+        .maybeDailyLookPhoto(stateSnapshot)
+        .catch((error) => console.error('[maybeDailyLookPhoto]', error));
+    }, { successStatus: 'dispatched' });
 
-    if (photoRequested) {
+    await projections.run('requested_photo', () => {
       orchestrator._lastPhoto = orchestrator.maybePhoto(stateSnapshot, { requested: true });
-    }
+    }, { successStatus: 'dispatched', skip: !photoRequested });
+
     orchestrator._committedTurnEvents.add(eventId);
 
+    const projectionState = projections.snapshot();
     const result = {
       eventId,
       status: 'committed',
-      history: { appended: 2 },
+      history: { appended: historyProjection.skipped ? 0 : 2 },
       enqueued:
         Boolean(orchestrator._lastAfterReply) ||
         Boolean(orchestrator._lastProspectiveDismiss),
+      projections: {
+        completed: completedProjectionNames(projectionState),
+        state: projectionState,
+      },
       sessionThread: orchestrator._sessionThread,
       idempotentReplay: false,
     };
@@ -124,6 +148,7 @@ export async function commitValidatedReply(orchestrator, input = {}) {
         await eventStore.complete(claimedScope, {
           historyAppended: result.history.appended,
           enqueued: result.enqueued,
+          projections: result.projections.completed,
         });
       } catch (error) {
         return { ...result, status: 'commit_pending', ledgerError: String(error?.message ?? error) };
@@ -141,3 +166,4 @@ export function createTurnEventId({ eventId, userId, companionId, now = Date.now
   const scope = `${String(userId || 'unknown')}:${String(companionId || 'default')}`;
   return `turn:${scope}:${now}:${Math.random().toString(36).slice(2, 10)}`;
 }
+import { completedProjectionNames, createTurnProjectionRunner } from './turnProjection.js';

@@ -107,4 +107,32 @@ describe('turn commit boundary', () => {
     expect(firstOrchestrator.recordHistory).toHaveBeenCalledTimes(1);
     expect(secondOrchestrator.recordHistory).not.toHaveBeenCalled();
   });
+
+  it('resumes an expired commit from the first unfinished projection', async () => {
+    let now = 1000;
+    const turnEventStore = new InMemoryTurnEventStore({ now: () => now, leaseMs: 100 });
+    const scope = { userId: 'u1', companionId: 'c1', eventId: 'evt-resume' };
+    const stale = await turnEventStore.claim(scope);
+    await turnEventStore.checkpoint(
+      { ...scope, leaseToken: stale.leaseToken },
+      'history',
+      { status: 'applied' },
+    );
+    now = 1101;
+
+    const orchestrator = { ...fakeOrchestrator(), turnEventStore };
+    const result = await commitValidatedReply(orchestrator, {
+      eventId: scope.eventId,
+      historyUserMessage: 'hi',
+      reply: 'hello',
+      updateSession: (value) => value,
+    });
+
+    expect(result.status).toBe('committed');
+    expect(result.history.appended).toBe(0);
+    expect(orchestrator.recordHistory).not.toHaveBeenCalled();
+    expect(orchestrator.afterReply).toHaveBeenCalledTimes(1);
+    expect(result.projections.completed).toContain('history');
+    expect(result.projections.completed).toContain('after_reply');
+  });
 });

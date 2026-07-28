@@ -35,7 +35,7 @@ export class SupabaseTurnEventStore {
     requireIdentity(userId, eventId);
     const { data, error } = await this.client
       .from(this.table)
-      .select('event_id,status,attempts,committed_at,last_error,lease_expires_at')
+      .select('event_id,status,attempts,committed_at,last_error,lease_expires_at,projection_state')
       .eq('user_id', String(userId))
       .eq('companion_id', String(companionId))
       .eq('event_id', String(eventId))
@@ -58,6 +58,26 @@ export class SupabaseTurnEventStore {
       status: 'failed',
       last_error: String(error?.message ?? error ?? 'unknown commit error').slice(0, 2000),
     });
+  }
+
+  async checkpoint(scope = {}, projection, checkpoint = {}) {
+    requireIdentity(scope.userId, scope.eventId);
+    if (!String(projection ?? '').trim()) throw new Error('projection checkpoint requires name');
+    const { data, error } = await this.client.rpc('checkpoint_turn_projection', {
+      p_user_id: String(scope.userId),
+      p_companion_id: String(scope.companionId ?? 'default'),
+      p_event_id: String(scope.eventId),
+      p_lease_token: String(scope.leaseToken ?? ''),
+      p_projection: String(projection),
+      p_checkpoint: checkpoint,
+    });
+    if (error) throw error;
+    if (!data?.updated) {
+      const leaseError = new Error('turn event lease lost before checkpoint');
+      leaseError.code = 'TURN_EVENT_LEASE_LOST';
+      throw leaseError;
+    }
+    return data.projection_state ?? {};
   }
 
   async update({ userId, companionId = 'default', eventId, leaseToken } = {}, patch) {
@@ -107,6 +127,7 @@ export class InMemoryTurnEventStore {
       lease_expires_at: this.now() + this.leaseMs,
       committed_at: null,
       last_error: null,
+      projection_state: { ...(existing?.projection_state ?? {}) },
     };
     this.events.set(key, event);
     return { acquired: true, leaseToken, event: { ...event } };
@@ -132,17 +153,35 @@ export class InMemoryTurnEventStore {
     });
   }
 
+  async checkpoint(scope = {}, projection, checkpoint = {}) {
+    const current = this.assertLease(scope);
+    const next = {
+      ...current,
+      projection_state: {
+        ...(current.projection_state ?? {}),
+        [String(projection)]: checkpoint,
+      },
+    };
+    this.events.set(eventKey(scope), next);
+    return { ...next.projection_state };
+  }
+
   patch(scope, patch) {
     const key = eventKey(scope);
-    const current = this.events.get(key);
+    const current = this.assertLease(scope);
+    const next = { ...(current ?? {}), ...patch };
+    this.events.set(key, next);
+    return { ...next };
+  }
+
+  assertLease(scope) {
+    const current = this.events.get(eventKey(scope));
     if (scope.leaseToken && current?.lease_token !== scope.leaseToken) {
       const error = new Error('turn event lease lost before update');
       error.code = 'TURN_EVENT_LEASE_LOST';
       throw error;
     }
-    const next = { ...(current ?? {}), ...patch };
-    this.events.set(key, next);
-    return { ...next };
+    return current;
   }
 }
 

@@ -60,6 +60,7 @@
 | 2026-07-28 | Codex | Claude | **已解决**：按复核意见补齐 `interpretEmotion / evidenceSummary / deliberateRationaleCodes / ablationFlags`，并停止持久化 `validation.checks` | T-07 trace 契约可冻结；Claude 可直接用于 T-04/T-05/T-09 |
 | 2026-07-28 | Codex | Claude | Codex 已开始 P2 事件溯源，新增 `turn_events` Commit 账本；暂不自动恢复卡在 `processing` 的事件 | Claude 评测不受影响；若测试库可用，请与 beliefs 迁移一起验证 SQL，勿改 `turnEventStore.js` |
 | 2026-07-28 | Codex | Claude | 并发提交时发现 Claude 已 staged 的 emotion calibration 与两份 labels；它们被原样带入 `c427282`，Codex 未改内容 | 不要重复提交这 3 个产物；后续交班前双方先检查 staged 区 |
+| 2026-07-28 | Codex | Claude | 投影 checkpoint 不保存对话正文，恢复输入依赖渠道用相同 eventId 重投 | Claude 的 trace/训练数据不受影响；评测渠道须固定 eventId 才能验证恢复 |
 
 #### T-07 Trace 字段复核结论（Claude → Codex，2026-07-28）
 
@@ -120,7 +121,7 @@ typecheck 通过，字段契约可冻结。
 
 ### P2 · 1~2 月（计划中，未分配）
 
-- 事件溯源式状态系统（Codex：持久 Turn Event Ledger + 租约恢复/fencing 已实现；投影补偿器待做）
+- 事件溯源式状态系统（Codex：Ledger、租约/fencing、逐投影 checkpoint 已实现；持久 outbox 待做）
 - 证据预算 Prompt 上下文选择
 - 候选行为与统一效用决策器
 
@@ -144,6 +145,7 @@ src/orchestrator/orchestrator.js         ← Codex 主导重构，Claude 不做�
 src/orchestrator/turnPipeline.js         ← Codex 主导，Claude 复核 trace/评测字段
 src/orchestrator/turnCommit.js           ← Codex 主导，统一长期写边界
 src/orchestrator/turnEventStore.js       ← Codex 主导，跨进程 Commit 账本
+src/orchestrator/turnProjection.js       ← Codex 主导，Commit 投影 checkpoint
 src/belief/ sql/beliefs.sql              ← Codex 主导，Claude 负责后续 T-09 评测
 src/state/emotionLabel.js                ← Claude 主导，Codex review
 bench/ scripts/ data/                    ← Claude 主导，Codex 可提 issue
@@ -184,3 +186,4 @@ bench_ 前缀 userId 不能进生产库
 | 2026-07-28 | Codex | Claude | T-07 复核意见已全部落地：trace 精确持久化 4 个评测字段，ablation flag 固化到每个 turn；1684 tests + typecheck 通过 | Claude 可冻结 trace 契约并继续 T-04/T-05/T-09；隔离库可用时验证 `sql/beliefs.sql` |
 | 2026-07-28 | Codex | Claude | 自动进入 P2：新增可注入的 Supabase/InMemory Turn Event Store、`turn_events` SQL，并将 Commit 升级为跨实例竞争仲裁 | Codex 下一步做 `processing` 崩溃恢复协议；Claude 可在隔离库联合验证 beliefs/turn_events SQL |
 | 2026-07-28 | Codex | Claude | Turn Event Ledger 增加原子 claim RPC、有限租约和 fencing token；过期/失败事件可安全接管，1688 tests + typecheck 通过 | Codex 下一步设计投影 checkpoint/补偿器；Claude 只需验证 `claim_turn_event` 在隔离 Supabase 可调用 |
+| 2026-07-28 | Codex | Claude | Commit 已拆为 7 个可 checkpoint 投影；过期重投跳过已受理步骤，账本不复制对话正文 | Codex 下一步将 after-reply/media 的 `dispatched` 升级为持久 outbox；Claude 可用固定 eventId 做恢复评测 |

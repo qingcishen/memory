@@ -370,7 +370,7 @@ Replay 默认禁止 Commit。显式传入测试 store 时才允许写入隔离�
   `(user_id, companion_id, event_id)` 唯一键保证只有一个实例取得写权限；
 - 崩溃恢复：完成租约基础；`failed` 或租约过期的 `processing` 事件可以重新 claim，
   `lease_token` 会阻止旧 worker 覆盖新 worker 的提交结果；
-- 投影级补偿器：待完成；恢复后的 Commit 仍需依赖各投影自身的 eventId 幂等能力。
+- 投影级 checkpoint：完成；持久 outbox 待完成，异步投影目前记录为 `dispatched`。
 
 ### 9.1 Turn Event Ledger
 
@@ -381,6 +381,7 @@ claim(scope)             // 原子取得事件写权限
 complete(scope, result)  // 标记投影提交完成
 fail(scope, error)       // 标记同步提交失败
 get(scope)               // 查询审计状态
+checkpoint(scope, name)  // fencing token 保护的逐投影进度
 ```
 
 生产环境通过 `deps.turnEventStore` 向 Orchestrator 注入
@@ -390,6 +391,27 @@ get(scope)               // 查询审计状态
 账本通过数据库 RPC 原子 claim，并使用有限租约和 fencing token 支持崩溃接管，但暂不
 宣称跨多个外部存储的 exactly-once：history、memory、媒体等投影尚未共享单个数据库
 事务。租约过期后的新 worker 应按各投影自身 eventId 幂等能力逐项补偿。
+
+### 9.2 Projection Checkpoints
+
+`src/orchestrator/turnProjection.js` 把 Commit 拆成以下可恢复投影：
+
+- `session`
+- `emotion`
+- `history`
+- `after_reply`
+- `prospective`
+- `daily_photo`
+- `requested_photo`
+
+每完成同步应用或成功分发异步工作，就通过
+`checkpoint_turn_projection` 写入 `projection_state`。渠道重投同一 eventId 且旧租约
+已过期时，新 worker 会跳过 `applied / dispatched / skipped` 投影，仅执行缺失或失败
+投影。账本 payload 只保存 turnId 和回复长度，不复制用户消息与回复正文；恢复输入来自
+渠道原始事件重投。
+
+其中 `dispatched` 只表示工作已交给现有异步路径，不代表外部副作用最终成功。要获得
+端到端 exactly-once，后续仍需将 after-reply 与媒体任务迁入带 eventId 的持久 outbox。
 
 ### Slice A：流水线内核
 

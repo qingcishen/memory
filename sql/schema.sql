@@ -521,6 +521,7 @@ create table if not exists turn_events (
   status         text not null default 'processing'
                  check (status in ('processing','committed','failed')),
   payload        jsonb not null default '{}'::jsonb,
+  projection_state jsonb not null default '{}'::jsonb,
   result         jsonb,
   attempts       int not null default 1 check (attempts >= 1),
   lease_token    text,
@@ -536,6 +537,7 @@ create index if not exists turn_events_scope_idx
   on turn_events (user_id, companion_id, created_at desc);
 alter table turn_events add column if not exists lease_token text;
 alter table turn_events add column if not exists lease_expires_at timestamptz;
+alter table turn_events add column if not exists projection_state jsonb not null default '{}'::jsonb;
 
 create or replace function claim_turn_event(
   p_user_id text,
@@ -592,6 +594,48 @@ $$;
 
 revoke all on function claim_turn_event(text,text,text,text,int,jsonb) from public, anon, authenticated;
 grant execute on function claim_turn_event(text,text,text,text,int,jsonb) to service_role;
+
+create or replace function checkpoint_turn_projection(
+  p_user_id text,
+  p_companion_id text,
+  p_event_id text,
+  p_lease_token text,
+  p_projection text,
+  p_checkpoint jsonb
+) returns jsonb
+language plpgsql
+security definer
+set search_path = public
+as $$
+declare
+  next_state jsonb;
+begin
+  update turn_events
+  set projection_state = jsonb_set(
+        coalesce(projection_state, '{}'::jsonb),
+        array[p_projection],
+        coalesce(p_checkpoint, '{}'::jsonb),
+        true
+      ),
+      updated_at = now()
+  where user_id = p_user_id
+    and companion_id = coalesce(p_companion_id, 'default')
+    and event_id = p_event_id
+    and status = 'processing'
+    and lease_token = p_lease_token
+  returning projection_state into next_state;
+
+  return jsonb_build_object(
+    'updated', next_state is not null,
+    'projection_state', coalesce(next_state, '{}'::jsonb)
+  );
+end;
+$$;
+
+revoke all on function checkpoint_turn_projection(text,text,text,text,text,jsonb)
+  from public, anon, authenticated;
+grant execute on function checkpoint_turn_projection(text,text,text,text,text,jsonb)
+  to service_role;
 
 -- ------------------------------------------------------------
 --  世界观系统 (worldview): 动态世界状态 —— 背景剧情线/氛围随对话推进缓慢演变,
