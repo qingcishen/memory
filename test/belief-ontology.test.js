@@ -78,10 +78,29 @@ describe('temporal belief ontology', () => {
   });
 
   it('validates bounded belief queries', () => {
-    expect(BeliefQuerySchema.parse({ subjectKey: 'user', limit: 20 })).toEqual({
+    expect(BeliefQuerySchema.parse({
       subjectKey: 'user',
+      at: '2026-07-28T10:00:00.000Z',
+      limit: 20,
+    })).toEqual({
+      subjectKey: 'user',
+      at: '2026-07-28T10:00:00.000Z',
       limit: 20,
     });
     expect(() => BeliefQuerySchema.parse({ limit: 1000 })).toThrow();
+    expect(() => BeliefQuerySchema.parse({ at: 'tomorrow' })).toThrow();
+  });
+
+  it('rejects empty or inverted temporal intervals', () => {
+    expect(() =>
+      normalizeBelief({
+        subjectKey: 'user',
+        subjectLabel: '清词',
+        predicate: 'works_at',
+        object: '新公司',
+        validFrom: '2026-08-01T00:00:00.000Z',
+        validTo: '2026-07-31T00:00:00.000Z',
+      }),
+    ).toThrow(/valid_to/);
   });
 });

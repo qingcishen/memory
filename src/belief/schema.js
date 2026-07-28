@@ -33,6 +33,18 @@ export const BeliefRecordSchema = z.object({
   valid_from: z.string().datetime().nullable(),
   valid_to: z.string().datetime().nullable(),
   metadata: z.record(z.string(), z.unknown()),
+}).superRefine((belief, context) => {
+  if (
+    belief.valid_from &&
+    belief.valid_to &&
+    Date.parse(belief.valid_to) <= Date.parse(belief.valid_from)
+  ) {
+    context.addIssue({
+      code: z.ZodIssueCode.custom,
+      path: ['valid_to'],
+      message: 'valid_to must be later than valid_from',
+    });
+  }
 });
 
 export const BeliefEvidenceSchema = z.object({
@@ -51,5 +63,6 @@ export const BeliefQuerySchema = z.object({
   subjectKey: z.string().min(1).optional(),
   predicate: z.string().min(1).optional(),
   slotKey: z.string().min(1).optional(),
+  at: z.string().datetime().optional(),
   limit: z.number().int().min(1).max(200).optional(),
 });

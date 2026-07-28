@@ -49,12 +49,15 @@ export class BeliefRepository {
   async current(userId, companionId = 'default', query = {}) {
     assertScope(userId, companionId);
     query = BeliefQuerySchema.parse(query);
+    const at = query.at ?? new Date().toISOString();
     let request = this.client
       .from('beliefs')
       .select('*')
       .eq('user_id', userId)
       .eq('companion_id', companionId)
-      .eq('status', 'active');
+      .eq('status', 'active')
+      .or(`valid_from.is.null,valid_from.lte.${at}`)
+      .or(`valid_to.is.null,valid_to.gt.${at}`);
     if (query.subjectKey) request = request.eq('subject_key', query.subjectKey);
     if (query.predicate) request = request.eq('predicate', query.predicate);
     if (query.slotKey) request = request.eq('slot_key', query.slotKey);
