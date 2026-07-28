@@ -410,8 +410,14 @@ checkpoint(scope, name)  // fencing token 保护的逐投影进度
 投影。账本 payload 只保存 turnId 和回复长度，不复制用户消息与回复正文；恢复输入来自
 渠道原始事件重投。
 
-其中 `dispatched` 只表示工作已交给现有异步路径，不代表外部副作用最终成功。要获得
-端到端 exactly-once，后续仍需将 after-reply 与媒体任务迁入带 eventId 的持久 outbox。
+其中 `dispatched` 只表示工作已交给现有进程内异步路径，不代表外部副作用最终成功。
+配置 `afterReplyEnqueue` 的渠道会把 after-reply 写入现有 `jobs` 持久队列，成功后
+checkpoint 为 `enqueued`。job 使用
+`(user_id, companion_id, kind, idempotency_key)` 唯一键去重，idempotency key 为
+`${eventId}:after_reply`；worker payload 同时携带原 eventId，供后续下游投影继续幂等。
+
+媒体任务仍为 `dispatched`。要获得端到端 exactly-once，后续需把媒体生成与投递拆成
+只保存稳定资源引用的持久 outbox，避免在 jobs/ledger 重复保存 base64 媒体。
 
 ### Slice A：流水线内核
 

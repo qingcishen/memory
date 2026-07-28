@@ -1,4 +1,4 @@
-const TERMINAL_PROJECTION_STATES = new Set(['applied', 'dispatched', 'skipped']);
+const TERMINAL_PROJECTION_STATES = new Set(['applied', 'enqueued', 'dispatched', 'skipped']);
 
 /**
  * Turn Commit 的投影执行器。

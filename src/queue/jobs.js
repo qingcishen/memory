@@ -42,6 +42,17 @@ export function isClaimable(job, now = Date.now()) {
 
 /** 入队一个 job。runAfter 可延迟执行 (如定时任务)。 */
 export async function enqueue(userId, companionId = 'default', kind, payload = {}, opts = {}) {
+  return enqueueWithClient(supabase, userId, companionId, kind, payload, opts);
+}
+
+export async function enqueueWithClient(
+  client,
+  userId,
+  companionId = 'default',
+  kind,
+  payload = {},
+  opts = {},
+) {
   const row = {
     user_id: userId,
     companion_id: companionId,
@@ -49,10 +60,28 @@ export async function enqueue(userId, companionId = 'default', kind, payload = {
     payload,
     status: 'pending',
     run_after: opts.runAfter ? new Date(opts.runAfter).toISOString() : new Date().toISOString(),
+    ...(opts.idempotencyKey ? { idempotency_key: String(opts.idempotencyKey) } : {}),
   };
-  const { data, error } = await supabase.from('jobs').insert(row).select().single();
+  const write = opts.idempotencyKey
+    ? client.from('jobs').upsert(row, {
+        onConflict: 'user_id,companion_id,kind,idempotency_key',
+        ignoreDuplicates: true,
+      })
+    : client.from('jobs').insert(row);
+  const { data, error } = await write.select().maybeSingle();
   if (error) throw error;
-  return data;
+  if (data) return data;
+  if (!opts.idempotencyKey) return null;
+  const { data: existing, error: readError } = await client
+    .from('jobs')
+    .select('*')
+    .eq('user_id', userId)
+    .eq('companion_id', companionId)
+    .eq('kind', kind)
+    .eq('idempotency_key', String(opts.idempotencyKey))
+    .single();
+  if (readError) throw readError;
+  return existing;
 }
 
 /**

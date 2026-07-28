@@ -440,7 +440,8 @@ export class TelegramMemoryBot {
     this.statusTimer = null;
     this.jobKind = 'telegram:after_reply';
     this.worker = new Worker({ handlers: {
-      [this.jobKind]: ({ chatId, userMessage, reply }) => this.botForChat(chatId).runAfterReply(userMessage, reply),
+      [this.jobKind]: ({ chatId, userMessage, reply, eventId }) =>
+        this.botForChat(chatId).runAfterReply(userMessage, reply, { eventId }),
     } });
     // 主动性策略: 安静时段 + 冷却 + 每日上限 (东八区)。
     this.proactivePolicy = {
@@ -474,8 +475,12 @@ export class TelegramMemoryBot {
           // 世界观系统: 按 (userId, companionId) 维护各自的背景剧情线, 因此每个 chat 一个实例。
           world: new WorldDimension({ userId: telegramUserId(chatId), companionId: this.companionId }),
           narration: this.narration,
-          afterReplyEnqueue: ({ userMessage, reply }) => enqueue(
-            telegramUserId(chatId), this.companionId, this.jobKind, { chatId: String(chatId), userMessage, reply },
+          afterReplyEnqueue: ({ userMessage, reply, eventId }) => enqueue(
+            telegramUserId(chatId),
+            this.companionId,
+            this.jobKind,
+            { chatId: String(chatId), userMessage, reply, eventId },
+            { idempotencyKey: eventId ? `${eventId}:after_reply` : null },
           ),
           // Seedream 生成完成后直接投递到当前 Telegram 会话；data URL 无法走 JSON Bot API 时安全跳过。
           onPhoto: async ({ url, kind }) => {

@@ -459,6 +459,9 @@ create table if not exists jobs (
   created_at   timestamptz not null default now(),
   updated_at   timestamptz not null default now()
 );
+alter table jobs add column if not exists idempotency_key text;
+create unique index if not exists jobs_idempotency_unique_idx
+  on jobs (user_id, companion_id, kind, idempotency_key);
 -- 取活: 按 (status, run_after) 捞到期的 pending; 顺带带上 user 维度便于按角色排空。
 create index if not exists jobs_claim_idx on jobs (status, run_after) where status = 'pending';
 create index if not exists jobs_owner_idx on jobs (user_id, companion_id, status);

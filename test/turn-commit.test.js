@@ -135,4 +135,20 @@ describe('turn commit boundary', () => {
     expect(result.projections.completed).toContain('history');
     expect(result.projections.completed).toContain('after_reply');
   });
+
+  it('checkpoints durable after-reply enqueue as enqueued', async () => {
+    const orchestrator = {
+      ...fakeOrchestrator(),
+      afterReplyEnqueue: vi.fn(),
+      turnEventStore: new InMemoryTurnEventStore(),
+    };
+    const result = await commitValidatedReply(orchestrator, {
+      eventId: 'evt-outbox',
+      historyUserMessage: 'hi',
+      reply: 'hello',
+      updateSession: (value) => value,
+    });
+
+    expect(result.projections.state.after_reply.status).toBe('enqueued');
+  });
 });

@@ -66,7 +66,8 @@ export class MemoryChannel {
     this.jobKind = `${channel}:after_reply`;
     this.worker = new Worker({
       handlers: {
-        [this.jobKind]: async ({ senderId, userMessage, reply }) => this.session(senderId).runAfterReply(userMessage, reply),
+        [this.jobKind]: async ({ senderId, userMessage, reply, eventId }) =>
+          this.session(senderId).runAfterReply(userMessage, reply, { eventId }),
       },
     });
   }
@@ -97,7 +98,13 @@ export class MemoryChannel {
           world: new WorldDimension({ userId, companionId: this.companionId }),
           narration: this.narration,
           ...(this.onPhoto ? { onPhoto: (photo) => this.onPhoto({ ...photo, senderId: key }) } : {}),
-          afterReplyEnqueue: ({ userMessage, reply }) => enqueue(userId, this.companionId, this.jobKind, { senderId: key, userMessage, reply }),
+          afterReplyEnqueue: ({ userMessage, reply, eventId }) => enqueue(
+            userId,
+            this.companionId,
+            this.jobKind,
+            { senderId: key, userMessage, reply, eventId },
+            { idempotencyKey: eventId ? `${eventId}:after_reply` : null },
+          ),
         },
       }));
     }

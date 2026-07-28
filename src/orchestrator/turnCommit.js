@@ -100,7 +100,8 @@ export async function commitValidatedReply(orchestrator, input = {}) {
         sceneLocks,
         relationshipStage,
       });
-    }, { successStatus: 'dispatched' });
+      return orchestrator.afterReplyEnqueue ? orchestrator._lastAfterReply : undefined;
+    }, { successStatus: orchestrator.afterReplyEnqueue ? 'enqueued' : 'dispatched' });
 
     await projections.run('prospective', () => {
       orchestrator._lastProspectiveDismiss = Promise.resolve(
