@@ -18,10 +18,19 @@
 
 决策：hybrid p95 增量 +1679ms > 150ms 门槛，故 R1 **不切换** heuristic-hybrid；R2 推荐 **activation-hybrid**（MRR 完美 + 最低延迟）。
 
-## E3 消融 (2026-07-28，基线 2.99/5)
+## E3 消融 第一次 (2026-07-28 12:45，基线 2.99/5)
 
 **立即删除**：monologue (Δ -0.51)、behaviorPolicy (Δ -0.51)。
-**无法证明增益**：moodGating、reconsolidation、narration、story、desire。全部按 v3 红线列入重构名单。详见 [docs/ablation-report.md](ablation-report.md)，总成本 $0.2823。
+**无法证明增益**：moodGating、reconsolidation、narration (Δ +0.01)、story、desire。全部按 v3 红线列入重构名单。总成本 $0.2823。
+
+## E3 消融 重跑 (2026-07-28 23:18，删 monologue+behaviorPolicy 后新基线)
+
+**新基线 overall = 3.30/5**（naturalness = 2.90）。
+- T-01 验收线 > 3.3/5：恰好 3.30，borderline（就 judge 噪声 ±0.5 而言改善 +0.31 显著，但严格意义不超线）。
+- T-03 验收线 ≥ 3.0 naturalness：2.90，**未达线**。需进一步分析原因。
+- **narration Δ = -0.31**（禁用后分数升至 3.61）：弱有害信号，在噪声内，但方向与第一次 (+0.01) 相反。建议与 Codex 讨论 narrationPrompt/narrationClassifier 拆分后重测。
+- monologue/behaviorPolicy Δ ≤ 0.19：已在代码层删除，消融测试近似无效，符合预期。
+- 其余机制 Δ 均在噪声内，维持"无法证明增益"结论。详见 [docs/ablation-report.md](ablation-report.md)，总成本 $0.3205。
 
 ## 运行审计
 
@@ -35,3 +44,5 @@
 | 2026-07-28 | memory-v3 heuristic-hybrid | live | 0.92 | 1.00 | 0.96 | R1基准(hybrid重复) / $0.0172 / runTag=ms431xah |
 | 2026-07-28 | memory-v3 llm-hybrid | live | 0.90 | 1.00 | 0.97 | R2候选 / $0.0194 / runTag=ms43sja7 |
 | 2026-07-28 | memory-v3 activation-hybrid | live | 0.88 | 1.00 | 1.00 | R2候选(最优MRR) / $0.0174 / runTag=ms4545os |
+| 2026-07-28 | ablation-v3 E3第一次 | live | 2.99 | — | — | 全机制基线 / $0.2823 / monologue+behaviorPolicy 有害已删 |
+| 2026-07-28 | ablation-v3 E3重跑 | live | 3.30 | — | — | 删有害机制后新基线 / $0.3205 / naturalness=2.90 / narration弱有害(-0.31) |
