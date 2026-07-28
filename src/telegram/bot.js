@@ -9,6 +9,7 @@ import { loadPersonaConfig } from '../companion.js';
 import { CompanionRuntime } from '../runtime/index.js';
 import { metricsSnapshot } from '../metrics.js';
 import { enqueue, queueStats, Worker } from '../queue/jobs.js';
+import { dispatchMediaOutbox } from '../media/outbox.js';
 import { makeScheduleActivityFn, parseSleepWindow } from '../state/activity.js';
 import { WeatherProvider } from '../world/weather.js';
 import { WorldDimension } from '../world/index.js';
@@ -439,9 +440,11 @@ export class TelegramMemoryBot {
     this.statusFile = process.env.CYBER_UI_STATUS_FILE || '';
     this.statusTimer = null;
     this.jobKind = 'telegram:after_reply';
+    this.mediaJobKind = 'telegram:media_delivery';
     this.worker = new Worker({ handlers: {
       [this.jobKind]: ({ chatId, userMessage, reply, eventId }) =>
         this.botForChat(chatId).runAfterReply(userMessage, reply, { eventId }),
+      [this.mediaJobKind]: ({ chatId, asset }) => this.deliverPhoto(chatId, asset),
     } });
     // 主动性策略: 安静时段 + 冷却 + 每日上限 (东八区)。
     this.proactivePolicy = {
@@ -482,29 +485,43 @@ export class TelegramMemoryBot {
             { chatId: String(chatId), userMessage, reply, eventId },
             { idempotencyKey: eventId ? `${eventId}:after_reply` : null },
           ),
-          // Seedream 生成完成后直接投递到当前 Telegram 会话；data URL 无法走 JSON Bot API 时安全跳过。
-          onPhoto: async ({ url, kind }) => {
-            const raw = String(url ?? '');
-            if (/^https?:\/\//i.test(raw)) {
-              // Seedream 等返回公网 URL: 直接让 Telegram 拉取
-              await this.api.sendPhoto(chatId, raw);
-            } else {
-              // GPT Image 系列只回 base64 data URL: 走 multipart 上传
-              const parsed = parseDataUrl(raw);
-              if (!parsed) {
-                console.warn(`[telegram] generated ${kind || 'photo'} is neither public URL nor data URL, skipped delivery`);
-                return;
-              }
-              await this.api.sendPhotoUpload(chatId, parsed.buffer, { mime: parsed.mime });
-            }
-            console.log(`[telegram] photo sent chat=${chatId} kind=${kind || 'photo'}`);
-          },
+          onPhoto: (photo) => dispatchMediaOutbox({
+            asset: photo,
+            route: { chatId: String(chatId) },
+            eventId: photo.eventId,
+            projection: photo.projection,
+            enqueue: (payload, opts) =>
+              enqueue(
+                telegramUserId(chatId),
+                this.companionId,
+                this.mediaJobKind,
+                payload,
+                opts,
+              ),
+            deliverNow: (asset) => this.deliverPhoto(chatId, asset),
+          }),
         }, // 短期历史落库 + 真实天气 + 世界观 + 旁白
       });
       this.bots.set(key, orchestrator);
       this.startRuntime(chatId, orchestrator);
     }
     return this.bots.get(key);
+  }
+
+  async deliverPhoto(chatId, { url, kind } = {}) {
+    const raw = String(url ?? '');
+    if (/^https?:\/\//i.test(raw)) {
+      await this.api.sendPhoto(chatId, raw);
+    } else {
+      const parsed = parseDataUrl(raw);
+      if (!parsed) {
+        console.warn(`[telegram] generated ${kind || 'photo'} is neither public URL nor data URL, skipped delivery`);
+        return null;
+      }
+      await this.api.sendPhotoUpload(chatId, parsed.buffer, { mime: parsed.mime });
+    }
+    console.log(`[telegram] photo sent chat=${chatId} kind=${kind || 'photo'}`);
+    return true;
   }
 
   /**

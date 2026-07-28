@@ -6,6 +6,7 @@ import { WorldDimension } from '../world/index.js';
 import { SceneClassifier } from '../narration.js';
 import { BehaviorStateStore } from '../state/behavior.js';
 import { enqueue, Worker } from '../queue/jobs.js';
+import { dispatchMediaOutbox } from '../media/outbox.js';
 
 export function channelUserId(channel, id) {
   return `${channel}:${id}`;
@@ -64,10 +65,13 @@ export class MemoryChannel {
     this.sessions = new Map();
     this.queues = new Map();
     this.jobKind = `${channel}:after_reply`;
+    this.mediaJobKind = `${channel}:media_delivery`;
     this.worker = new Worker({
       handlers: {
         [this.jobKind]: async ({ senderId, userMessage, reply, eventId }) =>
           this.session(senderId).runAfterReply(userMessage, reply, { eventId }),
+        [this.mediaJobKind]: async ({ senderId, asset }) =>
+          this.onPhoto?.({ ...asset, senderId: String(senderId) }),
       },
     });
   }
@@ -97,7 +101,17 @@ export class MemoryChannel {
           weather: this.weather,
           world: new WorldDimension({ userId, companionId: this.companionId }),
           narration: this.narration,
-          ...(this.onPhoto ? { onPhoto: (photo) => this.onPhoto({ ...photo, senderId: key }) } : {}),
+          ...(this.onPhoto ? {
+            onPhoto: (photo) => dispatchMediaOutbox({
+              asset: photo,
+              route: { senderId: key },
+              eventId: photo.eventId,
+              projection: photo.projection,
+              enqueue: (payload, opts) =>
+                enqueue(userId, this.companionId, this.mediaJobKind, payload, opts),
+              deliverNow: (asset) => this.onPhoto({ ...asset, senderId: key }),
+            }),
+          } : {}),
           afterReplyEnqueue: ({ userMessage, reply, eventId }) => enqueue(
             userId,
             this.companionId,

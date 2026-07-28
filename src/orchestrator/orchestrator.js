@@ -1480,7 +1480,14 @@ export class Orchestrator {
       .photo(snapshot, { kind: decision.kind, appearance: this._config?.appearance ?? '' })
       .catch(() => null);
     if (!result) return null;
-    await Promise.resolve(this.onPhoto({ ...result, reason: decision.reason })).catch((e) => console.error('[onPhoto]', e));
+    await Promise.resolve(
+      this.onPhoto({
+        ...result,
+        reason: decision.reason,
+        eventId: ctx.eventId ?? null,
+        projection: ctx.projection ?? 'photo',
+      }),
+    ).catch((e) => console.error('[onPhoto]', e));
     return result;
   }
 
@@ -1488,7 +1495,7 @@ export class Orchestrator {
    * 今日穿搭成片：从 life outfit（已由 OutfitDimension 日更组合）生成 lookbook，
    * 写入相册/图库；shareInChat 且冷却 OK 时 onPhoto 分享一次。
    */
-  async maybeDailyLookPhoto(snapshot) {
+  async maybeDailyLookPhoto(snapshot, ctx = {}) {
     const dl = PARAMS.outfit?.dailyLook;
     if (!dl || dl.enabled === false) return null;
     const outfit = clampOutfitState(snapshot?.outfit);
@@ -1544,6 +1551,8 @@ export class Orchestrator {
         reason: 'daily_look',
         tags: ['daily', 'lookbook', latest.daily_key].filter(Boolean),
         cached: Boolean(result?.skipped),
+        eventId: ctx.eventId ?? null,
+        projection: ctx.projection ?? 'daily_photo',
       }),
     ).catch((e) => console.error('[onPhoto.daily]', e));
 

@@ -119,12 +119,16 @@ export async function commitValidatedReply(orchestrator, input = {}) {
 
     await projections.run('daily_photo', () => {
       orchestrator
-        .maybeDailyLookPhoto(stateSnapshot)
+        .maybeDailyLookPhoto(stateSnapshot, { eventId, projection: 'daily_photo' })
         .catch((error) => console.error('[maybeDailyLookPhoto]', error));
     }, { successStatus: 'dispatched' });
 
     await projections.run('requested_photo', () => {
-      orchestrator._lastPhoto = orchestrator.maybePhoto(stateSnapshot, { requested: true });
+      orchestrator._lastPhoto = orchestrator.maybePhoto(stateSnapshot, {
+        requested: true,
+        eventId,
+        projection: 'requested_photo',
+      });
     }, { successStatus: 'dispatched', skip: !photoRequested });
 
     orchestrator._committedTurnEvents.add(eventId);

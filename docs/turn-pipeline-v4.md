@@ -416,8 +416,18 @@ checkpoint 为 `enqueued`。job 使用
 `(user_id, companion_id, kind, idempotency_key)` 唯一键去重，idempotency key 为
 `${eventId}:after_reply`；worker payload 同时携带原 eventId，供后续下游投影继续幂等。
 
-媒体任务仍为 `dispatched`。要获得端到端 exactly-once，后续需把媒体生成与投递拆成
-只保存稳定资源引用的持久 outbox，避免在 jobs/ledger 重复保存 base64 媒体。
+媒体生成仍为 `dispatched`，避免让图片生成阻塞文字回复；生成成功后的“投递”已接入
+media delivery outbox：
+
+- 仅 HTTPS 稳定 URL 可以写入 jobs；
+- payload 只保存 URL、kind、reason、tags、route 和 eventId；
+- idempotency key 为 `${eventId}:${projection}`；
+- data URL、blob 和本地路径绝不进入 jobs，沿用即时投递降级；
+- Telegram 与通用 MemoryChannel worker 均支持稳定引用重试发送。
+
+因此当前保证的是“已有稳定媒体资源后的可恢复投递”。图片生成过程本身仍不是持久任务；
+若要覆盖生成阶段崩溃，需要先将 provider 输出统一落入对象存储，再把资源 ID 作为生成
+outbox 的结果。
 
 ### Slice A：流水线内核
 
