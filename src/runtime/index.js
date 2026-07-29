@@ -33,7 +33,7 @@ export class CompanionRuntime {
   /**
    * @param orchestrator 必填, 提供 maintain()
    * @param proactiveScheduler 可选, 提供 tick() (主动消息); 没有就只跑维护
-   * @param options { maintainEveryMs, proactiveEveryMs, nightlyHour, timezoneOffsetMinutes }
+ * @param options { maintainEveryMs, proactiveEveryMs, existenceEveryMs, nightlyHour, timezoneOffsetMinutes }
    */
   constructor({ orchestrator, proactiveScheduler = null, clock = () => Date.now(), options = {} } = {}) {
     if (!orchestrator) throw new Error('CompanionRuntime 需要 orchestrator');
@@ -43,12 +43,14 @@ export class CompanionRuntime {
     this.options = {
       maintainEveryMs: 15 * 60 * 1000, // 维护每 15min
       proactiveEveryMs: 30 * 60 * 1000, // 主动性检查每 30min
+      existenceEveryMs: 30 * 1000, // 连续状态心跳每 30s
       nightlyHour: 4, // 凌晨 4 点跑夜间反思
       timezoneOffsetMinutes: null,
       ...options,
     };
     this._lastNightlyDay = null;
     this._timers = [];
+    this._existenceInFlight = null;
   }
 
   /** 跑一轮维护; 到点了顺带跑夜间 reflect/story/dedupe (每天一次)。 */
@@ -72,10 +74,53 @@ export class CompanionRuntime {
     });
   }
 
+  /** 连续存在心跳；若内驱力自然越阈，仍通过 ProactiveScheduler 的硬门再投递。 */
+  async existenceTick() {
+    if (typeof this.orchestrator.existence?.heartbeat !== 'function') return null;
+    if (this._existenceInFlight) return this._existenceInFlight;
+    const now = this.clock();
+    const task = (async () => {
+      const result = await this.orchestrator.existence
+        .heartbeat({
+          now,
+          // I-2: 把亲密快照传给心跳，用于性张力弧线 desire 加成。
+          getIntimacy: () =>
+            this.orchestrator.stateLayer?.stateLayer?.intimacy?.snapshot?.() ?? Promise.resolve(null),
+        })
+        .catch((error) => {
+          console.error('[runtime.existence]', error);
+          return null;
+        });
+      const decision = result?.contactDecision ?? result?.decision ?? null;
+      if (decision?.contact && this.proactiveScheduler) {
+        const reason =
+          decision.reason?.content ??
+          decision.reason?.reason ??
+          (typeof decision.reason === 'string' ? decision.reason : null);
+        await this.proactiveTick({
+          now,
+          existenceDecision: decision,
+          ...(reason ? { reason } : {}),
+        });
+      }
+      return result;
+    })();
+    this._existenceInFlight = task.finally(() => {
+      this._existenceInFlight = null;
+    });
+    return this._existenceInFlight;
+  }
+
   /** 启动后台定时器 (两条独立节拍)。 */
   start() {
     if (this._timers.length) return;
     this._timers.push(setInterval(() => this.maintainTick(), this.options.maintainEveryMs));
+    if (this.orchestrator.existence) {
+      this.existenceTick();
+      this._timers.push(
+        setInterval(() => this.existenceTick(), this.options.existenceEveryMs),
+      );
+    }
     if (this.proactiveScheduler) {
       this._timers.push(setInterval(() => this.proactiveTick(), this.options.proactiveEveryMs));
     }

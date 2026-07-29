@@ -19,6 +19,8 @@ export function defaultOutfitState(overrides = null) {
     daily_key: null,
     composed_from: null,
     daily_photo: null,
+    preferred_ids: [],  // O-2: 用户夸过的造型 id（最近优先）
+    disliked_ids: [],   // O-2: 用户嫌弃/要换的造型 id
   };
   return clampOutfitState(overrides ? { ...base, ...overrides } : base);
 }
@@ -46,6 +48,8 @@ export function clampOutfitState(value = {}) {
     daily_key: value?.daily_key ? String(value.daily_key).slice(0, 16) : null,
     composed_from: value?.composed_from && typeof value.composed_from === 'object' ? value.composed_from : null,
     daily_photo: clampDailyPhoto(value?.daily_photo),
+    preferred_ids: Array.isArray(value?.preferred_ids) ? value.preferred_ids.map(String).slice(0, 12) : [],
+    disliked_ids: Array.isArray(value?.disliked_ids) ? value.disliked_ids.map(String).slice(0, 12) : [],
   };
 }
 

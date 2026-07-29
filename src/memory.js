@@ -19,6 +19,8 @@ import { dailyTraining } from './training.js';
 import { observeKnowledge, recallKnowledge } from './knowledge/index.js';
 import { PARAMS } from './config.js';
 import { updateUserProfile } from './profile.js';
+import { getAfterglowDelta } from './state/intimacy.js';
+import { scanOutfitFeedback, mergeOutfitFeedback } from './state/outfitPreference.js';
 
 /**
  * 记忆系统门面。一个用户一个 userId, 所有记忆按 (userId, companionId) 隔离。
@@ -60,9 +62,13 @@ export class Memory {
 
     // I3: 先演变亲密状态（启发式），其关系/情绪反馈并入本轮 affect 写入。
     let intimacyResult = null;
+    let afterglowDelta = null;
     if (opts.intimacy && PARAMS.intimacy?.enabled !== false) {
       const relPreview = await readState(this.userId, this.companionId).catch(() => null);
       const lifeSnap = typeof life?.current === 'function' ? await life.current().catch(() => null) : null;
+      // I-1 余温回暖：在 evolve 前取当前亲密快照，计算余温 delta。
+      const intimacySnap = await opts.intimacy.snapshot().catch(() => null);
+      if (intimacySnap) afterglowDelta = getAfterglowDelta(intimacySnap, opts.now ?? Date.now());
       intimacyResult = await opts.intimacy
         .evolve(turns, {
           relationship: relPreview?.relationship ?? relPreview,
@@ -73,7 +79,7 @@ export class Memory {
     }
 
     const intimacyAffect = intimacyResult?._meta?.affectDelta ?? null;
-    const extraDeltas = mergeExtraDeltas(coupling ? couplingToDelta(coupling) : null, intimacyAffect, opts.extraDeltas);
+    const extraDeltas = mergeExtraDeltas(coupling ? couplingToDelta(coupling) : null, intimacyAffect, afterglowDelta, opts.extraDeltas);
 
     const extractOpts = {
       intimate: Boolean(
@@ -106,6 +112,19 @@ export class Memory {
       outfitResult = await opts.outfit
         .evolve(turns, { life: lifeSnap, intimacy: intimacyResult })
         .catch(() => null);
+      // O-2: 扫描用户消息中对当前穿搭的好评/嫌弃信号，写入 outfit 偏好列表。
+      const currentOutfitId = outfitResult?.current?.id ?? null;
+      if (currentOutfitId) {
+        const feedback = scanOutfitFeedback(turns, currentOutfitId);
+        if (feedback.liked.length || feedback.disliked.length) {
+          const snap = outfitResult ?? await opts.outfit.snapshot().catch(() => null);
+          if (snap) {
+            const merged = mergeOutfitFeedback(snap, feedback);
+            const updated = { ...snap, ...merged };
+            await opts.outfit.write?.(this.userId, this.companionId, updated).catch(() => null);
+          }
+        }
+      }
     }
     // 情绪 → 记忆重要性 (emotion-design.md §8): 这一轮心情位移大, 说明发生了要紧的事。
     let boosted = before && after ? applyMoodShiftBoost(extracted, moodShiftMagnitude(before, after)) : extracted;

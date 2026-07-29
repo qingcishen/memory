@@ -469,6 +469,35 @@ function feedbackDelta(kind, config) {
   };
 }
 
+/**
+ * I-1 余温回暖：在亲密结束后、下一轮对话开始时，返回 M1 关系回暖的 affectDelta。
+ * 调用方（Memory.observe）把这个 delta 混入 extraDeltas，与当轮 affect 更新合并写入。
+ *
+ * 回暖条件：
+ *   - aftercare_need > 0（刚结束亲密或仍在 aftercare）
+ *   - scene_phase 处于 aftercare/cooldown/none（不在激烈场景中途）
+ *   - 距上次亲密 < 24h（太久之前不算余温）
+ *
+ * @returns {{ mood?, relationship? } | null}
+ */
+export function getAfterglowDelta(state = {}, now = Date.now()) {
+  const s = clampIntimacy(state);
+  if (s.aftercare_need <= 0) return null;
+  if (['foreplay', 'peak', 'flirting'].includes(s.scene_phase)) return null;
+  if (s.last_intimate_at) {
+    const hoursAgo = (now - new Date(s.last_intimate_at).getTime()) / HOUR;
+    if (hoursAgo > 24) return null;
+  }
+  const intensity = clamp(s.aftercare_need, 0, 1);
+  return {
+    mood: { valence: 0.08 * intensity },
+    relationship: {
+      closeness: 0.04 * intensity,
+      tension: -0.06 * intensity,
+    },
+  };
+}
+
 export function applyIntimacyDeltas(state = {}, deltas = {}, maxStep = PARAMS.intimacy?.maxStepPerTurn ?? PARAMS.state?.maxStepPerTurn ?? 0.35) {
   const next = clampIntimacy(state);
   for (const key of INTIMACY_SCALAR_KEYS) {

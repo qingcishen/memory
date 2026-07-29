@@ -2,7 +2,10 @@
 // E1：可选 residual 惯性，避免金鱼情绪。
 import { applyLabelInertia, normalizeEmotionResidue } from './emotionResidue.js';
 
-export const EMOTION_LABELS = ['平静', '开心', '委屈', '吃醋', '生气', '失落', '撒娇', '心疼'];
+export const EMOTION_LABELS = [
+  '平静', '开心', '委屈', '吃醋', '生气', '失落', '撒娇', '心疼',
+  '期待', '担心', '害羞', '暧昧', '感动', '无聊', '骄傲', '烦躁',
+];
 
 /**
  * @param state
@@ -109,6 +112,81 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
     }
     return warmth >= 0.92 && closeness >= 0.78 ? '撒娇' : '开心';
   }
+
+  // ── 扩展标签（8 个）─── 以下规则优先级低于上面所有判断 ──
+
+  // 感动：用户做了暖心/贴心的事（记住细节/特意做/说真心话）
+  if (
+    closeness >= 0.5 &&
+    /(记得|帮我记|特意|专门|就是为了你|第一个想到你|你不是一个人|我在|陪着你|我支持你|谢谢你懂我|你真好|心疼你|我懂你)/u.test(userText)
+  ) {
+    return '感动';
+  }
+
+  // 期待：用户提到即将发生的好事或约定
+  if (
+    /(好期待|期待死了|迫不及待|下次见|什么时候见|还有几天|明天.{0,8}(见|约|去)|周末.{0,8}(见|约|去|一起)|终于等到|快了吧)/u.test(userText) ||
+    /(好期待|期待死了|迫不及待)/u.test(companionText)
+  ) {
+    return '期待';
+  }
+
+  // 担心：用户提到可能有风险或困难的事，closeness 足够时才会担心对方
+  if (
+    closeness >= 0.5 &&
+    /(你注意安全|路上小心|好好照顾自己|记得吃饭|你没事吧|还好吗|身体怎么样|别太拼|你最近好吗|不会有事吧)/u.test(userText)
+  ) {
+    return '担心';
+  }
+  // 用户自述处于危险/压力状态，closeness 高时她担心对方
+  if (
+    closeness >= 0.6 &&
+    /(生病|发烧|受伤|出事了|快撑不住|哭了好久|一个人扛|没人知道|好害怕|压力好大|要崩了)/u.test(userText) &&
+    valence > -0.2
+  ) {
+    return '担心';
+  }
+
+  // 骄傲：用户或她有成就/胜利
+  if (
+    /(我做到了|成功了|拿到了|考过了|晋升了|录取了|赢了|第一名|offer|过了|通过了|终于完成|做出来了)/u.test(userText)
+  ) {
+    return '骄傲';
+  }
+
+  // 烦躁：用户表达焦躁/疲惫但不是冲着她（tension 不高）
+  if (
+    tension < 0.4 &&
+    repairDebt < 0.3 &&
+    /(烦死了|快被逼疯|搞不定|乱七八糟|哪都是问题|什么破|太乱了|脑子转不动|忙得烦|一堆事|烦透了)/u.test(userText)
+  ) {
+    return '烦躁';
+  }
+
+  // 暧昧：closeness 中高、无紧张、有轻微亲密信号
+  if (
+    closeness >= 0.55 &&
+    tension < 0.25 &&
+    /(心跳|脸红|好近|在想你|不知道该|有点不一样|好奇怪|说不清楚|感觉不对劲|心里有什么)/u.test(`${userText}\n${companionText}`)
+  ) {
+    return '暧昧';
+  }
+
+  // 害羞：被夸奖/被表白/closeness 高
+  if (
+    closeness >= 0.5 &&
+    /(你好可爱|你好漂亮|你好美|你真的很|你让我|我好喜欢你|喜欢你|爱你|你是最|你最好|你真棒|夸你)/u.test(userText)
+  ) {
+    return '害羞';
+  }
+
+  // 无聊：用户或她说没事做/无聊
+  if (
+    /(好无聊|无聊死了|没事做|不知道干嘛|闲着没事|好无趣|没意思|干嘛好|打发时间|随便聊|没什么事)/u.test(userText)
+  ) {
+    return '无聊';
+  }
+
   return '平静';
 }
 
@@ -133,6 +211,14 @@ export function emotionLabelToPrompt(label = '平静', residual = null) {
     失落: '【情绪表现】有点蔫：语气轻、慢半拍，别假开朗硬撑。',
     撒娇: '【情绪表现】可以黏一点、任性一点，像恋人随口撒娇，别油、别喊口号。',
     心疼: '【情绪表现】先接住对方的难受/累，关心落在具体处，少把话题拧回自己。',
+    期待: '【情绪表现】有点小雀跃，轻轻流露就好，别把期待演成催促或过分热闹。',
+    担心: '【情绪表现】带着点挂心，关切落在具体的事上，别变成反复确认的唠叨。',
+    害羞: '【情绪表现】有点窘，绕一下再接，别太快直直地接受赞美或表白。',
+    暧昧: '【情绪表现】语气可以软近一点，带一点欲言又止，别直白打破气氛。',
+    感动: '【情绪表现】心里有点热，话轻一点，别用大词渲染，也别马上转话题。',
+    无聊: '【情绪表现】有点无精打采，想找点事但又提不起劲，语气可以散漫。',
+    骄傲: '【情绪表现】有点小得意，可以轻描淡写带一句，别吹大了或主动炫耀。',
+    烦躁: '【情绪表现】有点坐不住，话可以短一点急一点，是焦不是发脾气。',
   };
   const line = map[label] ?? '';
   if (!line) return '';
@@ -142,7 +228,7 @@ export function emotionLabelToPrompt(label = '平静', residual = null) {
   return line;
 }
 
-const NEGATIVE = new Set(['委屈', '吃醋', '生气', '失落']);
+const NEGATIVE = new Set(['委屈', '吃醋', '生气', '失落', '担心', '烦躁']);
 
 function recentText(turns, role) {
   return (turns ?? [])

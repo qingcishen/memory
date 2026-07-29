@@ -17,6 +17,7 @@ import {
   sanitizeOutfitForImage,
 } from './outfit.js';
 import { buildUnifiedLookPrompt, imageQualityGate } from '../appearance/selfie.js';
+import { resolvePreferId } from './outfitPreference.js';
 
 /** 本地日历日 YYYY-MM-DD（相对时区偏移，默认东八区） */
 export function localDayKey(now = Date.now(), tzOffsetMinutes = 480) {
@@ -179,6 +180,31 @@ export function enrichLookFromDrawers(look, wardrobe, {
 /**
  * 组合今日主 look：pickOutfit + 抽屉补全。
  */
+/**
+ * O-1 天气约束：根据 weatherContext 推导额外的穿搭标签约束。
+ * 返回 { seasonOverride?, styleHint? } —— 注入 pickOutfit 时使用。
+ * 纯函数，无 IO。
+ */
+export function weatherToOutfitHint(weatherContext = null) {
+  if (!weatherContext || typeof weatherContext !== 'object') return {};
+  const temp = Number(weatherContext.temperature);
+  const cond = String(weatherContext.condition ?? '').toLowerCase();
+  const out = {};
+  if (Number.isFinite(temp)) {
+    if (temp < 5) out.seasonOverride = 'winter';
+    else if (temp < 15) out.seasonOverride = 'autumn';
+    else if (temp < 24) out.seasonOverride = null; // 按实际季节
+    else if (temp >= 30) out.seasonOverride = 'summer';
+  }
+  const hints = [];
+  if (cond.includes('rain') || cond.includes('雨')) hints.push('rain-proof');
+  if (temp < 15) hints.push('layering');
+  if (temp >= 28) hints.push('breathable');
+  if (cond.includes('wind') || cond.includes('风')) hints.push('windproof');
+  if (hints.length) out.styleHint = hints.join(' ');
+  return out;
+}
+
 export function composeDailyLook({
   wardrobe = null,
   context = 'home',
@@ -189,19 +215,29 @@ export function composeDailyLook({
   dailyKey = null,
   rotateAccessories = true,
   rng = null,
+  weatherContext = null,
+  outfitPrefs = null,
 } = {}) {
   const cat = normalizeWardrobe(wardrobe);
   const dayKey = dailyKey || localDayKey(now);
   const ctx = OUTFIT_CONTEXTS.includes(context) ? context : 'home';
-  const seasonNow = season || inferSeason(now);
+  const weatherHint = weatherToOutfitHint(weatherContext);
+  const seasonNow = weatherHint.seasonOverride !== undefined ? (weatherHint.seasonOverride || inferSeason(now)) : (season || inferSeason(now));
   const rand = rng || seedRng(`${dayKey}|${ctx}|compose`);
 
+  // O-2: 从用户偏好中解析最近喜欢且当前 context 可用的造型
+  const poolIds = cat.wardrobe.map((w) => w.id);
+  const dislikedSet = new Set(Array.isArray(outfitPrefs?.disliked_ids) ? outfitPrefs.disliked_ids : []);
+  const resolvedPrefId = preferLookId ?? resolvePreferId(outfitPrefs, poolIds.filter((id) => !dislikedSet.has(id)));
+  const resolvedAvoidId = avoidLookId ?? (dislikedSet.size ? [...dislikedSet][0] : null);
+
   const base = pickOutfit(cat, ctx, {
-    preferId: preferLookId,
-    avoidId: avoidLookId,
+    preferId: resolvedPrefId,
+    avoidId: resolvedAvoidId,
     rng: rand,
     season: seasonNow,
     now,
+    styleHint: weatherHint.styleHint ?? null,
   });
   const enriched = enrichLookFromDrawers(base, cat, {
     context: ctx,
@@ -229,6 +265,8 @@ export function ensureDailyLookState(state, {
   now = Date.now(),
   config = PARAMS.outfit,
   force = false,
+  weatherContext = null,
+  outfitPrefs = null,
 } = {}) {
   const dl = config?.dailyLook || {};
   if (dl.enabled === false || dl.autoCompose === false) {
@@ -251,6 +289,8 @@ export function ensureDailyLookState(state, {
     avoidLookId: cur.current?.id,
     dailyKey: dayKey,
     rotateAccessories: dl.rotateAccessories !== false,
+    weatherContext,
+    outfitPrefs: outfitPrefs ?? { preferred_ids: cur.preferred_ids, disliked_ids: cur.disliked_ids },
   });
   const stamp = new Date(now).toISOString();
   const next = clampOutfitState({

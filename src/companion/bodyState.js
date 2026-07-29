@@ -59,6 +59,15 @@ export function bodyStateToPrompt(situation = {}, intimacy = null) {
   if (intimacy && Number(intimacy.aftercare_need) >= 0.4) {
     lines.push('【亲密余韵】事后还想被抱着/确认；语气软一点黏一点，别突然公事公办。');
   }
+  // I-2: 跨天张力积累 → 气氛微妙暗示
+  if (intimacy && Number(intimacy.sexual_tension) >= 0.5) {
+    const t = Number(intimacy.sexual_tension);
+    if (t >= 0.75) {
+      lines.push('【气氛·张力高】有点压抑不住的微妙；眼神/语气里藏着事，不必点破，让温度自然渗出来。');
+    } else {
+      lines.push('【气氛·微妙】两人之间有淡淡说不清的东西；语气里可以带一点若有若无，别刻意。');
+    }
+  }
   if (!lines.length) return '';
   return lines.join('\n');
 }

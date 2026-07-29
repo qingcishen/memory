@@ -13,6 +13,9 @@ export async function commitValidatedReply(orchestrator, input = {}) {
     stateSnapshot,
     photoRequested = false,
     prospectiveToDismiss = [],
+    existenceTurn = null,
+    temporalContext = null,
+    psychologicalCoherence = null,
   } = input;
 
   if (!eventId) {
@@ -92,6 +95,25 @@ export async function commitValidatedReply(orchestrator, input = {}) {
         ],
         { eventId },
       ));
+
+    await projections.run(
+      'existence',
+      () =>
+        orchestrator.existence.observeTurn({
+          eventId,
+          now: nowMs,
+          userMessage: historyUserMessage,
+          reply,
+          relationshipStage,
+          temporalContext,
+          turn: existenceTurn,
+          psychologicalCoherence,
+          emotionLabel: orchestrator._lastEmotionLabel ?? null,
+        }),
+      {
+        skip: typeof orchestrator.existence?.observeTurn !== 'function',
+      },
+    );
 
     await projections.run('after_reply', () => {
       orchestrator._lastAfterReply = orchestrator.afterReply(historyUserMessage, reply, {

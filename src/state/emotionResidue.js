@@ -7,7 +7,7 @@
 import { EMOTION_LABELS } from './emotionLabel.js';
 import { PARAMS } from '../params.js';
 
-export const NEGATIVE_EMOTION_LABELS = new Set(['委屈', '吃醋', '生气', '失落']);
+export const NEGATIVE_EMOTION_LABELS = new Set(['委屈', '吃醋', '生气', '失落', '担心', '烦躁']);
 export const POSITIVE_EMOTION_LABELS = new Set(['开心', '撒娇', '心疼']); // 心疼偏关怀，允许较快切换
 
 const DEFAULT_STICKY = {
@@ -19,6 +19,15 @@ const DEFAULT_STICKY = {
   心疼: { minTurns: 0, baseIntensity: 0.45, halfTurns: 2 },
   开心: { minTurns: 0, baseIntensity: 0.35, halfTurns: 2 },
   平静: { minTurns: 0, baseIntensity: 0.2, halfTurns: 1 },
+  // 扩展标签（E-1）
+  期待: { minTurns: 0, baseIntensity: 0.4, halfTurns: 2 },
+  担心: { minTurns: 1, baseIntensity: 0.5, halfTurns: 3 },
+  害羞: { minTurns: 0, baseIntensity: 0.35, halfTurns: 1 },
+  暧昧: { minTurns: 0, baseIntensity: 0.45, halfTurns: 2 },
+  感动: { minTurns: 0, baseIntensity: 0.45, halfTurns: 2 },
+  无聊: { minTurns: 0, baseIntensity: 0.3, halfTurns: 2 },
+  骄傲: { minTurns: 0, baseIntensity: 0.35, halfTurns: 2 },
+  烦躁: { minTurns: 1, baseIntensity: 0.5, halfTurns: 2 },
 };
 
 export function emptyEmotionResidue(now = Date.now()) {

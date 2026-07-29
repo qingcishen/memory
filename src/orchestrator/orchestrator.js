@@ -20,7 +20,7 @@ import {
 import { writeOutfit, clampOutfitState } from '../state/outfit.js';
 import { buildNarrationPrompt } from '../narration.js';
 import { PARAMS } from '../params.js';
-import { inferEmotionLabel, emotionLabelToPrompt } from '../state/emotionLabel.js';
+import { inferEmotionLabel, emotionLabelToPrompt, EMOTION_LABELS } from '../state/emotionLabel.js';
 import {
   emptyEmotionResidue,
   normalizeEmotionResidue,
@@ -179,7 +179,7 @@ export class Orchestrator {
    * @param companionId 多角色隔离键 (默认 'default'); 同一 userId 下不同 companionId 数据互不可见。
    * @param companionName 显示名/称呼; 不显式传时由 companions 表里的 CompanionConfig.name 覆盖。
    * @param config 可选: 预加载好的 CompanionConfig; 不传则 init() 时按 (userId, companionId) 从 companions 表拉。
-   * @param deps 可注入 { memory, stateLayer, relationship, persona, llm, historyStore }, 默认用真实适配器。
+   * @param deps 可注入 { memory, stateLayer, relationship, persona, llm, historyStore, existence }，默认用真实适配器。
    * @param options { useMonologue=true, historyTurns=6, timeZone='Asia/Shanghai', place='武汉' }
    */
   constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', config = null, activityFn = null, lifeConfig = null, deps = {}, options = {} }) {
@@ -240,6 +240,9 @@ export class Orchestrator {
     this.llm = deps.llm ?? new DefaultLLM();
     this.historyStore = deps.historyStore ?? null;
     this.turnEventStore = deps.turnEventStore ?? null;
+    // Continuous Existence Engine 是可注入门面。未注入时保持旧链路；生产渠道会按
+    // (userId, companionId) 注入持久化实例，测试可用纯内存实例。
+    this.existence = deps.existence ?? null;
 
     // A1 拍照分享 (自拍 + 随手拍): 需要 onPhoto 投递回调才会启用 —— 没有投递渠道就不生成,
     // 这也让全 mock 的编排器测试默认离线 (不注入 onPhoto 即跳过)。photo 能力默认用真实 Selfie。
@@ -575,6 +578,20 @@ export class Orchestrator {
         ablation: { ...this.ablation },
       },
     });
+    const stateSnapshotPromise = this.stateLayer.snapshot().catch(() => null);
+    // 时间感知必须在普通 turn perception 之前读取“上一刻”的连续状态；
+    // 本轮 last_interaction 只会在 Commit 成功后推进，避免把间隔提前清零。
+    const temporalContext =
+      typeof this.existence?.perceive === 'function'
+        ? await this.existence
+            .perceive({
+              now: nowMs,
+              // activity intentionally omitted: stateSnapshot.life.current_activity is the
+              // companion's own schedule, not the user's. CEE resolves user activity via
+              // this.beliefs and persists it in this.lastActivity across turns.
+            })
+            .catch(() => null)
+        : null;
     // 先读持久历史的真实时间，再做任何情绪/场景判断。过去只看进程内时间，重启后会把
     // 几小时前加载回来的旧饭局当成“刚刚”，造成角色时间冻结。
     const storedLastUserMessageAt =
@@ -584,7 +601,8 @@ export class Orchestrator {
             .catch(() => null)
         : null;
     pipelineContext = await runTurnStage(pipelineContext, 'perceive', async () => ({
-      perception: perceiveTurn({
+      perception: {
+        ...perceiveTurn({
         userMessage,
         historyUserMessage: opts.historyUserMessage ?? userMessage,
         history: this.history,
@@ -594,7 +612,9 @@ export class Orchestrator {
         sessionThread: this._sessionThread,
         sessionThreadEnabled: PARAMS.orchestrator?.sessionThread !== false,
         previousSceneType: this._lastSceneType,
-      }),
+        }),
+        temporalContext,
+      },
     }));
     const perception = pipelineContext.perception;
     const historyUserMessage = perception.historyUserMessage;
@@ -606,7 +626,7 @@ export class Orchestrator {
 
     // 先并行拉状态/场景；记忆召回用 turnPlan 增强 query，故分两段（状态极快，不显著增延迟）
     const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot, dueItems, sceneType] = await Promise.all([
-      this.stateLayer.snapshot().catch(() => null),
+      stateSnapshotPromise,
       this.relationship.current().catch(() => null),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
@@ -650,8 +670,31 @@ export class Orchestrator {
       sessionPeek,
       unfinished,
     } = interpretation;
+    const existenceTurn =
+      typeof this.existence?.contextForTurn === 'function'
+        ? await this.existence
+            .contextForTurn({
+              now: nowMs,
+              userMessage,
+              temporalContext,
+              relationship: rel,
+              emotion: stateSnapshot?.emotion,
+              situation: sceneType,
+              unfinishedTopics: unfinished,
+            })
+            .catch(() => null)
+        : null;
     let behavior = interpretedBehavior;
-    const emotionLabel = interpretation.emotion.label;
+    // E-2: CEE 持久情绪标签（跨重启）优先于 M1 启发式推断。
+    // persistence > 0 且是合法中文标签时生效，否则回退 M1 结果。
+    const ceeEmotional = existenceTurn?.state?.emotional;
+    const ceeLabel = ceeEmotional?.label;
+    const emotionLabel =
+      ceeLabel &&
+      EMOTION_LABELS.includes(ceeLabel) &&
+      (ceeEmotional.persistence ?? 0) > 0
+        ? ceeLabel
+        : interpretation.emotion.label;
     if (emotionInferred && typeof emotionInferred === 'object' && emotionInferred.residual) {
       const prevRes = this._emotionResidue;
       this.applyEmotionSideEffects(prevRes, emotionInferred.residual, { userMessage, source: 'turn' });
@@ -765,7 +808,9 @@ export class Orchestrator {
         gapHours,
         userMessage,
       }),
+      temporalPrompt: existenceTurn?.temporalPrompt ?? '',
       personaPrompt: this.persona.toPrompt() ?? '',
+      personalityPrompt: existenceTurn?.personalityPrompt ?? '',
       companyPrompt: companyToPrompt(this._config?.company, {
         storySnapshot,
         currentActivity: stateSnapshot?.life?.current_activity,
@@ -810,6 +855,7 @@ export class Orchestrator {
       ]
         .filter(Boolean)
         .join('\n\n'),
+      continuousStatePrompt: existenceTurn?.continuousStatePrompt ?? '',
       goalsPrompt: goalsToPrompt(goals),
       narrationPrompt:
         this.ablation.narrationPrompt === false
@@ -958,6 +1004,8 @@ export class Orchestrator {
         promptParts,
         monologue,
         intimacyLive,
+        existenceTurn,
+        temporalContext,
         gapHours,
         nowMs,
         historyUserMessage,
@@ -989,11 +1037,24 @@ export class Orchestrator {
         gapHours,
         currentActivity: stateSnapshot?.life?.current_activity,
         skipCoherenceRetry: opts.skipCoherenceRetry,
+        checkPsychologicalCoherence:
+          typeof this.existence?.checkCoherence === 'function'
+            ? (draft) =>
+                this.existence.checkCoherence(draft, {
+                  turn: existenceTurn,
+                  userMessage,
+                  temporalContext,
+                  relationship: rel,
+                })
+            : null,
         postProcess: (draftReply, draftParts) =>
           this._postProcessParts(draftReply, draftParts, turn, sceneLocks),
       }),
     }));
     const { finalText: reply, finalParts: parts, repair } = pipelineContext.validation;
+    const psychologicalCoherence = pipelineContext.validation.checks?.find(
+      (check) => check.id === 'psychological_coherence',
+    );
 
     pipelineContext = await runTurnStage(pipelineContext, 'commit', async (_ctx, tools) => {
       tools.assertCanWrite();
@@ -1008,6 +1069,9 @@ export class Orchestrator {
           stateSnapshot,
           photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
           prospectiveToDismiss: decision.prospectiveToDismiss,
+          existenceTurn,
+          temporalContext,
+          psychologicalCoherence,
           sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
           updateSession: updateSessionThread,
         }),
@@ -1060,6 +1124,7 @@ export class Orchestrator {
       emotionResidue: this._emotionResidue
         ? { label: this._emotionResidue.label, intensity: this._emotionResidue.intensity }
         : null,
+      continuousExistence: summarizeExistenceTurn(existenceTurn, temporalContext),
       pipeline: summarizePipeline(pipelineContext),
       ...(debug ? { debug } : {}),
     };
@@ -1141,11 +1206,24 @@ export class Orchestrator {
         gapHours,
         currentActivity: stateSnapshot?.life?.current_activity,
         skipCoherenceRetry: opts.skipCoherenceRetry,
+        checkPsychologicalCoherence:
+          typeof this.existence?.checkCoherence === 'function'
+            ? (draft) =>
+                this.existence.checkCoherence(draft, {
+                  turn: ctx.existenceTurn,
+                  userMessage,
+                  temporalContext: ctx.temporalContext,
+                  relationship: ctx.relState?.relationship ?? ctx.relState ?? {},
+                })
+            : null,
         postProcess: (draftReply, draftParts) =>
           this._postProcessParts(draftReply, draftParts, turn, sceneLocks),
       }),
     }));
     const { finalText: reply, finalParts: parts, repair } = pipelineContext.validation;
+    const psychologicalCoherence = pipelineContext.validation.checks?.find(
+      (check) => check.id === 'psychological_coherence',
+    );
     if (reply !== finalText) yield { event: 'preview', text: reply };
 
     pipelineContext = await runTurnStage(pipelineContext, 'commit', async (_ctx, tools) => {
@@ -1161,6 +1239,9 @@ export class Orchestrator {
           stateSnapshot,
           photoRequested: PHOTO_REQUEST_RE.test(historyUserMessage) || structured?.wantPhoto,
           prospectiveToDismiss: ctx.decision?.prospectiveToDismiss,
+          existenceTurn: ctx.existenceTurn,
+          temporalContext: ctx.temporalContext,
+          psychologicalCoherence,
           sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
           updateSession: updateSessionThread,
         }),
@@ -1184,6 +1265,10 @@ export class Orchestrator {
       emotionResidue: this._emotionResidue
         ? { label: this._emotionResidue.label, intensity: this._emotionResidue.intensity }
         : null,
+      continuousExistence: summarizeExistenceTurn(
+        ctx.existenceTurn,
+        ctx.temporalContext,
+      ),
       pipeline: summarizePipeline(pipelineContext),
       streamed,
     };
@@ -1389,6 +1474,20 @@ export class Orchestrator {
     turn.historyTurns = Math.min(turn.historyTurns, 4);
     this._lastTurnPlan = turn;
 
+    const existenceTurn =
+      typeof this.existence?.contextForTurn === 'function'
+        ? await this.existence
+            .contextForTurn({
+              now: nowMs,
+              userMessage: pseudoUser,
+              relationship: rel,
+              emotion: stateSnapshot?.emotion,
+              situation: 'proactive',
+              unfinishedTopics: ctx.unfinished ?? extractUnfinishedHooks(this.history),
+            })
+            .catch(() => null)
+        : null;
+
     const seed = turn.recallQuery || effCtx.query || effCtx.reason || '想主动找对方聊一句';
     const memoryResult = await this.memory.recall(seed, {
       debug: false,
@@ -1403,7 +1502,9 @@ export class Orchestrator {
         place: this.options.place,
         weather,
       }),
+      temporalPrompt: existenceTurn?.temporalPrompt ?? '',
       personaPrompt: this.persona.toPrompt() ?? '',
+      personalityPrompt: existenceTurn?.personalityPrompt ?? '',
       companyPrompt: companyToPrompt(this._config?.company, {
         storySnapshot,
         currentActivity: stateSnapshot?.life?.current_activity,
@@ -1436,6 +1537,7 @@ export class Orchestrator {
       ]
         .filter(Boolean)
         .join('\n\n'),
+      continuousStatePrompt: existenceTurn?.continuousStatePrompt ?? '',
       memoryBlock: memoryBlock ?? '',
     };
 
@@ -1472,6 +1574,7 @@ export class Orchestrator {
       text: proactive,
       parts,
       contentPack: pack,
+      continuousExistence: summarizeExistenceTurn(existenceTurn, null),
       relationshipStage: relStage?.id ?? null,
       turnPlan: {
         historyTurns: turn.historyTurns,
@@ -1881,5 +1984,27 @@ function summarizeSessionThread(thread) {
     openCommitments: (thread.commitments || [])
       .filter((c) => c.status === 'open')
       .map((c) => ({ who: c.who, text: c.text })),
+  };
+}
+
+function summarizeExistenceTurn(turn, temporalContext) {
+  if (!turn && !temporalContext) return null;
+  const state = turn?.state ?? turn?.continuousState ?? null;
+  return {
+    anomaly: temporalContext?.anomaly?.type ?? null,
+    elapsedMinutes:
+      Number.isFinite(Number(temporalContext?.elapsed_minutes))
+        ? Number(temporalContext.elapsed_minutes)
+        : null,
+    emotion: state?.emotional?.current_emotion ?? null,
+    longing: Number.isFinite(Number(state?.temporal?.longing))
+      ? Number(state.temporal.longing)
+      : null,
+    proactiveDesire: Number.isFinite(Number(state?.volitional?.proactive_desire))
+      ? Number(state.volitional.proactive_desire)
+      : null,
+    coherenceScore: Number.isFinite(Number(state?.self?.coherence_score))
+      ? Number(state.self.coherence_score)
+      : null,
   };
 }
