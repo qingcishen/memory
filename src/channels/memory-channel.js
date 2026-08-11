@@ -1,4 +1,12 @@
-import { Orchestrator, LocalJsonHistoryStore, SupabaseHistoryStore } from '../../index.js';
+import {
+  Orchestrator,
+  LocalJsonHistoryStore,
+  SupabaseHistoryStore,
+  createPersistentExistenceEngine,
+  personalitySeedFromCompanionConfig,
+  ProactiveScheduler,
+  SupabaseRateLimitStore,
+} from '../../index.js';
 import { loadPersonaConfig } from '../companion.js';
 import { makeScheduleActivityFn } from '../state/activity.js';
 import { WeatherProvider } from '../world/weather.js';
@@ -7,6 +15,7 @@ import { SceneClassifier } from '../narration.js';
 import { BehaviorStateStore } from '../state/behavior.js';
 import { enqueue, Worker } from '../queue/jobs.js';
 import { dispatchMediaOutbox } from '../media/outbox.js';
+import { CompanionRuntime } from '../runtime/index.js';
 
 export function channelUserId(channel, id) {
   return `${channel}:${id}`;
@@ -46,6 +55,7 @@ export class MemoryChannel {
     behaviorStore = new BehaviorStateStore(),
     replyTimeoutMs = 90000,
     onPhoto = null,
+    onProactive = null,
   }) {
     this.channel = channel;
     this.companionId = companionId;
@@ -56,6 +66,13 @@ export class MemoryChannel {
     this.behaviorStore = behaviorStore;
     this.replyTimeoutMs = replyTimeoutMs;
     this.onPhoto = onPhoto;
+    this.onProactive = onProactive;
+    this._proactivePolicy = {
+      quietHours: { start: 23, end: 8 },
+      minIntervalMinutes: 180,
+      maxPerDay: 3,
+      timezoneOffsetMinutes: 8 * 60,
+    };
     this.weather = new WeatherProvider({
       place: process.env.WEATHER_PLACE || '武汉',
       ...(process.env.WEATHER_LAT ? { lat: Number(process.env.WEATHER_LAT) } : {}),
@@ -63,13 +80,19 @@ export class MemoryChannel {
     });
     this.narration = new SceneClassifier();
     this.sessions = new Map();
+    this.runtimes = new Map();
     this.queues = new Map();
     this.jobKind = `${channel}:after_reply`;
     this.mediaJobKind = `${channel}:media_delivery`;
     this.worker = new Worker({
       handlers: {
-        [this.jobKind]: async ({ senderId, userMessage, reply, eventId }) =>
-          this.session(senderId).runAfterReply(userMessage, reply, { eventId }),
+        [this.jobKind]: async ({ senderId, userMessage, reply, eventId, sceneType, emotionLabel, emotionEvent }) =>
+          this.session(senderId).runAfterReply(userMessage, reply, {
+            eventId,
+            sceneType,
+            emotionLabel,
+            emotionEvent,
+          }),
         [this.mediaJobKind]: async ({ senderId, asset }) =>
           this.onPhoto?.({ ...asset, senderId: String(senderId) }),
       },
@@ -84,7 +107,17 @@ export class MemoryChannel {
     const key = String(senderId);
     if (!this.sessions.has(key)) {
       const userId = this.userId(senderId);
-      this.sessions.set(key, new Orchestrator({
+      const existence = createPersistentExistenceEngine({
+        userId,
+        companionId: this.companionId,
+        companionName: this.companionName,
+        userName: this.subjectName,
+        historyStore: this.historyStore,
+        personalitySeed: personalitySeedFromCompanionConfig(
+          this.persona?.config,
+        ),
+      });
+      const orchestrator = new Orchestrator({
         userId,
         companionId: this.companionId,
         companionName: this.companionName,
@@ -98,6 +131,7 @@ export class MemoryChannel {
         lifeConfig: this.persona?.life ?? null,
         deps: {
           historyStore: this.historyStore,
+          existence,
           weather: this.weather,
           world: new WorldDimension({ userId, companionId: this.companionId }),
           narration: this.narration,
@@ -112,21 +146,88 @@ export class MemoryChannel {
               deliverNow: (asset) => this.onPhoto({ ...asset, senderId: key }),
             }),
           } : {}),
-          afterReplyEnqueue: ({ userMessage, reply, eventId }) => enqueue(
+          afterReplyEnqueue: ({ userMessage, reply, eventId, sceneType, emotionLabel, emotionEvent }) => enqueue(
             userId,
             this.companionId,
             this.jobKind,
-            { senderId: key, userMessage, reply, eventId },
+            { senderId: key, userMessage, reply, eventId, sceneType, emotionLabel, emotionEvent },
             { idempotencyKey: eventId ? `${eventId}:after_reply` : null },
           ),
         },
-      }));
+      });
+      existence.memory = orchestrator.memory;
+      this.sessions.set(key, orchestrator);
+      let proactiveScheduler = null;
+      if (this.onProactive) {
+        proactiveScheduler = new ProactiveScheduler({
+          orchestrator,
+          stateStore: new SupabaseRateLimitStore(),
+          policy: this._proactivePolicy,
+          deliver: async ({ message }) => {
+            try {
+              await this.onProactive({ senderId: key, message });
+            } catch (err) {
+              console.error(`[${this.channel}] proactive delivery failed for ${key}:`, err);
+            }
+          },
+          getDueItems: () =>
+            orchestrator.memory.checkProspective?.({}).catch(() => []) ?? [],
+          markFired: (ids) =>
+            orchestrator.memory.dismissProspective?.(ids).catch(() => {}),
+        });
+      }
+      const runtime = new CompanionRuntime({
+        orchestrator,
+        proactiveScheduler,
+        options: { timezoneOffsetMinutes: 8 * 60 },
+      });
+      runtime.start();
+      this.runtimes.set(key, runtime);
     }
     return this.sessions.get(key);
   }
 
   startWorker() { this.worker.start(); }
-  stopWorker() { this.worker.stop(); }
+  stopWorker() {
+    this.worker.stop();
+    for (const runtime of this.runtimes.values()) runtime.stop();
+    this.runtimes.clear();
+  }
+
+  /**
+   * 进程启动后预热历史活跃用户的心跳，避免沉默用户等到下一条消息才恢复心跳。
+   * senderIds: 外部用户 ID 数组（不含 channel 前缀）；
+   *            通常从 MemoryChannel.listActiveSenderIds() 获取。
+   */
+  async warmupSessions(senderIds = []) {
+    for (const id of senderIds) {
+      try {
+        this.session(String(id));
+      } catch (err) {
+        console.error('[warmup] failed to init session for', id, err);
+      }
+    }
+  }
+
+  /**
+   * 查询 Supabase 中最近活跃用户的 senderId 列表，供 warmupSessions() 使用。
+   * supabaseClient: @supabase/supabase-js 实例
+   * maxAgeHours: 只预热这个时间范围内有过状态更新的用户（默认 48h）
+   */
+  static async listActiveSenderIds(supabaseClient, channel, companionId, maxAgeHours = 48) {
+    const since = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000).toISOString();
+    const { data, error } = await supabaseClient
+      .from('companion_continuous_state')
+      .select('user_id')
+      .eq('companion_id', companionId)
+      .gte('updated_at', since);
+    if (error) throw error;
+    const prefix = `${channel}:`;
+    return (data ?? [])
+      .map((row) => row.user_id)
+      .filter((uid) => uid.startsWith(prefix))
+      .map((uid) => uid.slice(prefix.length));
+  }
 
   enqueue(senderId, work) {
     const key = String(senderId);

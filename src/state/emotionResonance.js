@@ -4,6 +4,10 @@
  */
 
 import { PARAMS } from '../params.js';
+import {
+  emotionMemoryValence,
+  isEmotionEventMemory,
+} from './emotionMemory.js';
 
 /**
  * @param hits recall hits（可含 affect_valence / affect_intensity / emotion）
@@ -29,15 +33,26 @@ export function resonateFromMemoryHits(hits = [], currentEmotion = {}) {
     if (intensity < minIntensity) continue;
     let av = Number(h.affect_valence);
     if (!Number.isFinite(av)) {
-      // 无 valence 时用 intensity 符号猜：叙事负面词
-      const blob = String(h.fact_core || h.content || h.narrative || '');
-      av = /(吵|哭|伤|恨|分手|冷|骂)/.test(blob) ? -intensity : intensity * 0.3;
+      // E-5 的结构化事件优先按受控标签恢复 valence；老记忆才回退文本启发式。
+      if (isEmotionEventMemory(h)) {
+        av = emotionMemoryValence(h.source?.emotion_label ?? h.emotion_label);
+      } else {
+        const blob = String(h.fact_core || h.content || h.narrative || '');
+        av = /(吵|哭|伤|恨|分手|冷|骂)/.test(blob) ? -intensity : intensity * 0.3;
+      }
     }
     const w = intensity;
     sum += av * w;
     weight += w;
     if (reasons.length < 3) {
-      reasons.push(String(h.fact_core || h.content || '').slice(0, 40));
+      const eventLabel = isEmotionEventMemory(h)
+        ? String(h.source?.emotion_label ?? h.emotion_label ?? '').trim()
+        : '';
+      reasons.push(
+        eventLabel
+          ? `情绪事件：${eventLabel}`
+          : String(h.fact_core || h.content || '').slice(0, 40),
+      );
     }
   }
 

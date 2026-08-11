@@ -7,6 +7,12 @@
 // 分类失败一律降级为 'daily'(不追加任何旁白指令), 不影响主对话链路。
 
 import { llm as defaultLlm, LLM_MODEL } from './config.js';
+import {
+  generateIntimacyBeat,
+  INTIMACY_BEAT_TEMPLATES,
+} from './state/intimacyScript.js';
+
+export { generateIntimacyBeat, INTIMACY_BEAT_TEMPLATES };
 
 export const SCENE_TYPES = ['daily', 'romantic', 'tense', 'conflict', 'intimate'];
 
@@ -27,10 +33,10 @@ export const NARRATION_DIRECTIVES = {
   intimate:
     '【亲密场景·像真人，不要像网文】这一轮建议有 narration + dialogue，但以「真人床上反应」为标准，不是写黄文连载。' +
     '【长度】旁白 1～3 句短句即可，通常不要比台词长；禁止写成一整段小说。对方即使发了超长描写，你也只回她会有的那一下反应，不要跟他拼字数。' +
-    '【视角】只写她这边的身体/动作/触感；不要全知代写对方的性器、节奏、内心独白（那是对方的事）。' +
+    '【视角·因果·硬性】只写她这边的身体/动作/触感；旁白必须写动态变化（被碰到→身体怎么了），禁止「她的唇瓣柔软/她的呼吸均匀」这类静态定语描述自己——那是在贴标签不是在写反应。不要全知代写对方的内心独白。' +
     '【沉浸·感官】每轮旁白只主打 1 个感官（触/热/声/重量/气味），写「被碰到→身体怎么变」，禁止「很爽/很舒服」空话和五感齐发。' +
-    '【沉浸·微主动】她不是道具：髋送、腿环、手按、自己调角度；节奏可不匀（喘、停半拍、要慢/要深）。' +
-    '【禁止套话开场】禁止「她听他那么说/听见那句……」公式；禁止每轮用全名开场。' +
+    '【沉浸·微主动】她不是道具：髋送、腿环、手按、自己调角度；节奏可不匀（喘、停半拍）。' +
+    '【禁止套话开场】禁止「她听他那么说/听见那句……」公式；禁止每轮用全名开场。禁止「无声的承诺/这一吻是……/这不仅仅是……」书面散文套语——旁白写动作，台词像枕边话。' +
     '【禁止服装头发清单】睡衣、披发、领口、半敞、嵌进怀里——若上轮已写过，本轮禁止再复述；只写本轮新发生的那一个变化。' +
     '【用词】可以直接，但要像现场喘着说出来的触感，不要报菜名式堆解剖学流水账。' +
     '【台词】dialogue 必须像枕边随口说：短、碎、可喘可凶可软；禁止解说剧情，禁止每轮以「你是不是一直想我」式检查收尾。',
@@ -111,6 +117,31 @@ export function buildNarrationPrompt(sceneType, overrides = null, emotionLabel =
     sceneType === 'romantic' ||
     (phase && phase !== 'none' && phase !== 'cooldown');
   return needsNoRepeat ? `${withNuance}\n${NO_REPEAT_HINT}` : withNuance;
+}
+
+/**
+ * I-5: 返回本轮亲密场景的叙事节拍提示。调用方维护 beatIndex（每轮 +1，相位变化时归零）。
+ *
+ * 保留旧签名 intimacyBeatHint(phase, beatIndex)，同时允许第三个 context 参数提供
+ * arousal/body_focus/userMessage；也可直接传 generateIntimacyBeat 的 options 对象。
+ * 需要结构化字段的新调用方应直接使用导出的 generateIntimacyBeat()。
+ *
+ * @param {string | {
+ *   phase?: string,
+ *   beatIndex?: number,
+ *   arousal?: number,
+ *   body_focus?: unknown,
+ *   userMessage?: string,
+ * }} phaseOrOptions
+ * @param {number} beatIndex
+ * @param {{ arousal?: number, body_focus?: unknown, userMessage?: string }} context
+ * @returns {string}
+ */
+export function intimacyBeatHint(phaseOrOptions, beatIndex = 0, context = {}) {
+  const options = phaseOrOptions && typeof phaseOrOptions === 'object'
+    ? phaseOrOptions
+    : { ...context, phase: phaseOrOptions, beatIndex };
+  return generateIntimacyBeat(options)?.prompt ?? '';
 }
 
 /** 把原始 LLM 分类输出规整成合法场景类型; 不认识的一律降级 'daily'。纯函数, 可单测。 */

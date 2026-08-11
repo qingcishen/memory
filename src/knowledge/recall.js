@@ -10,6 +10,36 @@ import { embed } from '../embeddings.js';
 
 const RELATION_EDGE_LIMIT = 600;
 
+/** 图谱是增强通道，不允许占满主召回预算。 */
+export const KNOWLEDGE_RECALL_TIMEOUT_MS = 200;
+
+/**
+ * 给图谱增强通道加硬预算。超时和异常均返回 fallback；底层异步任务后续失败也已被
+ * catch 吸收，不会产生 unhandled rejection。timer.unref 让超时器不阻止进程退出。
+ */
+export async function withinKnowledgeRecallBudget(
+  task,
+  { timeoutMs = KNOWLEDGE_RECALL_TIMEOUT_MS, fallback = null } = {},
+) {
+  const parsed = Number(timeoutMs);
+  const budgetMs = Number.isFinite(parsed) && parsed > 0
+    ? parsed
+    : KNOWLEDGE_RECALL_TIMEOUT_MS;
+  let timer = null;
+  const work = Promise.resolve()
+    .then(() => (typeof task === 'function' ? task() : task))
+    .catch(() => fallback);
+  const timeout = new Promise((resolve) => {
+    timer = setTimeout(() => resolve(fallback), budgetMs);
+    timer.unref?.();
+  });
+  try {
+    return await Promise.race([work, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+}
+
 /**
  * 有界多跳展开 (纯函数)。从入口实体出发沿边双向 BFS, 每条边只走一次:
  * @param entryIds 入口实体 id 数组
@@ -59,44 +89,176 @@ export function formatKnowledgeFacts(facts = [], nameById = new Map()) {
 }
 
 /**
- * IO: 当前消息 -> 知识块字符串。任何一步失败/无命中都返回空串, 绝不抛错 ——
- * 图谱是增强, recall 主链路不能被它拖垮 (同 weather/world 的安全降级约定)。
+ * IO: 当前消息 -> 知识块字符串。整个 embed + DB + 2-hop 路径共用一个 200ms
+ * 默认预算；任何一步失败/无命中都返回空串，绝不拖慢或击穿主 recall。
  */
 export async function recallKnowledge(userId, companionId, query, opts = {}) {
   const cfg = { ...PARAMS.knowledge, ...opts };
   if (!cfg.enabled || !String(query ?? '').trim()) return '';
-  try {
-    const queryEmbedding = await embed(query);
-    const { data: entries, error } = await supabase.rpc('match_knowledge_entities', {
+  const io = resolveKnowledgeIo(opts.io);
+  return withinKnowledgeRecallBudget(
+    async () => {
+      const queryEmbedding = await io.embed(query);
+      const graph = await loadKnowledgeNeighborhood(
+        userId,
+        companionId,
+        query,
+        queryEmbedding,
+        cfg,
+        io,
+      );
+      if (!graph || graph.facts.length === 0) return '';
+      return formatKnowledgeFacts(
+        graph.facts,
+        new Map(graph.names.map((row) => [row.id, row.canonical_name])),
+      );
+    },
+    { timeoutMs: knowledgeTimeoutMs(cfg), fallback: '' },
+  );
+}
+
+/**
+ * M-2 第三路：实体图谱入口 -> 2-hop 邻域名字 -> 关键词记忆候选。
+ *
+ * queryEmbedding 复用主召回已生成的向量，不额外调用 embedding。返回值可直接作为
+ * RRF 的第三条 lane；该函数自身有独立硬预算和失败降级，因此可安全放进 Promise.all。
+ * opts.io 只用于确定性离线验收，生产默认仍走 Supabase。
+ */
+export async function recallKnowledgeMemoryLane(
+  userId,
+  companionId,
+  query,
+  queryEmbedding,
+  pool,
+  opts = {},
+) {
+  const cfg = { ...PARAMS.knowledge, ...opts };
+  if (!cfg.enabled || !String(query ?? '').trim() || !Array.isArray(queryEmbedding)) return [];
+  const io = resolveKnowledgeIo(opts.io);
+  return withinKnowledgeRecallBudget(
+    async () => {
+      const graph = await loadKnowledgeNeighborhood(
+        userId,
+        companionId,
+        query,
+        queryEmbedding,
+        cfg,
+        io,
+      );
+      if (!graph || graph.names.length === 0) return [];
+      const searchText = graph.names
+        .map((row) => String(row.canonical_name ?? '').trim())
+        .filter(Boolean)
+        .join(' ');
+      if (!searchText) return [];
+      const { data, error } = await io.matchMemories({
+        userId,
+        companionId,
+        query,
+        queryText: searchText,
+        matchCount: pool,
+      });
+      if (error) return [];
+      return data ?? [];
+    },
+    { timeoutMs: knowledgeTimeoutMs(cfg), fallback: [] },
+  );
+}
+
+async function loadKnowledgeNeighborhood(
+  userId,
+  companionId,
+  query,
+  queryEmbedding,
+  cfg,
+  io,
+) {
+  const { data: entries, error: entryError } = await io.matchEntities({
+    userId,
+    companionId,
+    query,
+    queryEmbedding,
+    matchCount: cfg.entryTopK,
+  });
+  if (entryError || !entries?.length) return null;
+
+  const entryIds = entries
+    .filter((row) => (row.similarity ?? 0) >= cfg.entryMinSimilarity)
+    .map((row) => row.id);
+  if (entryIds.length === 0) return null;
+
+  const { data: edges, error: edgeError } = await io.loadRelations({
+    userId,
+    companionId,
+    query,
+    limit: RELATION_EDGE_LIMIT,
+  });
+  if (edgeError) return null;
+
+  const facts = expandGraph(entryIds, edges ?? [], cfg);
+  const expandedIds = [
+    ...new Set([
+      ...entryIds,
+      ...facts.flatMap((fact) => [fact.source_entity_id, fact.target_entity_id]),
+    ]),
+  ];
+  const { data: names, error: nameError } = await io.loadEntityNames({
+    userId,
+    companionId,
+    query,
+    ids: expandedIds,
+  });
+  if (nameError) return null;
+  return { entryIds, facts, names: names ?? [] };
+}
+
+function knowledgeTimeoutMs(cfg) {
+  return cfg.recallTimeoutMs ?? cfg.timeoutMs ?? KNOWLEDGE_RECALL_TIMEOUT_MS;
+}
+
+/**
+ * 统一 IO 边界，避免测试伪造 Supabase 的链式 thenable。四个方法仍完整保留 user /
+ * companion 作用域；生产调用与旧 SQL 路径一致。
+ */
+function resolveKnowledgeIo(overrides = {}) {
+  return {
+    embed: overrides?.embed ?? embed,
+    matchEntities: overrides?.matchEntities ?? (({
+      userId,
+      companionId,
+      queryEmbedding,
+      matchCount,
+    }) => supabase.rpc('match_knowledge_entities', {
       p_user_id: userId,
       query_embedding: queryEmbedding,
       p_companion_id: companionId,
-      match_count: cfg.entryTopK,
-    });
-    if (error || !entries?.length) return '';
-    const entryIds = entries.filter((e) => (e.similarity ?? 0) >= cfg.entryMinSimilarity).map((e) => e.id);
-    if (entryIds.length === 0) return '';
-
-    const { data: edges, error: edgeError } = await supabase
+      match_count: matchCount,
+    })),
+    loadRelations: overrides?.loadRelations ?? (({
+      userId,
+      companionId,
+      limit,
+    }) => supabase
       .from('knowledge_relations')
       .select('source_entity_id, target_entity_id, relation, confidence')
       .eq('user_id', userId)
       .eq('companion_id', companionId)
       .eq('status', 'active')
-      .limit(RELATION_EDGE_LIMIT);
-    if (edgeError || !edges?.length) return '';
-
-    const facts = expandGraph(entryIds, edges, cfg);
-    if (facts.length === 0) return '';
-
-    const ids = [...new Set(facts.flatMap((f) => [f.source_entity_id, f.target_entity_id]))];
-    const { data: names, error: nameError } = await supabase
+      .limit(limit)),
+    loadEntityNames: overrides?.loadEntityNames ?? (({ ids }) => supabase
       .from('knowledge_entities')
       .select('id, canonical_name')
-      .in('id', ids);
-    if (nameError) return '';
-    return formatKnowledgeFacts(facts, new Map((names ?? []).map((n) => [n.id, n.canonical_name])));
-  } catch {
-    return '';
-  }
+      .in('id', ids)),
+    matchMemories: overrides?.matchMemories ?? (({
+      userId,
+      companionId,
+      queryText,
+      matchCount,
+    }) => supabase.rpc('match_memories_keyword', {
+      p_user_id: userId,
+      p_companion_id: companionId,
+      query_text: queryText,
+      match_count: matchCount,
+    })),
+  };
 }

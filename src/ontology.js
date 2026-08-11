@@ -8,7 +8,16 @@
 import { attachPreferenceTier } from './product/preferenceTier.js';
 
 export const SUBJECT_KINDS = ['user', 'self', 'dyad'];
-export const MEMORY_TYPES = ['fact', 'episode', 'preference', 'relationship', 'reflection'];
+export const MEMORY_TYPES = [
+  'fact',
+  'episode',
+  'preference',
+  'relationship',
+  'reflection',
+  'working_memory',
+  'intimate_memory',
+  'emotion_event',
+];
 export const MODALITIES = ['text', 'image', 'audio'];
 
 /**

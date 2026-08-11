@@ -62,6 +62,45 @@ export class SupabaseHistoryStore {
     return data.created_at;
   }
 
+  /** 连续存在引擎：读取带时间戳的消息样本，用于预测消息节律。 */
+  async recentMessages({
+    userId,
+    companionId = 'default',
+    days = 30,
+    limit = 5000,
+  } = {}) {
+    if (!userId) return [];
+    const since = new Date(Date.now() - Math.max(1, Number(days) || 30) * 86400000).toISOString();
+    const { data, error } = await this.client
+      .from(this.table)
+      .select('id, role, content, created_at')
+      .eq('user_id', userId)
+      .eq('companion_id', companionId)
+      .gte('created_at', since)
+      .order('created_at', { ascending: true })
+      .limit(Math.max(1, Math.min(10000, Number(limit) || 5000)));
+    if (error || !data) return [];
+    return data;
+  }
+
+  async countMessagesSince({
+    userId,
+    companionId = 'default',
+    since,
+    role = null,
+  } = {}) {
+    if (!userId || !since) return 0;
+    let query = this.client
+      .from(this.table)
+      .select('id', { count: 'exact', head: true })
+      .eq('user_id', userId)
+      .eq('companion_id', companionId)
+      .gte('created_at', new Date(since).toISOString());
+    if (role) query = query.eq('role', role);
+    const { count, error } = await query;
+    return error ? 0 : Number(count) || 0;
+  }
+
   /** 读会话线快照；表不存在或失败 → null（调用方从 history 重建） */
   async loadSessionThread({ userId, companionId = 'default' } = {}) {
     if (!userId) return null;
@@ -184,6 +223,45 @@ export class LocalJsonHistoryStore {
       if (rows[i].role === 'user') return rows[i].created_at ?? null;
     }
     return null;
+  }
+
+  async recentMessages({
+    userId,
+    companionId = 'default',
+    days = 30,
+    limit = 5000,
+  } = {}) {
+    if (!userId) return [];
+    const db = await this.read();
+    const rows = db.chats?.[this.key(userId, companionId)] ?? db[this.key(userId, companionId)] ?? [];
+    const cutoff = Date.now() - Math.max(1, Number(days) || 30) * 86400000;
+    return rows
+      .filter((row) => {
+        const at = new Date(row.created_at).getTime();
+        return Number.isFinite(at) && at >= cutoff;
+      })
+      .slice(-Math.max(1, Math.min(10000, Number(limit) || 5000)))
+      .map((row) => ({ ...row }));
+  }
+
+  async countMessagesSince({
+    userId,
+    companionId = 'default',
+    since,
+    role = null,
+  } = {}) {
+    const cutoff = new Date(since).getTime();
+    if (!userId || !Number.isFinite(cutoff)) return 0;
+    const rows = await this.recentMessages({
+      userId,
+      companionId,
+      days: Math.max(1, Math.ceil((Date.now() - cutoff) / 86400000)),
+      limit: 10000,
+    });
+    return rows.filter((row) => {
+      const at = new Date(row.created_at).getTime();
+      return at >= cutoff && (!role || row.role === role);
+    }).length;
   }
 
   async loadSessionThread({ userId, companionId = 'default' } = {}) {

@@ -29,4 +29,31 @@ describe('Compose and Validate stages', () => {
     expect(validation.finalText).toBe('好的！');
     expect(validation.checks.map((check) => check.id)).toContain('anti_repetition');
   });
+
+  it('reconciles a draft that conflicts with the self model', async () => {
+    const validation = await validateTurn({
+      composition: {
+        draftText: '我才不会担心你',
+        draftParts: [{ type: 'dialogue', text: '我才不会担心你' }],
+      },
+      llm: { async generateReply() { return 'unused'; } },
+      userMessage: '我回来晚了',
+      history: [],
+      checkPsychologicalCoherence: async () => ({
+        coherent: false,
+        conflicts: ['denies_care_anchor'],
+        reconciled_response: '嘴上说不担心是假的……回来就好。',
+        coherence_score: 0.88,
+      }),
+    });
+
+    expect(validation.finalText).toBe('嘴上说不担心是假的……回来就好。');
+    expect(validation.checks).toContainEqual(
+      expect.objectContaining({
+        id: 'psychological_coherence',
+        passed: true,
+        reasons: ['denies_care_anchor'],
+      }),
+    );
+  });
 });

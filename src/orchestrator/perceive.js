@@ -27,13 +27,13 @@ export function perceiveTurn(input = {}) {
   let sessionThread = input.sessionThread ?? emptySessionThread(now);
   let sessionReset = false;
   if (historyReset) {
-    sessionThread = emptySessionThread(now);
+    sessionThread = resetSessionThread(sessionThread, now);
     sessionReset = true;
   } else if (
     input.sessionThreadEnabled !== false &&
     shouldResetSession(sessionThread, now)
   ) {
-    sessionThread = emptySessionThread(now);
+    sessionThread = resetSessionThread(sessionThread, now);
     sessionReset = true;
   }
 
@@ -49,6 +49,24 @@ export function perceiveTurn(input = {}) {
     previousSceneType: physicalSceneExpired ? null : input.previousSceneType ?? null,
     perceivedAt: now,
   };
+}
+
+/**
+ * loadSessionThread 可能已在首轮开始前识别旧会话，并把 48h working_memory 桥放进
+ * 一个 turnCount=0 的新 thread。Perceive 随后还会因 >=4h 的物理现场过期再重置一次；
+ * 这里仅携带这份“尚未消费”的桥，避免二次重置把它清空。
+ *
+ * 已经产生过 turn 的 thread 不携带旧 bridge，防止它跨到第三场会话。
+ */
+function resetSessionThread(thread, now) {
+  const reset = emptySessionThread(now);
+  const freshBridge =
+    Number(thread?.turnCount) === 0 &&
+    typeof thread?.crossSessionContext === 'string'
+      ? thread.crossSessionContext.trim().slice(0, 200)
+      : '';
+  if (freshBridge) reset.crossSessionContext = freshBridge;
+  return reset;
 }
 
 export function maxKnownGap(a, b) {

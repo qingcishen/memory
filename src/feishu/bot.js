@@ -5,6 +5,7 @@ import { ChannelEventStore } from '../channels/idempotency.js';
 import { acquireProcessLock } from '../channels/process-lock.js';
 import { gateIncomingMessage } from '../product/gate.js';
 import { deliverHumanBubbles } from '../channels/humanSend.js';
+import { supabase } from '../config.js';
 
 dotenv.config();
 
@@ -53,6 +54,22 @@ export class FeishuMemoryBot {
       personaFile: process.env.FEISHU_PERSONA_FILE || `companions/${process.env.FEISHU_COMPANION_ID || process.env.TELEGRAM_COMPANION_ID || 'default'}.json`,
       replyTimeoutMs: Number(process.env.FEISHU_REPLY_TIMEOUT_MS || 90000),
       onPhoto: ({ senderId, url, kind }) => this.sendGeneratedPhoto(senderId, url, kind),
+      onProactive: async ({ senderId, message }) => {
+        const chatId = this.senderChats.get(String(senderId));
+        if (!chatId) {
+          console.warn(`[feishu] proactive: no chatId cached for senderId=${senderId}`);
+          return;
+        }
+        await deliverHumanBubbles(message.parts, (bubble) => this.send(chatId, bubble), {
+          chunkLimit: 3800,
+          maxDialogueBubbles: 3,
+          minSplitLen: 10,
+          behaviorPolicy: message.behaviorPolicy,
+          policyCapMs: Number(process.env.CHANNEL_DELIVERY_CAP_MS) || 8000,
+          typing: { min: 280, max: 1100, perChar: 14 },
+        });
+        console.log(`[feishu] proactive sent chat=${chatId} parts=${(message.parts ?? []).length}`);
+      },
     });
   }
 
@@ -166,6 +183,13 @@ export class FeishuMemoryBot {
   async start() {
     console.log('[feishu] long connection starting...');
     this.memory.startWorker();
+    try {
+      const senderIds = await MemoryChannel.listActiveSenderIds(supabase, 'feishu', this.memory.companionId);
+      await this.memory.warmupSessions(senderIds);
+      if (senderIds.length) console.log(`[feishu] warmup restored sessions=${senderIds.length}`);
+    } catch (err) {
+      console.error('[feishu] warmup failed:', err);
+    }
     await this.wsClient.start({ eventDispatcher: this.dispatcher });
     // SDK start() 在 WebSocket 就绪后会 resolve；部分 Node/SDK 组合不会留下 ref'ed handle，
     // 显式保持进程生命周期，避免出现“ws client ready 后立即退出”。

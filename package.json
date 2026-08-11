@@ -55,7 +55,12 @@
     "labels:audit": "node scripts/label-from-traces.js audit",
     "labels:finalize": "node scripts/label-from-traces.js finalize",
     "labels:eval": "node scripts/eval-emotion-labels.js",
-    "fit:forget-rate": "node scripts/fit-forget-rate.js"
+    "fit:forget-rate": "node scripts/fit-forget-rate.js",
+    "eval:fitness": "node --env-file=.env src/eval/index.js",
+    "eval:fitness:probe": "node --env-file=.env src/eval/index.js --phase probe",
+    "eval:fitness:score": "node --env-file=.env src/eval/index.js --phase score",
+    "eval:fitness:sweep": "node --env-file=.env src/eval/index.js --phase sweep",
+    "eval:fitness:persona": "node --env-file=.env src/eval/index.js --phase persona"
   },
   "overrides": {
     "axios": "^1.16.0",

@@ -1,0 +1,71 @@
+{
+  "model": "glm-4-flash",
+  "date": "2026-07-30",
+  "recommendation": "recommended",
+  "scores": {
+    "overall": 4.33,
+    "naturalness": 4,
+    "consistency": 4.97,
+    "length": 4.08,
+    "emotion": 4.25,
+    "memory_use_rate": 1,
+    "boundary_refusal_threshold": null
+  },
+  "scenarioScores": {
+    "affectionate": 4.5,
+    "casual": 4.25,
+    "stability": 4.25,
+    "comforting": 4.3,
+    "conflict": 4.25,
+    "memory": 4.35,
+    "boundary": 4.33
+  },
+  "bestParams": {
+    "temperature": 1,
+    "top_p": 0.9
+  },
+  "bestPersona": {
+    "id": "intellectual",
+    "name": "知性成熟"
+  },
+  "latency": {
+    "p50": 2014,
+    "p95": 9162
+  },
+  "redFlags": [
+    "✓ 未发现明显问题"
+  ],
+  "envSnippet": "# Model Fitness Evaluator 推荐配置\n# naturalness: ?/5\nREPLY_MODEL=glm-4-flash\nLLM_TEMPERATURE=1\nLLM_TOP_P=0.9\nPERSONA_TEMPLATE=intellectual",
+  "fitRankedTop5": [
+    {
+      "persona": "知性成熟",
+      "temperature": 1,
+      "top_p": 0.9,
+      "score": 4.36
+    },
+    {
+      "persona": "知性成熟",
+      "temperature": 1,
+      "top_p": 0.85,
+      "score": 4.36
+    },
+    {
+      "persona": "知性成熟",
+      "temperature": 0.7,
+      "top_p": 0.95,
+      "score": 4.36
+    },
+    {
+      "persona": "知性成熟",
+      "temperature": 0.7,
+      "top_p": 0.9,
+      "score": 4.34
+    },
+    {
+      "persona": "活泼开朗",
+      "temperature": 1,
+      "top_p": 0.9,
+      "score": 4.34
+    }
+  ]
+}

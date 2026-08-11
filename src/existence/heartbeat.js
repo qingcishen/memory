@@ -16,6 +16,7 @@ import {
   circadianFatigue,
   DEFAULT_BASE_CLOCK,
 } from './circadianEntrainment.js';
+import { updateEmotionArc } from './emotionArc.js';
 
 const MINUTE = 60 * 1000;
 
@@ -207,6 +208,7 @@ export function evolveContinuousState(state, now = new Date(), options = {}) {
     current.emotional.persistence <= 0
   ) {
     current.emotional.current_emotion = 'neutral';
+    current.emotional.label = null;
     current.emotional.emotion_intensity = 0;
   }
 
@@ -249,6 +251,12 @@ export function evolveContinuousState(state, now = new Date(), options = {}) {
   current.volitional.contact_inhibit = clamp01(
     current.volitional.contact_inhibit * decayFactor(elapsed, 0.035),
   );
+  const arc = updateEmotionArc(current.emotional.emotion_history, {
+    now: date,
+    timezoneOffsetMinutes: options.timezoneOffsetMinutes,
+  });
+  current.emotional.emotion_history = arc.journal;
+  current.emotional.weekly_distribution = arc.weekly_distribution;
   current.updated_at = date.toISOString();
   return current;
 }
@@ -275,14 +283,15 @@ export function computeDefaultDesire(state = {}) {
 /**
  * I-2: 从亲密状态计算性张力对主动欲望的额外加成。
  * sexual_tension > 0.6 且久未亲密（> 2 天）时才启动，上限 +0.2。
- * 纯函数；不改写亲密状态本身。
+ * 纯函数；不改写亲密状态本身。now 可注入，便于 heartbeat 与测试共用同一时钟。
  */
-export function intimacyTensionDesireBump(intimacy = null) {
+export function intimacyTensionDesireBump(intimacy = null, now = Date.now()) {
   if (!intimacy || typeof intimacy !== 'object') return 0;
   const tension = Math.min(1, Math.max(0, Number(intimacy.sexual_tension) || 0));
   if (tension <= 0.6) return 0;
   const lastAt = intimacy.last_intimate_at ? new Date(intimacy.last_intimate_at).getTime() : 0;
-  const daysSince = lastAt ? (Date.now() - lastAt) / (24 * 60 * 60 * 1000) : 999;
+  const nowMs = toEpoch(resolveClock(now)) ?? Date.now();
+  const daysSince = lastAt ? (nowMs - lastAt) / (24 * 60 * 60 * 1000) : 999;
   if (daysSince <= 2) return 0;
   const intensity = (tension - 0.6) / 0.4;
   const staleness = Math.min(1, (daysSince - 2) / 5);

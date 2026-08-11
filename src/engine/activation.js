@@ -11,6 +11,10 @@
 
 import { PARAMS } from '../params.js';
 import { cosine } from './vector-index.js';
+import {
+  effectiveMemoryType,
+  workingMemoryContextMultiplier,
+} from '../memory/workingMemory.js';
 
 const HOUR = 1000 * 60 * 60;
 const DAY = HOUR * 24;
@@ -78,9 +82,13 @@ export function milestone(mem) {
 
 /** 过期情节降权 (不归零): 只对 episode 生效, 越老降得越多, 有上限。 */
 export function temporalPenalty(mem, now = Date.now()) {
-  if (mem.type !== 'episode') return 0;
-  const created = mem.created_at ? new Date(mem.created_at).getTime() : now;
-  const days = Math.max(0, (now - created) / DAY);
+  if (effectiveMemoryType(mem, now) !== 'episode') return 0;
+  const nowMs = new Date(now).getTime();
+  const parsedCreated = mem.created_at
+    ? new Date(mem.created_at).getTime()
+    : nowMs;
+  const created = Number.isFinite(parsedCreated) ? parsedCreated : nowMs;
+  const days = Math.max(0, (nowMs - created) / DAY);
   const hl = PARAMS.engine.temporalHalfLifeDays;
   // 0..1 的"陈旧度", 越老越接近 1
   return 1 - Math.pow(0.5, days / hl);
@@ -102,6 +110,10 @@ export function scoreActivation(items, state, opts = {}) {
     .map((m) => {
       const B = baseLevel(m, now, p.forgetRate);
       const sim = num(m.similarity, 0);
+      // M-5: working_memory 在 48h 桥接窗口内只放大语境项；过期后倍率回到 1，
+      // 且 temporalPenalty 会把它当普通 episode，而不是永久特权记忆。
+      const ctxMultiplier = workingMemoryContextMultiplier(m, now);
+      const effectiveType = effectiveMemoryType(m, now);
       const spread = num(m._spread, 0);
       // #5: opts.topicEmbedding 在场且她负面情绪指向外部话题时, 走定向门控; 否则等同全局 moodCongruence。
       const mood = directedMoodCongruence(m, state, { topicEmbedding: opts.topicEmbedding });
@@ -109,12 +121,18 @@ export function scoreActivation(items, state, opts = {}) {
       const tpen = temporalPenalty(m, now);
 
       const activation =
-        B + p.wCtx * sim + p.wSpread * spread + p.wMood * mood + p.wMile * mile - p.temporalPenalty * tpen;
+        B +
+        p.wCtx * ctxMultiplier * sim +
+        p.wSpread * spread +
+        p.wMood * mood +
+        p.wMile * mile -
+        p.temporalPenalty * tpen;
 
       return {
         ...m,
+        _effectiveType: effectiveType,
         _activation: activation,
-        _act: { B, sim, spread, mood, mile, tpen },
+        _act: { B, sim, ctxMultiplier, spread, mood, mile, tpen },
       };
     })
     .sort((a, b) => b._activation - a._activation);

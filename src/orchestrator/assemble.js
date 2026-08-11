@@ -9,7 +9,9 @@ import { sanitizeHistoryForPrompt, buildAntiRepeatPrompt } from './humanizeReply
 /** 按固定顺序拼接各子系统的自然语言段落, 跳过空串。 */
 export function buildSystemPrompt({
   timePrompt = '',
+  temporalPrompt = '',
   personaPrompt = '',
+  personalityPrompt = '',
   companyPrompt = '',
   worldPrompt = '',
   storyPrompt = '',
@@ -24,6 +26,7 @@ export function buildSystemPrompt({
   sessionThreadPrompt = '',
   episodePrompt = '',
   statePrompt = '',
+  continuousStatePrompt = '',
   emotionPrompt = '',
   memoryBlock = '',
   monologue = '',
@@ -34,7 +37,9 @@ export function buildSystemPrompt({
   // 连贯性/本轮简报/常驻关系槽/本场会话线放在业务段靠前。
   const sections = [
     timePrompt,
+    temporalPrompt,
     personaPrompt,
+    personalityPrompt,
     companyPrompt,
     worldPrompt,
     storyPrompt,
@@ -47,6 +52,7 @@ export function buildSystemPrompt({
     turnBriefPrompt,
     structuredPlanPrompt,
     statePrompt || emotionPrompt,
+    continuousStatePrompt,
     goalsPrompt,
     episodePrompt,
     memoryBlock,
@@ -70,6 +76,8 @@ export function buildSystemPrompt({
     '日常闲聊优先只回 dialogue，别硬加旁白；暧昧/亲密时旁白写身体，台词仍要像人话。',
     '不要复述对方原句开头，不要突然切换成客服腔或旁白腔混进台词。',
     '【反AI腔·硬性】禁止每轮旁白以角色全名开场；禁止把同一套身体描写当模板换词。角色专属禁用词由 companions/<id>/ 的回复风格配置提供。',
+    '【禁止行动清单】对方问「准备怎么呵护/陪/照顾我」时，禁止「先...然后...最后/如果...」逐项列举行动计划——只说当下最想做的那一下（一个动作或一句话），不要给她一份护理方案。',
+    '【禁止书面套语】禁止「这不仅仅是言语，更是行动」「无声的承诺」「眼神里藏着千言万语」「用行动诠释爱」这类散文收尾套话——台词是她嘴里会随口说的，旁白写身体动作，都不是书评。',
     '【亲密也像人】做爱时：旁白短、只写她当下那一下；台词短碎且尺度可以很大（直接说想要/再深/夹紧/日我/射），不要全知代写他的动作步骤，不要解剖学流水账，不要跟对方超长黄文拼字数。对方写长文时，你只回真人会回的那几句反应和话。',
     '【沉浸·做爱】像真人现场：①旁白每轮只主打一个感官（触/热/声/重量），写因果不是空话；②节奏可不匀（喘、停、要慢/深）；③她有微主动（髋送、腿环、手按）；④不完美更真，别每轮同步高潮；⑤环境最多偶尔一句锚点，别每轮布景。',
     '【像微信连发·硬性】禁止永远「对方一条、你回一整段」。多数轮次应连发 2～3 条短消息（JSON 里多个 dialogue part，或 plain 用换行拆行）；每条一句人话。极短回应可以只一条。不要客服式一问一答长段落。',
@@ -176,7 +184,9 @@ export function buildMonologueContext({
   userMessage,
   situation,
   timePrompt = '',
+  temporalPrompt = '',
   personaPrompt = '',
+  personalityPrompt = '',
   worldPrompt = '',
   storyPrompt = '',
   goalsPrompt = '',
@@ -187,6 +197,7 @@ export function buildMonologueContext({
   turnBriefPrompt = '',
   episodePrompt = '',
   statePrompt = '',
+  continuousStatePrompt = '',
   emotionPrompt = '',
   memoryBlock = '',
   emotionLabel = '',
@@ -195,7 +206,9 @@ export function buildMonologueContext({
   const emotionHint = buildMonologueEmotionHint(emotionLabel, emotionResidual);
   const parts = [
     timePrompt,
+    temporalPrompt,
     personaPrompt,
+    personalityPrompt,
     worldPrompt,
     storyPrompt,
     relationshipPrompt,
@@ -206,6 +219,7 @@ export function buildMonologueContext({
     episodePrompt,
     identityConstraintsPrompt,
     statePrompt || emotionPrompt,
+    continuousStatePrompt,
     emotionHint,
     memoryBlock,
   ].filter(

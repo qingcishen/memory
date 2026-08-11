@@ -331,6 +331,12 @@ export const DEFAULT_PARAMS = {
   // 当时存入的 fact_core 措辞往往差得更多)。
   forget: {
     similarityThreshold: 0.75,
+    // M-4 自动遗忘：正好 90 天未访问、importance < 3 且无情绪/重复唤起
+    // 保护的记忆应进入候选。ACT-R base-level 仍作为第二道保守门。
+    autoForgetProbability: 0.01,
+    staleDays: 90,
+    pruneStrengthThreshold: 0.1,
+    pruneBaseLevelThreshold: 0.03,
   },
 
   // ---- M6 媒体向量闭环 (图搜图) ----

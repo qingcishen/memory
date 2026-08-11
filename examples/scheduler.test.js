@@ -243,6 +243,60 @@ console.log('ProactiveScheduler.tick 分级主动性优先级链 (P1)');
   ok('到期事项优先于 bedtime/silence', dueResult.sent && dueResult.reason.includes('面试'));
 }
 
+console.log('ProactiveScheduler.tick 连续存在内驱力门控');
+{
+  const quiet = makeOrchestrator();
+  quiet.stateLayer = { async snapshot() { return { desires: {} }; } };
+  quiet.relationship = { async current() { return { relationship: {} }; } };
+  quiet.existence = {
+    async decideContact() {
+      return { contact: false, reason: 'desire_insufficient', desire: 0.2 };
+    },
+  };
+  const quietScheduler = new ProactiveScheduler({
+    orchestrator: quiet,
+    stateStore: new MemoryRateLimitStore(),
+    policy,
+    clock: () => utc('2026-06-14T12:00:00Z'),
+    getLastUserMessageAt: async () => utc('2026-06-14T04:00:00Z'),
+  });
+  const skipped = await quietScheduler.tick();
+  ok(
+    '有连续存在引擎时，单纯到点/沉默不再绕过内驱力',
+    !skipped.sent && skipped.reason === 'no_trigger',
+  );
+
+  const motivated = makeOrchestrator();
+  let contacted = 0;
+  motivated.stateLayer = { async snapshot() { return { desires: {} }; } };
+  motivated.relationship = { async current() { return { relationship: {} }; } };
+  motivated.existence = {
+    async decideContact() {
+      return {
+        contact: true,
+        desire: 0.82,
+        reason: { type: 'unfinished_topic', content: '还惦记着你的面试结果' },
+        receptivity: { score: 0.8 },
+      };
+    },
+    async markContacted() {
+      contacted++;
+    },
+  };
+  const motivatedScheduler = new ProactiveScheduler({
+    orchestrator: motivated,
+    stateStore: new MemoryRateLimitStore(),
+    policy,
+    clock: () => utc('2026-06-14T12:00:00Z'),
+  });
+  const sent = await motivatedScheduler.tick();
+  ok(
+    '具体内在理由越阈后进入原有投递链',
+    sent.sent && sent.reason.includes('面试结果'),
+  );
+  ok('成功投递后反向增加联系克制', contacted === 1);
+}
+
 console.log('ProactiveScheduler.tick 到期事项突破安静时段 (说话算话: 答应了几点叫醒, 哪怕在她睡觉的安静时段也要叫)');
 {
   // 7:00 在默认 quietHours(23-8) 内: 有到期的"叫醒"提醒时仍应发送

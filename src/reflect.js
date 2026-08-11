@@ -3,6 +3,17 @@ import { recordLlmCall } from './metrics.js';
 import { embed } from './embeddings.js';
 import { memoryStrength } from './decay.js';
 import { selectNearDupMerges } from './dedup.js';
+import { baseLevel } from './engine/activation.js';
+
+const DAY = 24 * 60 * 60 * 1000;
+const AUTO_FORGET_PROTECTED_TYPES = new Set([
+  'relationship',
+  // 私密事件即使旧数据缺了 dyad/fact_locked 标记，也不应被后台清理悄悄抹掉。
+  'intimate_memory',
+  'emotion_event',
+]);
+export const AUTO_FORGET_STRENGTH_THRESHOLD = 0.1;
+export const AUTO_FORGET_BASE_LEVEL_THRESHOLD = 0.03;
 
 /**
  * 反思: 把最近的零散记忆聚成更高层的总结 (如"诗雅最近压力大, 在备考"),
@@ -69,11 +80,96 @@ export async function runReflection(userId, companionId = 'default', opts = {}) 
   return stored;
 }
 
+/** 一条记忆最后一次可证实的访问时间；没有可靠时间戳时返回 null（宁可保留）。 */
+export function lastMemoryAccessAt(memory = {}) {
+  const timestamps = [
+    memory.last_accessed,
+    ...(Array.isArray(memory.access_log) ? memory.access_log : []),
+  ]
+    .map(toTimestamp)
+    .filter(Number.isFinite);
+  if (timestamps.length > 0) return Math.max(...timestamps);
+  return Number.isFinite(toTimestamp(memory.created_at))
+    ? toTimestamp(memory.created_at)
+    : null;
+}
+
+/** M-4 的硬保护边界。旧/畸形私密记录也按 type 保护，避免因字段迁移不全被误删。 */
+export function isAutoForgetProtected(memory = {}) {
+  return Boolean(memory.fact_locked) ||
+    memory.subject_kind === 'dyad' ||
+    AUTO_FORGET_PROTECTED_TYPES.has(memory.type);
+}
+
 /**
- * 找出"几乎被遗忘"的记忆 (强度低于阈值)。默认不删除, 返回供决定。
- * 想自动清理可传 { purge: true }。
+ * M-4 自动遗忘候选纯逻辑。所有条件必须同时满足：
+ * importance < 3、90 天没有访问、ACT-R base-level 与当前记忆强度都低于阈值，
+ * 且不命中 fact_locked / dyad / relationship / 私密事件保护。
  */
-export async function findForgettable(userId, companionId = 'default', threshold = 0.05, opts = {}) {
+export function selectAutoForgettable(memories = [], opts = {}) {
+  const now = toTimestamp(opts.now ?? Date.now());
+  if (!Number.isFinite(now)) return [];
+  const staleDays = positiveNumber(opts.staleDays, 90);
+  const importanceThreshold = finiteNumber(opts.importanceThreshold, 3);
+  const strengthThreshold = finiteNumber(
+    opts.strengthThreshold ?? opts.threshold,
+    AUTO_FORGET_STRENGTH_THRESHOLD,
+  );
+  const baseLevelThreshold = finiteNumber(
+    opts.baseLevelThreshold,
+    AUTO_FORGET_BASE_LEVEL_THRESHOLD,
+  );
+  const cutoff = now - staleDays * DAY;
+
+  return (memories ?? []).filter((memory) => {
+    if (!memory || isAutoForgetProtected(memory)) return false;
+    const importance = Number(memory.importance);
+    if (!Number.isFinite(importance) || importance >= importanceThreshold) {
+      return false;
+    }
+    const lastAccess = lastMemoryAccessAt(memory);
+    if (!Number.isFinite(lastAccess) || lastAccess > cutoff) return false;
+
+    // 老数据可能没有 access_count；用 access_log 做保守下界，避免低估强化次数后误删。
+    const loggedAccesses = Array.isArray(memory.access_log)
+      ? memory.access_log.map(toTimestamp).filter(Number.isFinite).length
+      : 0;
+    const normalized = {
+      ...memory,
+      importance,
+      emotion: finiteNumber(memory.emotion, 0),
+      access_count: Math.max(
+        0,
+        finiteNumber(memory.access_count, 0),
+        loggedAccesses,
+      ),
+      last_accessed: new Date(lastAccess).toISOString(),
+    };
+    const strength = memoryStrength(normalized, now);
+    const activationBase = baseLevel(normalized, now);
+    return Number.isFinite(strength) &&
+      strength < strengthThreshold &&
+      Number.isFinite(activationBase) &&
+      activationBase < baseLevelThreshold;
+  });
+}
+
+/** 1% observe 调度的纯判定；sample 注入后可确定性测试。 */
+export function shouldTriggerAutoForget(sample, probability = 0.01) {
+  const draw = Number(sample);
+  const chance = Math.min(1, Math.max(0, finiteNumber(probability, 0.01)));
+  return Number.isFinite(draw) && draw >= 0 && draw < chance;
+}
+
+/**
+ * 找出符合 M-4 完整契约的自动遗忘候选。默认不删除；传 { purge: true } 才清理。
+ */
+export async function findForgettable(
+  userId,
+  companionId = 'default',
+  threshold = AUTO_FORGET_STRENGTH_THRESHOLD,
+  opts = {},
+) {
   const { data: mems, error } = await supabase
     .from('memories')
     .select('*')
@@ -82,14 +178,20 @@ export async function findForgettable(userId, companionId = 'default', threshold
     .is('superseded_by', null);
   if (error) throw error;
 
-  const now = Date.now();
-  const weak = (mems || []).filter((m) => memoryStrength(m, now) < threshold);
+  const weak = selectAutoForgettable(mems, {
+    ...opts,
+    threshold,
+  });
 
   if (opts.purge && weak.length > 0) {
-    await supabase
+    if (typeof opts.beforeDelete === 'function') {
+      await opts.beforeDelete(weak);
+    }
+    const { error: deleteError } = await supabase
       .from('memories')
       .delete()
       .in('id', weak.map((m) => m.id));
+    if (deleteError) throw deleteError;
   }
   return weak;
 }
@@ -186,4 +288,21 @@ function clampNum(v, lo, hi, dflt) {
   const n = Number(v);
   if (Number.isNaN(n)) return dflt;
   return Math.min(hi, Math.max(lo, n));
+}
+
+function finiteNumber(value, fallback) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : fallback;
+}
+
+function positiveNumber(value, fallback) {
+  const number = finiteNumber(value, fallback);
+  return number > 0 ? number : fallback;
+}
+
+function toTimestamp(value) {
+  if (value == null || value === '') return NaN;
+  if (typeof value === 'number') return Number.isFinite(value) ? value : NaN;
+  const timestamp = new Date(value).getTime();
+  return Number.isFinite(timestamp) ? timestamp : NaN;
 }

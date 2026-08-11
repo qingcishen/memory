@@ -19,8 +19,16 @@ import {
 } from '../state/dailyLook.js';
 import { writeOutfit, clampOutfitState } from '../state/outfit.js';
 import { buildNarrationPrompt } from '../narration.js';
+import { generateIntimacyBeat } from '../state/intimacyScript.js';
 import { PARAMS } from '../params.js';
-import { inferEmotionLabel, emotionLabelToPrompt, EMOTION_LABELS } from '../state/emotionLabel.js';
+import {
+  inferEmotionLabel,
+  emotionLabelToPrompt,
+  EMOTION_LABELS,
+  shouldLLMInfer,
+  startLLMEmotionInference,
+  consumeLLMEmotionInference,
+} from '../state/emotionLabel.js';
 import {
   emptyEmotionResidue,
   normalizeEmotionResidue,
@@ -86,6 +94,11 @@ import {
 import { commitValidatedReply, createTurnEventId } from './turnCommit.js';
 import { createTurnContext, runTurnStage, summarizePipeline } from './turnPipeline.js';
 import { normalizeAblationFlags } from './ablation.js';
+import {
+  applyWorldAffectToSnapshot,
+  getWorldAffectOverride,
+} from '../world/worldAffectCoupling.js';
+import { selectAuthoritativeEmotionLabel } from '../existence/emotionBridge.js';
 import { perceiveTurn } from './perceive.js';
 import { interpretTurn } from './interpret.js';
 import { emptyEvidencePack, retrieveTurn } from './retrieveStage.js';
@@ -93,6 +106,7 @@ import { deliberateTurn, planRetrievalTurn } from './deliberate.js';
 import { composeTurn, compositionFromStream } from './composeStage.js';
 import { validateTurn } from './validateStage.js';
 import { createTurnSerialExecutor } from './turnSerial.js';
+import { sanitizeForPrompt } from '../promptSafety.js';
 
 const DEFAULT_HISTORY_TURNS = 6;
 const traceRuntimeEnabled = () =>
@@ -102,6 +116,21 @@ const traceRuntimeEnabled = () =>
 function buildReplyStylePrompt(style = {}) {
   const rules = Array.isArray(style?.promptRules) ? style.promptRules.filter(Boolean) : [];
   return rules.length ? `【角色专属回复风格】\n${rules.map((rule) => `- ${rule}`).join('\n')}` : '';
+}
+
+function worldWeatherLine(weather, place = '当前城市') {
+  const temperature = Number(weather?.temperature ?? weather?.tempC);
+  if (!Number.isFinite(temperature)) return '';
+  const condition = String(
+    weather?.condition ?? weather?.desc ?? '天气未知',
+  );
+  const humidity = Number(weather?.humidity);
+  const humidityText = Number.isFinite(humidity)
+    ? `，湿度 ${Math.round(humidity)}%`
+    : '';
+  return `${place || '当前城市'}现在${condition}，气温 ${Math.round(
+    temperature,
+  )}°C${humidityText}。`;
 }
 
 function emitReplyTrace(orchestrator, {
@@ -243,6 +272,11 @@ export class Orchestrator {
     // Continuous Existence Engine 是可注入门面。未注入时保持旧链路；生产渠道会按
     // (userId, companionId) 注入持久化实例，测试可用纯内存实例。
     this.existence = deps.existence ?? null;
+    // M-5: CEE 在 Orchestrator 之前创建，此时还拿不到 MemoryAdapter。
+    // 在统一构造点完成回填，避免新渠道漏写 existence.memory 后只存私有表、不投影工作记忆。
+    if (this.existence && this.existence.memory == null) {
+      this.existence.memory = this.memory;
+    }
 
     // A1 拍照分享 (自拍 + 随手拍): 需要 onPhoto 投递回调才会启用 —— 没有投递渠道就不生成,
     // 这也让全 mock 的编排器测试默认离线 (不注入 onPhoto 即跳过)。photo 能力默认用真实 Selfie。
@@ -253,6 +287,10 @@ export class Orchestrator {
     this.weather = deps.weather ?? null;
     // 世界观系统 (可选): 注入 WorldDimension 才有背景剧情线/氛围并随对话演变; 默认 null → 离线安全。
     this.world = deps.world ?? null;
+    // O-1: 今日穿搭与情绪/提示共用 WorldDimension 的同一份结构化天气。
+    if (sharedOutfit && this.world?.weather) {
+      sharedOutfit.weatherProvider = () => this.world.weather();
+    }
     // 旁白系统 (可选): 注入 SceneClassifier 才按场景动态给旁白指令; 默认 null → 离线安全, 不额外调 LLM。
     this.narration = deps.narration ?? null;
     this.story = deps.story ?? null;
@@ -272,6 +310,9 @@ export class Orchestrator {
     this._sessionThread = emptySessionThread(this.now());
     this._emotionResidue = emptyEmotionResidue();
     this._emotionJournal = emptyEmotionJournal();
+    this._e3InferenceTask = null;
+    this._e3TurnCount = 0;
+    this._e3LastInferTurn = null;
   }
 
   /**
@@ -443,15 +484,18 @@ export class Orchestrator {
   applyEmotionSideEffects(prevResidue, nextResidue, { userMessage = '', source = 'turn' } = {}) {
     const prev = normalizeEmotionResidue(prevResidue);
     const next = normalizeEmotionResidue(nextResidue);
+    let journalEvent = null;
     if (shouldLogEmotionTransition(prev.label, next.label, prev.intensity, next.intensity)) {
-      this._emotionJournal = appendEmotionEvent(this._emotionJournal, {
+      journalEvent = {
         fromLabel: prev.label,
         toLabel: next.label,
         intensity: next.intensity,
         cause: userMessage || next.cause,
         source,
         at: this.now(),
-      });
+      };
+      this._emotionJournal = appendEmotionEvent(this._emotionJournal, journalEvent);
+      if (source === 'turn') this._pendingEmotionMemoryEvent = journalEvent;
     }
     this._emotionResidue = next;
     // desire bridge（异步，不阻塞）
@@ -463,6 +507,133 @@ export class Orchestrator {
         this._lastDesireBridge = Promise.resolve(dim.accumulate(deltas)).catch(() => null);
       }
     }
+    return journalEvent;
+  }
+
+  /**
+   * M-5: 跨会话记忆桥接。优先读取 CEE 投影的 48h working_memory；
+   * 旧部署没有专用接口时才退回近期 recall。纯 IO、无 LLM，失败返回 null。
+   */
+  async _buildCrossSessionBridge() {
+    if (!this.userId || !this.memory) return null;
+    try {
+      let hits = [];
+      if (typeof this.memory.recallWorkingMemory === 'function') {
+        hits = await this.memory.recallWorkingMemory({
+          now: this.now(),
+          topK: 3,
+        });
+      }
+      if (
+        (!Array.isArray(hits) || hits.length === 0) &&
+        typeof this.memory.recall === 'function'
+      ) {
+        const fallback = await this.memory.recall('最近的事情', {
+          topK: 3,
+          subjects: ['user', 'dyad', 'self'],
+          workingMemoryBridge: true,
+        });
+        hits = Array.isArray(fallback) ? fallback : fallback?.hits ?? [];
+      }
+      if (!hits?.length) return null;
+      const snippets = hits
+        .slice(0, 3)
+        .map((h) =>
+          sanitizeForPrompt(h.fact_core ?? h.content ?? '')
+            .slice(0, 80)
+            .trim(),
+        )
+        .filter(Boolean);
+      if (!snippets.length) return null;
+      return snippets.join('；');
+    } catch {
+      return null;
+    }
+  }
+
+  /** E-3: 返回一个轻量 llmCall 包装，用于异步情绪分类。无 LLM 客户端时返回 null。 */
+  _makeLLMEmotionCall() {
+    if (typeof this.llm?.classifyEmotion === 'function') {
+      return (messages) => this.llm.classifyEmotion(messages);
+    }
+    const client = this.llm?.client || this.llm?.openai || null;
+    if (!client) return null;
+    return async (messages) => {
+      const res = await client.chat.completions.create({
+        model: this.llm?.model ?? 'gpt-4o-mini',
+        messages,
+        max_tokens: 10,
+        temperature: 0,
+      });
+      return res.choices?.[0]?.message?.content ?? null;
+    };
+  }
+
+  /** E-3: 只更新可 JSON 落盘的会话账本，不把 Promise 放进 SessionThread。 */
+  _setSessionEmotionInference(patch = {}) {
+    const current = this._sessionThread ?? emptySessionThread(this.now());
+    this._sessionThread = {
+      ...current,
+      emotionInference: {
+        lastInferTurn: current.emotionInference?.lastInferTurn ?? null,
+        readyLabel: current.emotionInference?.readyLabel ?? null,
+        readySourceTurn: current.emotionInference?.readySourceTurn ?? null,
+        ...patch,
+      },
+    };
+    return this._sessionThread.emotionInference;
+  }
+
+  /**
+   * E-3: 触发游标立即入队；任务完成后只持久化合法、仍属最新请求且尚未在
+   * 长生命周期实例中消费的标签。短命 UI runner 会有界等待这条链再退出。
+   */
+  _persistEmotionInferenceTask(task) {
+    if (!task) return Promise.resolve(null);
+    const sourceTurn = Number(task.sourceTurn) || 0;
+    const markerPersist = this.persistSessionThread();
+    const settled = Promise.resolve(markerPersist)
+      .then(() => task.promise)
+      .then(async (label) => {
+        if (
+          task.consumed ||
+          task.discarded ||
+          !EMOTION_LABELS.includes(label) ||
+          Number(this._sessionThread?.emotionInference?.lastInferTurn) !== sourceTurn
+        ) {
+          return null;
+        }
+        this._setSessionEmotionInference({
+          readyLabel: label,
+          readySourceTurn: sourceTurn,
+        });
+        await this.persistSessionThread();
+        return label;
+      })
+      .catch(() => null);
+    this._lastE3Persist = settled;
+    return settled;
+  }
+
+  /**
+   * 供短命渠道在回复已经送出后等待分类结果落盘。超时不阻塞退出：
+   * lastInferTurn 已持久化，后续冷启动会继续遵守三轮节流并在到期后安全重试。
+   */
+  async waitForEmotionInference({ timeoutMs = 5000 } = {}) {
+    const pending = this._lastE3Persist;
+    if (!pending) return null;
+    const waitMs = Math.max(0, Number(timeoutMs) || 0);
+    if (waitMs === 0) return null;
+    let timer = null;
+    const timeout = new Promise((resolve) => {
+      timer = setTimeout(() => resolve(null), waitMs);
+    });
+    const result = await Promise.race([
+      Promise.resolve(pending).catch(() => null),
+      timeout,
+    ]);
+    if (timer) clearTimeout(timer);
+    return result;
   }
 
   /** 故事 beat 软种子 residual（maintain/story 回调） */
@@ -501,23 +672,37 @@ export class Orchestrator {
         thread = emptySessionThread(now);
       }
     }
-    if (shouldResetSession(thread, now)) thread = emptySessionThread(now);
+    if (shouldResetSession(thread, now)) {
+      // M-5: 新会话开始时，从近期记忆中构建跨会话桥接上下文
+      const bridge = await this._buildCrossSessionBridge().catch(() => null);
+      thread = { ...emptySessionThread(now), crossSessionContext: bridge };
+    }
     this._sessionThread = thread;
+    this._e3TurnCount = Math.max(0, Math.floor(Number(thread.turnCount) || 0));
+    this._e3LastInferTurn =
+      thread.emotionInference?.lastInferTurn != null
+        ? Number(thread.emotionInference.lastInferTurn)
+        : null;
     return this._sessionThread;
   }
 
-  /** 异步持久化会话线（失败只打日志） */
+  /**
+   * 异步持久化会话线（失败只打日志）。E-3 分类完成回写可能与本轮 Commit 并发，
+   * 因此同一 Orchestrator 内串行写快照，避免旧 turnCount 后到覆盖新状态。
+   */
   persistSessionThread() {
     if (PARAMS.orchestrator?.sessionThread === false) return Promise.resolve();
     if (!this.historyStore || typeof this.historyStore.saveSessionThread !== 'function') return Promise.resolve();
     const thread = serializeSessionThread(this._sessionThread);
-    this._lastSessionPersist = Promise.resolve(
+    const previous = this._sessionPersistChain ?? Promise.resolve();
+    const write = previous.catch(() => {}).then(() =>
       this.historyStore.saveSessionThread({
         userId: this.userId,
         companionId: this.companionId,
         thread,
-      }),
-    ).catch((reason) => {
+      }));
+    this._sessionPersistChain = write;
+    this._lastSessionPersist = write.catch((reason) => {
       console.error('[historyStore.session]', reason);
     });
     return this._lastSessionPersist;
@@ -554,6 +739,8 @@ export class Orchestrator {
   async _reply(userMessage, opts = {}) {
     const traceStartedAt = Date.now();
     const traceMetricsBefore = metricsSnapshot();
+    // E-5 只记录本轮新写入 emotionJournal 的事件，不能把旧 residue 每轮重复记忆化。
+    this._pendingEmotionMemoryEvent = null;
     await this.init();
     opts = {
       ...opts,
@@ -625,7 +812,7 @@ export class Orchestrator {
     this._lastUserMessageAt = nowMs;
 
     // 先并行拉状态/场景；记忆召回用 turnPlan 增强 query，故分两段（状态极快，不显著增延迟）
-    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot, dueItems, sceneType] = await Promise.all([
+    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot, dueItems, sceneType, weatherStructured] = await Promise.all([
       stateSnapshotPromise,
       this.relationship.current().catch(() => null),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
@@ -635,15 +822,34 @@ export class Orchestrator {
       this.ablation.narrationClassifier !== false && this.narration
         ? this.narration.classify({ userMessage, history: this.history, previousScene: this._lastSceneType, signal: opts.signal }).catch(() => 'daily')
         : Promise.resolve('daily'),
+      // W-5: 结构化天气用于 valence 基线偏移（与 weather 字符串并行, 不增额外延迟）
+      this.world?.weather?.().catch(() => null) ?? Promise.resolve(null),
     ]);
     const recoverBias =
       emotionDecayOverridesFromConfig(this._config)?.recoverBias ??
       this.stateLayer?.stateLayer?.emotionDecayOverrides?.recoverBias;
+    // W-5: 天气/节日只覆盖本轮展示基线，不落库累加；雨天连续聊十轮仍只偏一次。
+    const worldAffect = getWorldAffectOverride(worldSnapshot, nowMs, {
+      weather: weatherStructured,
+      timezoneOffsetMinutes:
+        worldSnapshot?.stable_facts?.timezone_offset_minutes ??
+        worldSnapshot?.timezone_offset ??
+        480,
+    });
+    const stateSnapshotForEmotion = applyWorldAffectToSnapshot(
+      stateSnapshot,
+      worldAffect,
+    );
+    const structuredWeatherLine = worldWeatherLine(
+      weatherStructured,
+      worldSnapshot?.location ?? worldSnapshot?.stable_facts?.city,
+    );
+    const effectiveWeatherLine = structuredWeatherLine || weather;
     pipelineContext = await runTurnStage(pipelineContext, 'interpret', async () => ({
       interpretation: interpretTurn({
         userMessage,
         history: this.history,
-        stateSnapshot,
+        stateSnapshot: stateSnapshotForEmotion,
         relState,
         sceneType,
         now: nowMs,
@@ -678,7 +884,7 @@ export class Orchestrator {
               userMessage,
               temporalContext,
               relationship: rel,
-              emotion: stateSnapshot?.emotion,
+              emotion: stateSnapshotForEmotion?.emotion,
               situation: sceneType,
               unfinishedTopics: unfinished,
             })
@@ -688,17 +894,101 @@ export class Orchestrator {
     // E-2: CEE 持久情绪标签（跨重启）优先于 M1 启发式推断。
     // persistence > 0 且是合法中文标签时生效，否则回退 M1 结果。
     const ceeEmotional = existenceTurn?.state?.emotional;
-    const ceeLabel = ceeEmotional?.label;
-    const emotionLabel =
-      ceeLabel &&
-      EMOTION_LABELS.includes(ceeLabel) &&
-      (ceeEmotional.persistence ?? 0) > 0
-        ? ceeLabel
-        : interpretation.emotion.label;
+    let emotionLabel = selectAuthoritativeEmotionLabel(
+      ceeEmotional,
+      interpretation.emotion.label,
+    );
+    // E-3: SessionThread.turnCount 是跨进程权威轮次。UI 每条消息都会构造新实例，
+    // 不能再依赖纯内存自增；本轮序号 = 已成功提交轮数 + 1。
+    const persistedInference = this._sessionThread?.emotionInference ?? {};
+    this._e3TurnCount =
+      Math.max(0, Math.floor(Number(this._sessionThread?.turnCount) || 0)) + 1;
+    this._e3LastInferTurn =
+      persistedInference.lastInferTurn != null &&
+      Number.isFinite(Number(persistedInference.lastInferTurn))
+        ? Number(persistedInference.lastInferTurn)
+        : null;
+
+    // 长生命周期渠道先消费内存任务；短命 UI 则消费上个进程落入 SessionThread
+    // 的 readyLabel。两条路径都只读已经 settled 的值，不等待网络。
+    const activeInferenceTask = this._e3InferenceTask;
+    const consumedInference = consumeLLMEmotionInference(
+      activeInferenceTask,
+      { currentTurn: this._e3TurnCount, maxPendingTurns: 3 },
+    );
+    this._e3InferenceTask = consumedInference.task;
+    if (activeInferenceTask && !consumedInference.task) {
+      activeInferenceTask.consumed = Boolean(consumedInference.consumed);
+      activeInferenceTask.discarded = Boolean(consumedInference.expired);
+    }
+    const readySourceTurn = Number(persistedInference.readySourceTurn);
+    const persistedReadyLabel =
+      Number.isFinite(readySourceTurn) &&
+      readySourceTurn < this._e3TurnCount &&
+      EMOTION_LABELS.includes(persistedInference.readyLabel)
+        ? persistedInference.readyLabel
+        : null;
+    const settledLabel = EMOTION_LABELS.includes(consumedInference.label)
+      ? consumedInference.label
+      : persistedReadyLabel;
+    if (settledLabel) {
+      emotionLabel = settledLabel;
+    }
+    if (
+      persistedInference.readyLabel &&
+      Number.isFinite(readySourceTurn) &&
+      readySourceTurn < this._e3TurnCount
+    ) {
+      this._setSessionEmotionInference({
+        readyLabel: null,
+        readySourceTurn: null,
+      });
+    }
+
+    // 本轮仅在 heuristic confidence < 0.5 时异步分类；严格与上次触发相隔
+    // 至少 3 轮，而且同一时刻最多一个任务。结果供后续轮次使用。
+    if (
+      shouldLLMInfer(userMessage, {
+        confidence: interpretation.emotion.confidence,
+        label: interpretation.emotion.label,
+        currentTurn: this._e3TurnCount,
+        lastInferTurn: this._e3LastInferTurn,
+        pending: Boolean(this._e3InferenceTask),
+      })
+    ) {
+      const llmCall = this._makeLLMEmotionCall();
+      if (llmCall) {
+        this._e3LastInferTurn = this._e3TurnCount;
+        this._setSessionEmotionInference({
+          lastInferTurn: this._e3TurnCount,
+          readyLabel: null,
+          readySourceTurn: null,
+        });
+        this._e3InferenceTask = startLLMEmotionInference(
+          userMessage,
+          llmCall,
+          { sourceTurn: this._e3TurnCount },
+        );
+        this._persistEmotionInferenceTask(this._e3InferenceTask);
+      }
+    }
+    // CEE/LLM 覆盖了 heuristic 标签时，行为策略也必须使用同一个最终标签。
+    if (
+      this.ablation.behaviorPolicy !== false &&
+      emotionLabel !== interpretation.emotion.label
+    ) {
+      behavior = behaviorPolicy(emotionLabel, {
+        relationship: rel,
+        ...(opts.behaviorState ?? {}),
+      });
+      behavior = applyStageToBehavior(behavior, relStage);
+      behavior = applyBodyToBehavior(behavior, bodySit);
+    }
     if (emotionInferred && typeof emotionInferred === 'object' && emotionInferred.residual) {
       const prevRes = this._emotionResidue;
       this.applyEmotionSideEffects(prevRes, emotionInferred.residual, { userMessage, source: 'turn' });
     }
+    const emotionEvent = this._pendingEmotionMemoryEvent;
     this._lastEmotionLabel = emotionLabel;
     this._lastSceneLocks = sceneLocks;
     // 故事 beat：今日 + 未分享的 pending 都可作内容源
@@ -726,6 +1016,9 @@ export class Orchestrator {
         this.options.useMonologue && this.ablation.monologue !== false,
     });
     const recallQuery = retrievalPlan.turnPlan.recallQuery || userMessage;
+    const recallIntimate =
+      sceneType === 'intimate' ||
+      ['flirting', 'foreplay', 'peak', 'aftercare'].includes(intimacyLive?.scene_phase);
     pipelineContext = await runTurnStage(
       pipelineContext,
       'retrieve',
@@ -736,6 +1029,9 @@ export class Orchestrator {
           options: {
             debug: Boolean(opts.debug),
             reconsolidate: this.ablation.reconsolidation !== false,
+            sceneType,
+            intimacyPhase: intimacyLive?.scene_phase ?? null,
+            intimate: recallIntimate,
             evidenceBudget:
               this.ablation.evidenceBudget === false
                 ? false
@@ -804,7 +1100,7 @@ export class Orchestrator {
       timePrompt: buildTimePrompt(new Date(nowMs), {
         timeZone: this.options.timeZone,
         place: this.options.place,
-        weather,
+        weather: effectiveWeatherLine,
         gapHours,
         userMessage,
       }),
@@ -817,7 +1113,12 @@ export class Orchestrator {
         userMessage,
         now: nowMs,
       }),
-      worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
+      worldPrompt: this.world
+        ? this.world.toPrompt(worldSnapshot, {
+            now: nowMs,
+            weatherLine: structuredWeatherLine,
+          })
+        : '',
       storyPrompt: this.ablation.story !== false && this.story
         ? this.story.toPrompt(storySnapshot, { forceToday: Boolean(storyBeat) || askAboutDay })
         : '',
@@ -843,6 +1144,8 @@ export class Orchestrator {
         // 标量温度（StateLayer）+ 离散【情绪表现】（始终注入，不因 adapter 形态跳过）
         this.stateLayer.toPrompt(stateForPrompt, {
           relationship: rel,
+          prevIntimacy: stateSnapshot?.intimacy ?? null,
+          userMessage,
           hardBoundaries: this._config?.intimacyHardBoundaries,
           intimacyConfig: this.stateLayer?.stateLayer?.intimacy?.config,
         }),
@@ -868,6 +1171,41 @@ export class Orchestrator {
       replyStylePrompt: buildReplyStylePrompt(this._config?.replyStyle),
     };
 
+    // I-5: 四阶段结构化节拍。这里只“借用”当前 cursor；真正推进要等统一
+    // Commit 成功，避免生成/校验失败也消耗一拍。cursor 随 SessionThread 持久化，
+    // 因此 UI 每条消息新建 Orchestrator 时也能续拍。
+    const _beatPhases = new Set(['flirting', 'foreplay', 'peak', 'aftercare']);
+    const _beatPhase = _beatPhases.has(intimacyLive?.scene_phase)
+      ? intimacyLive.scene_phase
+      : null;
+    const _storedBeatCursor = sessionPeek?.intimacyBeat;
+    const _beatCursor =
+      _storedBeatCursor?.phase
+        ? _storedBeatCursor
+        : this._intimacyBeatCursor?.phase
+          ? this._intimacyBeatCursor
+          : _storedBeatCursor ?? { phase: null, nextIndex: 0 };
+    let intimacyBeatCommit;
+    if (_beatPhase && promptBase.narrationPrompt) {
+      const beatIndex =
+        _beatCursor?.phase === _beatPhase
+          ? Math.max(0, Math.floor(Number(_beatCursor.nextIndex) || 0))
+          : 0;
+      const beat = generateIntimacyBeat({
+        phase: _beatPhase,
+        beatIndex,
+        arousal: intimacyLive?.arousal,
+        body_focus: intimacyLive?.body_focus,
+        userMessage,
+      });
+      if (beat?.prompt) {
+        promptBase.narrationPrompt += `\n${beat.prompt}`;
+        intimacyBeatCommit = { phase: _beatPhase, nextIndex: beatIndex + 1 };
+      }
+    } else if (!_beatPhase && (_beatCursor?.phase || this._intimacyBeatCursor?.phase)) {
+      intimacyBeatCommit = { phase: null, nextIndex: 0 };
+    }
+
     // 场景分类（用于 prompt 段落动态剪枝，T-03）
     const _isIntimateScene = sceneLocks.some(l => ['intimate', 'car', 'bath'].includes(l.id))
       || ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyLive?.scene_phase);
@@ -875,7 +1213,6 @@ export class Orchestrator {
     // compact: 短消息 + 无场景锁（同原判断）
     const compact = PARAMS.orchestrator?.compactShortTurns !== false && userMessage.trim().length <= 12 && !sceneLocks.length;
     if (compact) {
-      if (promptBase.worldPrompt && promptBase.worldPrompt.length > 200) promptBase.worldPrompt = '';
       if (promptBase.storyPrompt && !askAboutDay) promptBase.storyPrompt = promptBase.storyPrompt.slice(0, 180);
       // 短消息+无高优先级目标：目标段落对本轮无贡献
       if (!_highUrgencyGoal) promptBase.goalsPrompt = '';
@@ -914,9 +1251,12 @@ export class Orchestrator {
     // E4 触景生情：只扰动本轮展示 emotion，重写 statePrompt 中的情绪段
     const resonance = this.ablation.moodGating === false
       ? null
-      : resonateFromMemoryHits(memoryHits, stateSnapshot?.emotion);
+      : resonateFromMemoryHits(memoryHits, stateSnapshotForEmotion?.emotion);
     if (resonance && promptBase.statePrompt) {
-      const emoShow = applyResonanceToEmotion(stateSnapshot?.emotion || {}, resonance);
+      const emoShow = applyResonanceToEmotion(
+        stateSnapshotForEmotion?.emotion || {},
+        resonance,
+      );
       const fused = fuseEmotionPrompt(emoShow, emotionLabel, this._emotionResidue, emotionLabelToPrompt);
       // 用融合段替换原 toEmotionPrompt 开头（简单：前缀注入触景提示）
       promptBase.statePrompt = [
@@ -996,6 +1336,7 @@ export class Orchestrator {
         storyBeat,
         sceneType,
         emotionLabel,
+        emotionEvent,
         behavior,
         goals,
         decision,
@@ -1012,6 +1353,7 @@ export class Orchestrator {
         traceStartedAt,
         traceMetricsBefore,
         pipelineContext,
+        intimacyBeatCommit,
       });
     }
 
@@ -1072,8 +1414,12 @@ export class Orchestrator {
           existenceTurn,
           temporalContext,
           psychologicalCoherence,
+          sceneType,
+          emotionLabel,
+          emotionEvent,
           sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
           updateSession: updateSessionThread,
+          ...(intimacyBeatCommit ? { intimacyBeat: intimacyBeatCommit } : {}),
         }),
       };
     });
@@ -1155,8 +1501,9 @@ export class Orchestrator {
   async *_replyStreaming(ctx) {
     const {
       userMessage, opts, messages, samplingHints, turn, structured, sceneLocks, stateSnapshot,
-      emotionLabel, behavior, goals, intimacyLive, relStage, bodySit, recallExplain, gapHours, nowMs,
+      emotionLabel, emotionEvent, behavior, goals, intimacyLive, relStage, bodySit, recallExplain, gapHours, nowMs,
       historyUserMessage = userMessage, traceStartedAt = Date.now(), traceMetricsBefore = {},
+      intimacyBeatCommit,
       pipelineContext: initialPipelineContext,
     } = ctx;
     let pipelineContext = initialPipelineContext;
@@ -1242,8 +1589,12 @@ export class Orchestrator {
           existenceTurn: ctx.existenceTurn,
           temporalContext: ctx.temporalContext,
           psychologicalCoherence,
+          sceneType: ctx.sceneType,
+          emotionLabel,
+          emotionEvent,
           sessionEnabled: PARAMS.orchestrator?.sessionThread !== false,
           updateSession: updateSessionThread,
+          ...(intimacyBeatCommit ? { intimacyBeat: intimacyBeatCommit } : {}),
         }),
       };
     });
@@ -1405,13 +1756,30 @@ export class Orchestrator {
         : ctx.shouldSend ?? true;
     if (!shouldSend) return null;
 
-    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot] = await Promise.all([
+    const [stateSnapshot, relState, weather, worldSnapshot, storySnapshot, weatherStructured] = await Promise.all([
       this.stateLayer.snapshot().catch(() => null),
       this.relationship.current().catch(() => null),
       this.weather ? this.weather.current().catch(() => '') : Promise.resolve(''),
       this.world ? this.world.current().catch(() => null) : Promise.resolve(null),
       this.ablation.story !== false && this.story ? this.story.current().catch(() => null) : Promise.resolve(null),
+      this.world?.weather?.().catch(() => null) ?? Promise.resolve(null),
     ]);
+    const worldAffect = getWorldAffectOverride(worldSnapshot, nowMs, {
+      weather: weatherStructured,
+      timezoneOffsetMinutes:
+        worldSnapshot?.stable_facts?.timezone_offset_minutes ??
+        worldSnapshot?.timezone_offset ??
+        480,
+    });
+    const stateSnapshotForEmotion = applyWorldAffectToSnapshot(
+      stateSnapshot,
+      worldAffect,
+    );
+    const structuredWeatherLine = worldWeatherLine(
+      weatherStructured,
+      worldSnapshot?.location ?? worldSnapshot?.stable_facts?.city,
+    );
+    const effectiveWeatherLine = structuredWeatherLine || weather;
 
     const pack =
       ctx.contentPack ||
@@ -1420,12 +1788,12 @@ export class Orchestrator {
         urgency: ctx.urgency,
         intimacyUrg: ctx.intimacyUrg,
         storyBeat: ctx.storyBeat ?? storySnapshot?.today,
-        outfit: stateSnapshot?.outfit,
+        outfit: stateSnapshotForEmotion?.outfit,
         unfinished: ctx.unfinished ?? extractUnfinishedHooks(this.history),
         silenceTier: ctx.silenceTier,
         bedtimeTier: ctx.bedtimeTier,
-        lifeActivity: stateSnapshot?.life?.current_activity,
-        life: stateSnapshot?.life,
+        lifeActivity: stateSnapshotForEmotion?.life?.current_activity,
+        life: stateSnapshotForEmotion?.life,
         defaultReason: ctx.reason ?? activityReason(stateSnapshot?.life) ?? '想主动找对方聊一句',
         emotionLabel: this._emotionResidue?.label || this._lastEmotionLabel || null,
         emotionResidue: this._emotionResidue,
@@ -1440,11 +1808,11 @@ export class Orchestrator {
 
     const rel = relState?.relationship ?? relState ?? {};
     const relStage = inferRelationshipStage(rel);
-    const bodySit = inferBodySituation(stateSnapshot?.life, this._config?.profile?.menstrual, nowMs);
+    const bodySit = inferBodySituation(stateSnapshotForEmotion?.life, this._config?.profile?.menstrual, nowMs);
     const emotionLabel = inferEmotionLabel(
-      { ...(stateSnapshot ?? {}), relationship: rel },
+      { ...(stateSnapshotForEmotion ?? {}), relationship: rel },
       this.ablation.desire !== false && this.ablation.desireInference !== false
-        ? stateSnapshot?.desires
+        ? stateSnapshotForEmotion?.desires
         : {},
       this.history.slice(-4),
     );
@@ -1481,7 +1849,7 @@ export class Orchestrator {
               now: nowMs,
               userMessage: pseudoUser,
               relationship: rel,
-              emotion: stateSnapshot?.emotion,
+              emotion: stateSnapshotForEmotion?.emotion,
               situation: 'proactive',
               unfinishedTopics: ctx.unfinished ?? extractUnfinishedHooks(this.history),
             })
@@ -1500,18 +1868,23 @@ export class Orchestrator {
       timePrompt: buildTimePrompt(new Date(nowMs), {
         timeZone: this.options.timeZone,
         place: this.options.place,
-        weather,
+        weather: effectiveWeatherLine,
       }),
       temporalPrompt: existenceTurn?.temporalPrompt ?? '',
       personaPrompt: this.persona.toPrompt() ?? '',
       personalityPrompt: existenceTurn?.personalityPrompt ?? '',
       companyPrompt: companyToPrompt(this._config?.company, {
         storySnapshot,
-        currentActivity: stateSnapshot?.life?.current_activity,
+        currentActivity: stateSnapshotForEmotion?.life?.current_activity,
         userMessage: pseudoUser,
         now: nowMs,
       }),
-      worldPrompt: this.world ? this.world.toPrompt(worldSnapshot) : '',
+      worldPrompt: this.world
+        ? this.world.toPrompt(worldSnapshot, {
+            now: nowMs,
+            weatherLine: structuredWeatherLine,
+          })
+        : '',
       storyPrompt: this.ablation.story !== false && this.story ? this.story.toPrompt(storySnapshot) : '',
       identityConstraintsPrompt: buildIdentityConstraints(this._config),
       relationshipPrompt: this.relationship.toPrompt(relState) ?? '',
@@ -1528,11 +1901,11 @@ export class Orchestrator {
       turnBriefPrompt: turn.turnBrief || '',
       statePrompt: [
         this.stateLayer.toPrompt(
-          (this.ablation.desire === false || this.ablation.desirePrompt === false) && stateSnapshot
-            ? { ...stateSnapshot, desires: null }
-            : stateSnapshot,
+          (this.ablation.desire === false || this.ablation.desirePrompt === false) && stateSnapshotForEmotion
+            ? { ...stateSnapshotForEmotion, desires: null }
+            : stateSnapshotForEmotion,
         ) ?? '',
-        bodyStateToPrompt(bodySit, stateSnapshot?.intimacy),
+        bodyStateToPrompt(bodySit, stateSnapshotForEmotion?.intimacy),
         behaviorToPrompt(behavior),
       ]
         .filter(Boolean)
@@ -1704,6 +2077,22 @@ export class Orchestrator {
       }
     }
     const results = await Promise.allSettled(tasks);
+    // M-3/M-4 都会修改 memories 的层级/生存状态，必须在 dedupe/reflect 等维护
+    // 完成后串行执行，避免同一行同时被链接、合并和删除。
+    if (nightly && typeof this.memory.compressIfNeeded === 'function') {
+      results.push(
+        ...(await Promise.allSettled([
+          this.memory.compressIfNeeded({ now }),
+        ])),
+      );
+    }
+    if (nightly && typeof this.memory.pruneStale === 'function') {
+      results.push(
+        ...(await Promise.allSettled([
+          this.memory.pruneStale({ now }),
+        ])),
+      );
+    }
     // S2 故事拍在基础 settle 完成后再推进，避免两条 affect 写路径并发覆盖。
     if (nightly && typeof this.story?.tick === 'function') {
       results.push(...await Promise.allSettled([this.story.tick({ now })]));
@@ -1815,15 +2204,38 @@ export class Orchestrator {
       { role: 'user', content: userMessage },
       { role: 'assistant', content: reply },
     ];
-    const tasks = [this.stateLayer.evolve(turns), this.memory.observe(turns), this.relationship.bump()];
+    const tasks = [
+      this.stateLayer.evolve(turns),
+      this.memory.observe(turns, {
+        eventId: meta.eventId ?? null,
+        sceneType: meta.sceneType ?? this._lastSceneTypeForObserve ?? null,
+        emotionLabel: meta.emotionLabel ?? this._lastEmotionLabel ?? null,
+        emotionEvent: meta.emotionEvent ?? null,
+        now: this.now(),
+      }),
+      this.relationship.bump(),
+    ];
     // 世界观系统: 后台判断这一轮要不要推进世界线 (大多数寻常对话不推进, 见 WorldDimension.evolve)。
     if (this.world) tasks.push(this.world.evolve(turns));
     // Episode · 会话篇章：历史够长时落一条 dyad 叙事记忆（启发式，不改 fact_core）
     if (typeof this.memory.recordEpisode === 'function' || typeof this.memory.recordSelfEvent === 'function') {
       tasks.push(this.maybeRecordEpisode(meta.history ?? this.history, turns));
     }
-    return Promise.allSettled(tasks).then((results) => {
+    return Promise.allSettled(tasks).then(async (results) => {
       for (const r of results) if (r.status === 'rejected') console.error('[afterReply]', r.reason);
+      // E-2: Memory.observe 的返回值含本轮已经落库的 M1 `after` 状态。
+      // 用它收口 CEE 数值底座，避免 CEE 永远落后当前消息一轮；离散标签仍由
+      // CEE 自己保管，syncNumericEmotion 不会重新分类。
+      const memoryProjection = results[1];
+      if (
+        memoryProjection?.status === 'fulfilled' &&
+        memoryProjection.value?.state?.mood &&
+        typeof this.existence?.syncNumericEmotion === 'function'
+      ) {
+        await this.existence
+          .syncNumericEmotion(memoryProjection.value.state)
+          .catch((error) => console.error('[afterReply.emotionSync]', error));
+      }
       return results;
     });
   }

@@ -133,7 +133,7 @@ export function toLifePrompt(state, now = Date.now()) {
 export function lifeSamplingHints(state) {
   const s = clampLife(state);
   const healthDrag = s.health < 0.8 ? (0.8 - s.health) * 0.35 : 0;
-  const temperature = round(clamp(0.7 + s.energy * 0.4 - healthDrag, 0.55, 1.15), 2);
+  const temperature = round(clamp(0.7 + s.energy * 0.4 - healthDrag, 0.55, 1.0), 2);
   const baseMaxTokens = s.energy < 0.3 ? 220 : s.energy > 0.75 ? 650 : 500;
   const healthLimit = s.health < 0.55 ? 260 : s.health < 0.8 ? 380 : baseMaxTokens;
   return {

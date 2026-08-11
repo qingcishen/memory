@@ -159,6 +159,27 @@ export async function rewriteNarrationParts(parts, messages, { client = narratio
 }
 
 export class DefaultLLM {
+  /**
+   * E-3 低置信度情绪分类。与主回复使用不同的轻量调用入口，供 Orchestrator
+   * fire-and-forget；返回原始标签文本，合法值校验由 emotionLabel 模块统一负责。
+   */
+  async classifyEmotion(messages, opts = {}) {
+    const startedAt = Date.now();
+    const model = opts.model ?? LLM_MODEL;
+    const res = await llm.chat.completions.create(
+      {
+        model,
+        messages,
+        max_tokens: 10,
+        temperature: 0,
+      },
+      { signal: opts.signal },
+    );
+    recordLlmCall('emotion_inference', res.usage);
+    traceLlmCall('emotion_inference', model, startedAt, res.usage);
+    return res.choices?.[0]?.message?.content ?? null;
+  }
+
   /** 生成给用户的回复 (好模型, 温度高一点更有人味)。返回结构化 { parts }, 旁白/台词分开发消息。 */
   async generateReply(messages, opts = {}) {
     const format = opts.format === 'plain' ? 'plain' : 'json';
@@ -292,9 +313,12 @@ function buildReplyPayload(messages, opts = {}) {
   if (format === 'json' && opts.intimateStyleLock !== false) {
     msgs.push({ role: 'system', content: INTIMATE_REPLY_STYLE_LOCK });
   }
+  const temperature = opts.temperature ?? parseFloat(process.env.LLM_TEMPERATURE ?? '0.78');
+  const topP = opts.top_p ?? (process.env.LLM_TOP_P ? parseFloat(process.env.LLM_TOP_P) : undefined);
   return {
     model: opts.model ?? REPLY_MODEL,
-    temperature: opts.temperature ?? 0.78,
+    temperature,
+    ...(topP != null ? { top_p: topP } : {}),
     ...(opts.maxTokens ? { max_tokens: opts.maxTokens } : {}),
     ...(reasoningEffort ? { reasoning_effort: reasoningEffort } : {}),
     messages: msgs,

@@ -13,6 +13,39 @@ const MAX_TOPICS = 4;
 const MAX_QUESTIONS = 3;
 const MAX_COMMITMENTS = 4;
 const SESSION_IDLE_MS = 4 * 60 * 60 * 1000; // 与编排器清历史同档
+const INTIMACY_BEAT_PHASES = new Set(['flirting', 'foreplay', 'peak', 'aftercare']);
+
+function normalizeIntimacyBeat(raw) {
+  const phase = INTIMACY_BEAT_PHASES.has(raw?.phase) ? raw.phase : null;
+  return {
+    phase,
+    nextIndex: phase ? Math.max(0, Math.floor(Number(raw?.nextIndex) || 0)) : 0,
+  };
+}
+
+/**
+ * E-3 跨进程账本。Promise 不能落盘，只保存节流游标，以及已经完成、等待下一轮
+ * 消费的安全标签。标签合法性仍由 emotionLabel 模块在消费时做最终校验。
+ */
+export function normalizeEmotionInferenceState(raw) {
+  const lastInferTurn =
+    raw?.lastInferTurn != null && Number.isFinite(Number(raw.lastInferTurn))
+      ? Math.max(0, Math.floor(Number(raw.lastInferTurn)))
+      : null;
+  const readySourceTurn =
+    raw?.readySourceTurn != null && Number.isFinite(Number(raw.readySourceTurn))
+      ? Math.max(0, Math.floor(Number(raw.readySourceTurn)))
+      : null;
+  const readyLabel =
+    typeof raw?.readyLabel === 'string' && raw.readyLabel.trim()
+      ? raw.readyLabel.trim().slice(0, 16)
+      : null;
+  return {
+    lastInferTurn,
+    readyLabel,
+    readySourceTurn: readyLabel ? readySourceTurn : null,
+  };
+}
 
 export function emptySessionThread(now = Date.now()) {
   return {
@@ -25,6 +58,11 @@ export function emptySessionThread(now = Date.now()) {
     commitments: [],
     lastUserFocus: '',
     emotionalTone: 'neutral',
+    crossSessionContext: null, // M-5: 上一场的记忆桥接摘要
+    // I-5: 下一轮要使用的叙事拍。跟会话线一起持久化，避免 UI 每轮冷启动都回第 0 拍。
+    intimacyBeat: normalizeIntimacyBeat(null),
+    // E-3: UI 每条消息都会新建 Orchestrator，节流游标和已完成结果必须跟会话落盘。
+    emotionInference: normalizeEmotionInferenceState(null),
   };
 }
 
@@ -64,6 +102,9 @@ export function normalizeSessionThread(raw, now = Date.now()) {
     emotionalTone: ['neutral', 'tense', 'intimate', 'soft', 'warm', 'tired'].includes(raw.emotionalTone)
       ? raw.emotionalTone
       : 'neutral',
+    crossSessionContext: raw.crossSessionContext ? String(raw.crossSessionContext).slice(0, 200) : null,
+    intimacyBeat: normalizeIntimacyBeat(raw.intimacyBeat),
+    emotionInference: normalizeEmotionInferenceState(raw.emotionInference),
   };
 }
 
@@ -258,6 +299,10 @@ export function updateSessionThread(thread = null, ctx = {}) {
   t.primaryTopic = t.topics[0] || null;
   t.lastUserFocus = userMessage.slice(0, 48);
   t.emotionalTone = inferEmotionalTone(userMessage, sceneLocks, t.emotionalTone);
+  // 只有成功 Commit 才会传入 intimacyBeat。生成/校验失败时不会提前消耗节拍。
+  if (Object.prototype.hasOwnProperty.call(ctx, 'intimacyBeat')) {
+    t.intimacyBeat = normalizeIntimacyBeat(ctx.intimacyBeat);
+  }
   t.turnCount = (t.turnCount || 0) + 1;
   t.updatedAt = now;
   return t;
@@ -269,6 +314,10 @@ export function updateSessionThread(thread = null, ctx = {}) {
 export function sessionThreadToPrompt(thread = null) {
   if (!thread || !thread.turnCount) return '';
   const lines = ['【本场在聊】'];
+  // M-5: 跨会话记忆桥接（新会话首轮才有）
+  if (thread.crossSessionContext && thread.turnCount <= 2) {
+    lines.push(`【上次记得】${sanitizeForPrompt(thread.crossSessionContext)}`);
+  }
   if (thread.primaryTopic) {
     lines.push(`主线话题：${thread.primaryTopic}${thread.topics.length > 1 ? `（旁支：${thread.topics.slice(1).join('、')}）` : ''}。`);
   }

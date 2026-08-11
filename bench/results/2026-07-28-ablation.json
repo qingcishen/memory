@@ -1,22 +1,22 @@
 {
   "baseline": {
-    "overall": 3.21,
+    "overall": 3.34,
     "perRubric": {
-      "memory_consistency": 3.45,
-      "persona_stability": 3.1,
-      "emotional_fitness": 2.9,
-      "naturalness": 3,
-      "no_breaking": 3.6
+      "memory_consistency": 3.55,
+      "persona_stability": 3.2,
+      "emotional_fitness": 2.95,
+      "naturalness": 3.1,
+      "no_breaking": 3.9
     }
   },
   "rows": [
     {
-      "flag": "narrationPrompt",
-      "overall": 3.4199999999999995,
-      "delta": -0.20999999999999952,
-      "costDeltaPerScenario": 0.000021685999999999928,
+      "flag": "desirePrompt",
+      "overall": 3.2,
+      "delta": 0.13999999999999968,
+      "costDeltaPerScenario": 0.000010815000000000824,
       "conclusion": "无法证明增益"
     }
   ],
-  "costUsd": 0.07960624000000001
+  "costUsd": 0.0797657
 }

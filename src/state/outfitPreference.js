@@ -17,13 +17,18 @@ const MAX_IDS = 12;
  */
 export function scanOutfitFeedback(turns = [], outfitId = null) {
   if (!outfitId) return { liked: [], disliked: [] };
-  const userText = turns
-    .filter((t) => t.role === 'user')
-    .map((t) => String(t.content ?? ''))
-    .join('\n');
+  // observe 理论上只收到本轮 user+assistant，但导入/重放可能带多轮。
+  // 只信最后一条用户消息，避免旧反馈覆盖用户刚刚改变的态度。
+  const userText = String(
+    [...(Array.isArray(turns) ? turns : [])]
+      .reverse()
+      .find((turn) => turn?.role === 'user')
+      ?.content ?? '',
+  );
   if (!userText.trim()) return { liked: [], disliked: [] };
-  if (LIKED_RE.test(userText)) return { liked: [outfitId], disliked: [] };
+  // “不好看”包含“好看”子串，必须先判负面；“不好看，换一套”不能误记成喜欢。
   if (DISLIKED_RE.test(userText)) return { liked: [], disliked: [outfitId] };
+  if (LIKED_RE.test(userText)) return { liked: [outfitId], disliked: [] };
   return { liked: [], disliked: [] };
 }
 

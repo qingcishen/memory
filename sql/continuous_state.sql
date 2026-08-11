@@ -53,6 +53,12 @@ alter table companion_continuous_state
 -- E-2: 持久情绪标签（EMOTION_LABELS 中文），跨重启恢复情绪残差。
 alter table companion_continuous_state
   add column if not exists emotion_label text;
+-- E-4: 7-day emotion arc plus the compact journal projection used to rebuild it.
+alter table companion_continuous_state
+  add column if not exists weekly_distribution jsonb not null
+  default '{"labels":{},"dominant":"平静","trend":"stable"}'::jsonb;
+alter table companion_continuous_state
+  add column if not exists emotion_history jsonb not null default '[]'::jsonb;
 
 create index if not exists companion_continuous_state_updated_idx
   on companion_continuous_state (updated_at);

@@ -14,6 +14,13 @@ import { TemporalPredictor } from './temporalPredictor.js';
 import { CircadianClock } from './circadianEntrainment.js';
 import { heartbeatTick, intimacyTensionDesireBump } from './heartbeat.js';
 import {
+  appendEmotionArcEvent,
+  emotionArcToPrompt,
+  mergeEmotionArcJournals,
+  normalizeEmotionArcJournal,
+  updateEmotionArc,
+} from './emotionArc.js';
+import {
   checkProactiveContact,
   computeDesire,
   decideContact as decideProactiveContact,
@@ -23,6 +30,7 @@ import {
   consolidate,
   InMemoryConsolidationStore,
 } from './memoryConsolidation.js';
+import { shouldScheduleCompressionProbe } from '../memory/compress.js';
 import {
   buildPersonalityPrompt,
   compileActivePersonality,
@@ -45,6 +53,10 @@ import {
   createMemoryPrivateMemoryStore,
   createSupabasePrivateMemoryStore,
 } from './privateMemoryStore.js';
+import {
+  selectAuthoritativeEmotionLabel,
+  synchronizeCeeEmotion,
+} from './emotionBridge.js';
 
 const DAY = 24 * 60 * 60 * 1000;
 
@@ -94,6 +106,8 @@ export class ContinuousExistenceEngine {
     this.onError = onError;
     this.lastActivity = null;
     this._stateTail = Promise.resolve();
+    this._lastCompressionProbeAt = null;
+    this._lastCompressionPromise = null;
     this.personalitySeed = normalizePersonalitySystem({
       ...DEFAULT_PERSONALITY_SYSTEM,
       ...(personalitySeed ?? {}),
@@ -185,6 +199,17 @@ export class ContinuousExistenceEngine {
   } = {}) {
     const storedState = temporalContext?.state ?? (await this.loadState());
     const state = normalizeContinuousState(storedState, { now });
+    // E-2: CEE 保管离散标签；M1 只提供本轮 valence 数值底座。
+    const turnLabel = normalizeIncomingEmotionLabel(emotion);
+    const authoritativeLabel = selectAuthoritativeEmotionLabel(
+      state.emotional,
+      turnLabel ?? '平静',
+    );
+    state.emotional = synchronizeCeeEmotion(state.emotional, {
+      label: authoritativeLabel,
+      emotion,
+      minPersistence: state.emotional.persistence,
+    });
     if (Array.isArray(unfinishedTopics) && unfinishedTopics.length) {
       state.cognitive.unfinished_topics = normalizeTopics(unfinishedTopics);
     }
@@ -192,10 +217,7 @@ export class ContinuousExistenceEngine {
     const activePersonality = compileActivePersonality(personality, {
       relationship,
       continuousState: state,
-      currentEmotion:
-        (state.emotional.emotion_intensity > 0 || state.emotional.current_emotion !== 'neutral')
-          ? state.emotional
-          : emotion ?? state.emotional,
+      currentEmotion: state.emotional,
       situation,
     });
     const crossModule = validateCrossModuleCoherence(
@@ -225,6 +247,28 @@ export class ContinuousExistenceEngine {
     return this.withStateLock(() => this._observeTurn(input));
   }
 
+  /**
+   * E-2 数值收口：Memory.observe 完成本轮 M1 状态更新后，把它的最终 mood.valence
+   * 同步回 CEE；只更新数值底座，不重新分类或覆盖 CEE 权威标签。
+   */
+  syncNumericEmotion(input = null) {
+    return this.withStateLock(async () => {
+      const numeric = input?.mood ?? input?.emotion ?? input;
+      if (!Number.isFinite(Number(numeric?.valence))) return this.loadState();
+      const next = await this.loadState();
+      const label = selectAuthoritativeEmotionLabel(
+        next.emotional,
+        '平静',
+      );
+      next.emotional = synchronizeCeeEmotion(next.emotional, {
+        label,
+        emotion: numeric,
+        minPersistence: next.emotional.persistence,
+      });
+      return this.saveState(next);
+    });
+  }
+
   async _observeTurn({
     eventId = null,
     now = this.clock(),
@@ -235,6 +279,8 @@ export class ContinuousExistenceEngine {
     turn = null,
     psychologicalCoherence = null,
     emotionLabel = null,
+    emotion = null,
+    emotionJournal = null,
   } = {}) {
     // 回复生成期间可能跨过一个或多个 30s 心跳。Commit 已进入状态锁，此处再读
     // 一次权威快照，避免用 Perceive 阶段的旧 turn.state 覆盖心跳刚固化的念头、
@@ -270,11 +316,42 @@ export class ContinuousExistenceEngine {
         event_id: eventId,
       };
     }
-    // E-2: 把本轮推断的离散情绪标签写进持久 CEE 状态，让重启后也能恢复情绪记忆。
+    // E-2/E-4: 持久化权威标签，并将 Orchestrator emotionJournal
+    // 投影成 CEE 自己可在后台心跳维护的七天滚动弧线。
     if (emotionLabel && typeof emotionLabel === 'string') {
-      next.emotional.label = emotionLabel;
-      next.emotional.persistence = Math.max(next.emotional.persistence, 1.5);
+      next.emotional = synchronizeCeeEmotion(next.emotional, {
+        label: emotionLabel,
+        emotion,
+        minPersistence: 1.5,
+      });
     }
+    let emotionHistory =
+      emotionJournal == null
+        ? normalizeEmotionArcJournal(next.emotional.emotion_history)
+        : mergeEmotionArcJournals(
+            next.emotional.emotion_history,
+            emotionJournal,
+          );
+    if (
+      emotionJournal == null &&
+      emotionLabel &&
+      typeof emotionLabel === 'string'
+    ) {
+      emotionHistory = appendEmotionArcEvent(emotionHistory, {
+        at: now,
+        label: emotionLabel,
+        intensity:
+          turn?.state?.emotional?.emotion_intensity ??
+          next.emotional.emotion_intensity ??
+          1,
+      });
+    }
+    const arc = updateEmotionArc(emotionHistory, {
+      now,
+      timezoneOffsetMinutes: this.timezoneOffsetMinutes,
+    });
+    next.emotional.emotion_history = arc.journal;
+    next.emotional.weekly_distribution = arc.weekly_distribution;
     const savedState = await this.saveState(next);
 
     // 行为记录属于自我模型的证据；只在 Commit 后追加。
@@ -330,7 +407,7 @@ export class ContinuousExistenceEngine {
       computeDesire: (current) => {
         const base = computeDesire(current);
         // I-2: sexual_tension > 0.6 + days_without_intimacy > 2 → desire 加成（上限 +0.2）
-        const tensionBump = intimacyTensionDesireBump(intimacySnap);
+        const tensionBump = intimacyTensionDesireBump(intimacySnap, now);
         return {
           score: Math.min(1, base + tensionBump),
           reason: tensionBump > 0.05 ? 'sexual_tension' : dominantStateReason(current),
@@ -378,7 +455,35 @@ export class ContinuousExistenceEngine {
       state.volitional.proactive_desire = computeDesire(state);
       state = await this.saveState(state);
     }
-    return { state, contactDecision, consolidation };
+    // M-3: 连续沉默满 24h 后由心跳发起一次非阻塞压缩探测；每小时至多一次，
+    // 真正是否压缩仍由 >200 条与 24h 成功冷却的底层契约决定。
+    const compressionScheduled =
+      typeof this.memory?.compressIfNeeded === 'function' &&
+      shouldScheduleCompressionProbe({
+        now,
+        lastInteractionAt: state.temporal.last_interaction,
+        lastProbeAt: this._lastCompressionProbeAt,
+      });
+    if (compressionScheduled) {
+      this._lastCompressionProbeAt = new Date(now).getTime();
+      this._lastCompressionPromise = Promise.resolve(
+        this.memory.compressIfNeeded({ now }),
+      ).catch((error) => {
+        this.report(error, 'memory_compression');
+        return {
+          ran: false,
+          reason: 'compression_failed',
+          compressed: 0,
+          clusters: 0,
+        };
+      });
+    }
+    return {
+      state,
+      contactDecision,
+      consolidation,
+      compressionScheduled,
+    };
   }
 
   /** Scheduler 的对象式适配；底层 M2 仍保持设计稿位置参数 API。 */
@@ -688,7 +793,7 @@ export function continuousStateToPrompt(input = {}) {
     .slice(0, 2);
   const lines = [
     '【持续内部状态】',
-    `情绪底色：${state.emotional.current_emotion}（${intensityBand(state.emotional.emotion_intensity)}）；只从语气自然流露，不要播报状态。`,
+    `情绪底色：${selectAuthoritativeEmotionLabel(state.emotional, '平静')}（${intensityBand(state.emotional.emotion_intensity)}）；只从语气自然流露，不要播报状态。`,
     `时间余韵：${longingBand(state.temporal.longing)}，${fatigueBand(state.temporal.fatigue)}。`,
   ];
   if (state.cognitive.attention_focus) {
@@ -696,6 +801,10 @@ export function continuousStateToPrompt(input = {}) {
   }
   if (thoughts.length) lines.push(`脑中反复浮现：${thoughts.join('；')}`);
   if (topics.length) lines.push(`还有没说完的线索：${topics.join('；')}`);
+  const emotionArcPrompt = emotionArcToPrompt(
+    state.emotional.weekly_distribution,
+  );
+  if (emotionArcPrompt) lines.push(emotionArcPrompt);
   lines.push('这些是同一个主体刚刚真实延续下来的状态；不要解释数值，也不要逐项念给对方听。');
   return lines.join('\n');
 }
@@ -741,6 +850,23 @@ function normalizeTopics(topics) {
 function cleanFocus(message) {
   const text = String(message || '').replace(/\s+/g, ' ').trim();
   return text ? text.slice(0, 120) : null;
+}
+
+function normalizeIncomingEmotionLabel(emotion) {
+  if (!emotion || typeof emotion !== 'object') return null;
+  return (
+    selectAuthoritativeEmotionLabel(
+      {
+        label: emotion.label ?? emotion.emotion_label ?? null,
+        current_emotion:
+          emotion.current_emotion ?? emotion.currentEmotion ?? null,
+        emotion_intensity:
+          emotion.emotion_intensity ?? emotion.intensity ?? 1,
+        persistence: emotion.persistence ?? 1,
+      },
+      null,
+    ) || null
+  );
 }
 
 function dominantStateReason(state) {
@@ -794,6 +920,8 @@ function clamp01(value) {
 }
 
 export * from './continuousState.js';
+export * from './emotionArc.js';
+export * from './emotionBridge.js';
 export * from './heartbeat.js';
 export * from './temporalPerception.js';
 export * from './temporalPredictor.js';

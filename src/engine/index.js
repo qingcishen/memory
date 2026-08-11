@@ -14,6 +14,15 @@ import { VectorIndex } from './vector-index.js';
 import { filterBySubject } from '../persona.js';
 import { setMemoryHits } from '../trace.js';
 import { reciprocalRankFusion } from '../retrieve.js';
+import {
+  KNOWLEDGE_RECALL_TIMEOUT_MS,
+  recallKnowledgeMemoryLane,
+  withinKnowledgeRecallBudget,
+} from '../knowledge/recall.js';
+import {
+  filterIntimateMemories,
+  prioritizeIntimateMemories,
+} from '../state/intimacyMemory.js';
 
 /**
  * 纯逻辑排序: 候选 → 联想扩散 → 激活打分(含心情门控) → 降序。
@@ -26,6 +35,38 @@ export function rankCandidates(items, state, opts = {}) {
   if (!items || items.length === 0) return [];
   const withSpread = attachSpread(items, opts);
   return scoreActivation(withSpread, state, opts);
+}
+
+/**
+ * M-2 · 向量 / 关键词 / 知识图谱三路 RRF。
+ *
+ * 向量路仍是主链路：它报错就上抛；关键词和图谱都是可选增强。图谱 lane 无论是
+ * pending、reject 还是返回错误数据，都在独立预算后降级为空，不会拖垮主召回。
+ * 该 helper 同时让三路融合可以不连数据库做确定性验收。
+ */
+export async function fuseHybridRecallLanes(
+  vectorRequest,
+  keywordRequest,
+  knowledgeRequest,
+  opts = {},
+) {
+  const [vectorResult, keywordResult, knowledgeRows] = await Promise.all([
+    Promise.resolve(vectorRequest),
+    Promise.resolve(keywordRequest).catch(() => ({ data: [] })),
+    withinKnowledgeRecallBudget(knowledgeRequest, {
+      timeoutMs: opts.knowledgeTimeoutMs ?? KNOWLEDGE_RECALL_TIMEOUT_MS,
+      fallback: [],
+    }),
+  ]);
+  if (vectorResult?.error) throw vectorResult.error;
+  const lanes = [
+    vectorResult?.data ?? [],
+    keywordResult?.error ? [] : keywordResult?.data ?? [],
+  ];
+  if (Array.isArray(knowledgeRows) && knowledgeRows.length > 0) {
+    lanes.push(knowledgeRows);
+  }
+  return reciprocalRankFusion(lanes, opts.rrfK);
 }
 
 /**
@@ -46,19 +87,38 @@ export async function engineRecall(userId, companionId = 'default', query, state
   });
   let candidates;
   if (opts.hybrid ?? PARAMS.retrieval?.hybrid) {
-    const [vectorResult, keywordResult] = await Promise.all([
+    const kgCfg = PARAMS.knowledge ?? {};
+    const useKG = kgCfg.enabled && (opts.knowledgeGraph ?? PARAMS.retrieval?.knowledgeGraph ?? true);
+    candidates = await fuseHybridRecallLanes(
       vectorRequest,
-      Promise.resolve(supabase.rpc('match_memories_keyword', {
+      supabase.rpc('match_memories_keyword', {
         p_user_id: userId,
         p_companion_id: companionId,
         query_text: query,
         match_count: pool,
-      })).catch(() => ({ data: [] })),
-    ]);
-    if (vectorResult.error) throw vectorResult.error;
-    candidates = reciprocalRankFusion(
-      [vectorResult.data ?? [], keywordResult?.error ? [] : keywordResult?.data ?? []],
-      PARAMS.retrieval?.rrfK,
+      }),
+      // M-2: 知识图谱实体 → 关联记忆（第三路 RRF）
+      useKG
+        ? () => recallKnowledgeMemoryLane(
+            userId,
+            companionId,
+            query,
+            queryEmbedding,
+            pool,
+            {
+              ...kgCfg,
+              recallTimeoutMs: opts.knowledgeTimeoutMs ?? kgCfg.recallTimeoutMs,
+              ...(opts.knowledgeIo ? { io: opts.knowledgeIo } : {}),
+            },
+          )
+        : Promise.resolve([]),
+      {
+        rrfK: PARAMS.retrieval?.rrfK,
+        knowledgeTimeoutMs:
+          opts.knowledgeTimeoutMs ??
+          kgCfg.recallTimeoutMs ??
+          KNOWLEDGE_RECALL_TIMEOUT_MS,
+      },
     );
   } else {
     const result = await vectorRequest;
@@ -71,6 +131,9 @@ export async function engineRecall(userId, companionId = 'default', query, state
   let normalized = candidates.map((c) => ({ ...c, embedding: parseVector(c.embedding) }));
   // M4 域隔离: 检索关于"你/我们"的事时默认剔除 self (她的人格设定单独走 personaBlock)。
   normalized = filterBySubject(normalized, opts.subjects ?? ['user', 'dyad']);
+  // I-3: intimate_memory 虽然也是 dyad，但不属于日常关系底色；只有明确亲密上下文可见。
+  normalized = filterIntimateMemories(normalized, opts);
+  if (normalized.length === 0) return [];
 
   // 没有状态就关掉心情门控 (退化标准激活, 与旧路径可比)
   const params = state ? opts.params : { ...opts.params, wMood: 0 };
@@ -82,7 +145,10 @@ export async function engineRecall(userId, companionId = 'default', query, state
     topicEmbedding = await embed(state.relationship.tension_topic).then(parseVector).catch(() => null);
   }
 
-  const ranked = rankCandidates(normalized, state ?? {}, { ...opts, params, topicEmbedding }).slice(0, topK);
+  const ranked = prioritizeIntimateMemories(
+    rankCandidates(normalized, state ?? {}, { ...opts, params, topicEmbedding }),
+    opts,
+  ).slice(0, topK);
 
   setMemoryHits(ranked);
   await reinforce(ranked);

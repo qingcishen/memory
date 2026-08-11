@@ -6,8 +6,13 @@
 import { PARAMS } from '../params.js';
 import {
   OUTFIT_CONTEXTS,
+  applyEmotionToLook,
   attachDefaultLingerie,
   clampOutfitState,
+  emotionToOutfitHint,
+  hasBreathableFabric,
+  hasCoveredShoes,
+  hasWarmLayer,
   inferOutfitContext,
   inferSeason,
   normalizeLook,
@@ -185,9 +190,16 @@ export function enrichLookFromDrawers(look, wardrobe, {
  * 返回 { seasonOverride?, styleHint? } —— 注入 pickOutfit 时使用。
  * 纯函数，无 IO。
  */
+function weatherTemperature(weatherContext) {
+  const raw = weatherContext?.temperature;
+  if (raw == null || typeof raw === 'boolean' || String(raw).trim() === '') return Number.NaN;
+  const value = Number(raw);
+  return Number.isFinite(value) ? value : Number.NaN;
+}
+
 export function weatherToOutfitHint(weatherContext = null) {
   if (!weatherContext || typeof weatherContext !== 'object') return {};
-  const temp = Number(weatherContext.temperature);
+  const temp = weatherTemperature(weatherContext);
   const cond = String(weatherContext.condition ?? '').toLowerCase();
   const out = {};
   if (Number.isFinite(temp)) {
@@ -197,12 +209,132 @@ export function weatherToOutfitHint(weatherContext = null) {
     else if (temp >= 30) out.seasonOverride = 'summer';
   }
   const hints = [];
-  if (cond.includes('rain') || cond.includes('雨')) hints.push('rain-proof');
+  if (/rain|drizzle|shower|storm|雨/.test(cond)) hints.push('rain-proof');
   if (temp < 15) hints.push('layering');
-  if (temp >= 28) hints.push('breathable');
+  if (temp > 30) hints.push('breathable');
   if (cond.includes('wind') || cond.includes('风')) hints.push('windproof');
   if (hints.length) out.styleHint = hints.join(' ');
   return out;
+}
+
+function pickWeatherDrawerItem(items, context, predicate, rng) {
+  const pool = filterByContext(asDrawerItems(items), context).filter((item) => predicate(item.label));
+  if (!pool.length) return null;
+  const index = Math.min(pool.length - 1, Math.floor(rng() * pool.length));
+  return pool[index];
+}
+
+function appendPiece(existing, addition) {
+  const current = String(existing || '').trim();
+  return current ? `${current}，外搭 ${addition}` : addition;
+}
+
+const HOT_HEAVY_CORE_RE = /羊绒|羊毛|毛呢|毛衣|厚呢|羽绒|cashmere|wool|down/i;
+
+/**
+ * O-1 最终天气守卫。它在鞋柜/配饰轮换之后运行，确保最终成套结果满足：
+ * <15°C 有保暖层、>30°C 有透气核心面料、雨天为包覆式鞋履。
+ * 只调整必要单品，不改 look id、context 或亲密内搭。
+ */
+export function enforceWeatherOutfit(look, wardrobe = null, weatherContext = null, {
+  rng = Math.random,
+} = {}) {
+  const normalized = normalizeLook(look);
+  if (!normalized || !weatherContext || typeof weatherContext !== 'object') return normalized;
+  const cat = normalizeWardrobe(wardrobe);
+  const rand = typeof rng === 'function' ? rng : Math.random;
+  const temp = weatherTemperature(weatherContext);
+  const condition = String(weatherContext.condition ?? '').toLowerCase();
+  const rainy = /rain|drizzle|shower|storm|雨/.test(condition);
+  const pieces = { ...(normalized.pieces || {}) };
+
+  if (Number.isFinite(temp) && temp < 15 && !hasWarmLayer({ ...normalized, pieces })) {
+    const softContext = ['home', 'sleep', 'intimate', 'sick'].includes(normalized.context);
+    const candidates = filterByContext(asDrawerItems(cat.outerwear), normalized.context)
+      .filter((item) => hasWarmLayer({
+        id: 'weather-layer',
+        context: normalized.context,
+        summary: item.label,
+        pieces: { outer: item.label },
+      }));
+    const softCandidates = candidates.filter((item) => /开衫|针织|披肩|cardigan|knit/i.test(item.label));
+    const layerPool = softContext && softCandidates.length ? softCandidates : candidates;
+    const selected = layerPool.length
+      ? layerPool[Math.min(layerPool.length - 1, Math.floor(rand() * layerPool.length))]?.label
+      : null;
+    const fallback = softContext
+      ? 'Loro Piana 羊绒保暖开衫'
+      : temp < 5
+        ? 'Max Mara 羊绒保暖大衣'
+        : 'Loro Piana 羊绒保暖外层';
+    pieces.outer = appendPiece(pieces.outer, selected || fallback);
+  }
+
+  if (Number.isFinite(temp) && temp > 30) {
+    const outerOnly = pieces.outer
+      ? {
+          id: 'weather-outer',
+          context: normalized.context,
+          summary: String(pieces.outer),
+          pieces: { outer: pieces.outer },
+        }
+      : null;
+    if (outerOnly && hasWarmLayer(outerOnly)) {
+      delete pieces.outer;
+    }
+    if (pieces.dress && HOT_HEAVY_CORE_RE.test(String(pieces.dress))) {
+      pieces.dress = '轻薄透气亚麻连衣裙';
+    }
+    if (pieces.top && HOT_HEAVY_CORE_RE.test(String(pieces.top))) {
+      pieces.top = '轻薄透气亚麻上衣';
+    }
+    if (pieces.bottom && HOT_HEAVY_CORE_RE.test(String(pieces.bottom))) {
+      pieces.bottom = '轻薄透气棉麻下装';
+    }
+    const currentLook = {
+      ...normalized,
+      pieces,
+      summary: piecesToSummary(pieces),
+    };
+    if (!hasBreathableFabric(currentLook)) {
+      if (pieces.dress) pieces.dress = `${pieces.dress}（轻薄透气面料）`;
+      else if (pieces.top) pieces.top = `${pieces.top}（轻薄透气面料）`;
+      else pieces.top = '轻薄透气亚麻上衣';
+    }
+  }
+
+  if (rainy) {
+    const currentLook = {
+      ...normalized,
+      pieces,
+      summary: piecesToSummary(pieces),
+    };
+    if (!hasCoveredShoes(currentLook)) {
+      const shoe = pickWeatherDrawerItem(
+        cat.shoes,
+        normalized.context,
+        (label) => hasCoveredShoes({
+          id: 'weather-shoes',
+          context: normalized.context,
+          summary: label,
+          pieces: { shoes: label },
+        }),
+        rand,
+      );
+      const fallback = normalized.context === 'sport'
+        ? '防水包头运动鞋'
+        : ['home', 'sleep', 'intimate', 'sick'].includes(normalized.context)
+          ? '防滑防水包头软底鞋'
+          : '防水包头低跟鞋';
+      pieces.shoes = shoe?.label || fallback;
+    }
+  }
+
+  return normalizeLook({
+    ...normalized,
+    pieces,
+    summary: piecesToSummary(pieces),
+  });
 }
 
 export function composeDailyLook({
@@ -211,33 +343,53 @@ export function composeDailyLook({
   season = null,
   now = Date.now(),
   avoidLookId = null,
+  avoidLookIds = null,
   preferLookId = null,
   dailyKey = null,
   rotateAccessories = true,
   rng = null,
   weatherContext = null,
   outfitPrefs = null,
+  emotionLabel = null,
 } = {}) {
   const cat = normalizeWardrobe(wardrobe);
   const dayKey = dailyKey || localDayKey(now);
-  const ctx = OUTFIT_CONTEXTS.includes(context) ? context : 'home';
+  const baseContext = OUTFIT_CONTEXTS.includes(context) ? context : 'home';
+  const emotionHint = emotionToOutfitHint(emotionLabel, baseContext);
+  const ctx = emotionHint.context;
   const weatherHint = weatherToOutfitHint(weatherContext);
   const seasonNow = weatherHint.seasonOverride !== undefined ? (weatherHint.seasonOverride || inferSeason(now)) : (season || inferSeason(now));
   const rand = rng || seedRng(`${dayKey}|${ctx}|compose`);
+  const styleHint = [weatherHint.styleHint, emotionHint.styleHint].filter(Boolean).join(' ') || null;
 
   // O-2: 从用户偏好中解析最近喜欢且当前 context 可用的造型
-  const poolIds = cat.wardrobe.map((w) => w.id);
+  let preferencePool = cat.wardrobe.filter((look) => look.context === ctx);
+  if (!preferencePool.length && ctx === 'intimate') {
+    preferencePool = cat.wardrobe.filter(
+      (look) => look.context === 'home' || look.id.includes('shirt'),
+    );
+  }
+  if (!preferencePool.length && ctx === 'sick') {
+    preferencePool = cat.wardrobe.filter((look) => look.context === 'home');
+  }
+  if (!preferencePool.length) preferencePool = cat.wardrobe;
+  const poolIds = preferencePool.map((look) => look.id);
   const dislikedSet = new Set(Array.isArray(outfitPrefs?.disliked_ids) ? outfitPrefs.disliked_ids : []);
   const resolvedPrefId = preferLookId ?? resolvePreferId(outfitPrefs, poolIds.filter((id) => !dislikedSet.has(id)));
-  const resolvedAvoidId = avoidLookId ?? (dislikedSet.size ? [...dislikedSet][0] : null);
+  // O-3: 合并单次 avoidId + 批量 avoidIds
+  const avoidIdSet = new Set([
+    ...(avoidLookId ? [avoidLookId] : []),
+    ...(Array.isArray(avoidLookIds) ? avoidLookIds : []),
+    ...dislikedSet,
+  ]);
 
   const base = pickOutfit(cat, ctx, {
     preferId: resolvedPrefId,
-    avoidId: resolvedAvoidId,
+    avoidIds: avoidIdSet,
     rng: rand,
     season: seasonNow,
     now,
-    styleHint: weatherHint.styleHint ?? null,
+    styleHint,
   });
   const enriched = enrichLookFromDrawers(base, cat, {
     context: ctx,
@@ -245,12 +397,14 @@ export function composeDailyLook({
     rotateAccessories,
     rng: rand,
   });
+  const weatherSafe = enforceWeatherOutfit(enriched.look, cat, weatherContext, { rng: rand });
+  const finalLook = applyEmotionToLook(weatherSafe, emotionLabel) || weatherSafe;
   return {
-    look: enriched.look,
+    look: finalLook,
     composedFrom: enriched.composedFrom,
     dailyKey: dayKey,
     context: ctx,
-    summary: enriched.look?.summary || '',
+    summary: finalLook?.summary || '',
   };
 }
 
@@ -267,6 +421,7 @@ export function ensureDailyLookState(state, {
   force = false,
   weatherContext = null,
   outfitPrefs = null,
+  emotionLabel = null,
 } = {}) {
   const dl = config?.dailyLook || {};
   if (dl.enabled === false || dl.autoCompose === false) {
@@ -281,19 +436,33 @@ export function ensureDailyLookState(state, {
   }
 
   const hour = new Date(now).getHours();
-  const ctx = inferOutfitContext({ hour, life, intimacy, now });
+  // O-5: 情绪标签传入，影响情境推断
+  const ctx = inferOutfitContext({ hour, life, intimacy, now, emotionLabel });
+  // O-3: 最近 7 天穿搭 id（去重用），同时保留当日 avoidLookId
+  const recentLooks = Array.isArray(cur.recent_looks) ? cur.recent_looks : [];
+  const recentIds = recentLooks.slice(0, 7).map((r) => r.lookId).filter(Boolean);
+
   const composed = composeDailyLook({
     wardrobe,
     context: ctx,
     now,
     avoidLookId: cur.current?.id,
+    avoidLookIds: recentIds,
     dailyKey: dayKey,
     rotateAccessories: dl.rotateAccessories !== false,
     weatherContext,
     outfitPrefs: outfitPrefs ?? { preferred_ids: cur.preferred_ids, disliked_ids: cur.disliked_ids },
+    emotionLabel,
   });
   const stamp = new Date(now).toISOString();
+  // O-3: 追加今日记录，保留最近 14 天
+  const newLookId = composed.look?.id ?? null;
+  const updatedRecentLooks = [
+    ...(newLookId ? [{ date: dayKey, lookId: newLookId }] : []),
+    ...recentLooks.filter((r) => r.date !== dayKey),
+  ].slice(0, 14);
   const next = clampOutfitState({
+    ...cur,
     current: composed.look,
     context: composed.context,
     changed_at: stamp,
@@ -301,6 +470,7 @@ export function ensureDailyLookState(state, {
     daily_key: dayKey,
     composed_from: composed.composedFrom,
     daily_photo: null,
+    recent_looks: updatedRecentLooks,
   });
   return { state: next, composed: true, dailyKey: dayKey };
 }

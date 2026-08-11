@@ -6,7 +6,13 @@ import {
   formatForPrompt,
   formatSupersededTrailForPrompt,
 } from './retrieve.js';
-import { runReflection, findForgettable, forgetByQuery, mergeNearDuplicates } from './reflect.js';
+import {
+  runReflection,
+  findForgettable,
+  forgetByQuery,
+  mergeNearDuplicates,
+  shouldTriggerAutoForget,
+} from './reflect.js';
 import { readState, updateFromTurn, decayToBaseline, moodLabel, moodShiftMagnitude, readStateHistory } from './state/affect.js';
 import { engineRecall } from './engine/index.js';
 import { reconsolidateOnRecall, reconsolidateRecent } from './memory/reconsolidate.js';
@@ -21,6 +27,22 @@ import { PARAMS } from './config.js';
 import { updateUserProfile } from './profile.js';
 import { getAfterglowDelta } from './state/intimacy.js';
 import { scanOutfitFeedback, mergeOutfitFeedback } from './state/outfitPreference.js';
+import {
+  buildIntimateMemoryRecord,
+  prioritizeIntimateMemories,
+  removeUnsafeIntimateEpisodes,
+  storeIntimateMemory,
+} from './state/intimacyMemory.js';
+import {
+  buildEmotionMemoryRecord,
+  storeEmotionMemory,
+} from './state/emotionMemory.js';
+import {
+  buildWorkingMemoryRecord,
+  loadWorkingMemoryBridge,
+  storeWorkingMemory,
+} from './memory/workingMemory.js';
+import { compressMemoryIfNeeded } from './memory/compress.js';
 
 /**
  * 记忆系统门面。一个用户一个 userId, 所有记忆按 (userId, companionId) 隔离。
@@ -38,6 +60,13 @@ export class Memory {
     subjectName = '对方',
     companionName = '她',
     beliefEngine = null,
+    intimateMemoryStore = storeIntimateMemory,
+    emotionMemoryStore = storeEmotionMemory,
+    workingMemoryStore = storeWorkingMemory,
+    workingMemoryLoader = loadWorkingMemoryBridge,
+    forgettableFinder = findForgettable,
+    autoForgetRandom = Math.random,
+    memoryCompressor = compressMemoryIfNeeded,
   }) {
     if (!userId) throw new Error('Memory 需要 userId');
     this.userId = userId;
@@ -46,6 +75,13 @@ export class Memory {
     this.companionName = companionName;
     // 显式启用：老部署未执行 beliefs.sql 时不产生额外数据库请求。
     this.beliefEngine = beliefEngine;
+    this.intimateMemoryStore = intimateMemoryStore;
+    this.emotionMemoryStore = emotionMemoryStore;
+    this.workingMemoryStore = workingMemoryStore;
+    this.workingMemoryLoader = workingMemoryLoader;
+    this.forgettableFinder = forgettableFinder;
+    this.autoForgetRandom = autoForgetRandom;
+    this.memoryCompressor = memoryCompressor;
   }
 
   /**
@@ -55,20 +91,30 @@ export class Memory {
    * @returns { state, stored } —— 本轮后的状态与新存的记忆
    */
   async observe(turns, opts = {}) {
+    // M-5: CEE silence consolidation 走 observe 的受控投影支路，不重跑对话提取、
+    // affect/life/intimacy 演变，也不把短期主观念头投影成长期 belief。
+    if (opts.workingMemory) {
+      return this.observeWorkingMemory(opts.workingMemory, {
+        eventId: opts.eventId,
+        now: opts.now,
+      });
+    }
+
     // L4 身心耦合: 先演变 life(生病/被照顾) 拿到对情绪/关系的耦合增量, 与本轮 affect 增量
     // 合并进【同一次】 updateFromTurn 写入, 避免 affect 被第二条写路径覆盖(见 docs 设计)。
     const life = opts.life ?? null;
     const coupling = life ? await life.evolve(turns).catch(() => null) : null;
 
     // I3: 先演变亲密状态（启发式），其关系/情绪反馈并入本轮 affect 写入。
+    let intimacyBefore = null;
     let intimacyResult = null;
     let afterglowDelta = null;
     if (opts.intimacy && PARAMS.intimacy?.enabled !== false) {
       const relPreview = await readState(this.userId, this.companionId).catch(() => null);
       const lifeSnap = typeof life?.current === 'function' ? await life.current().catch(() => null) : null;
       // I-1 余温回暖：在 evolve 前取当前亲密快照，计算余温 delta。
-      const intimacySnap = await opts.intimacy.snapshot().catch(() => null);
-      if (intimacySnap) afterglowDelta = getAfterglowDelta(intimacySnap, opts.now ?? Date.now());
+      intimacyBefore = await opts.intimacy.snapshot().catch(() => null);
+      if (intimacyBefore) afterglowDelta = getAfterglowDelta(intimacyBefore, opts.now ?? Date.now());
       intimacyResult = await opts.intimacy
         .evolve(turns, {
           relationship: relPreview?.relationship ?? relPreview,
@@ -107,21 +153,53 @@ export class Memory {
     }
     // O 线: 对话触发换装 / 情境校正（失败隔离）
     let outfitResult = null;
+    let outfitFeedback = null;
     if (opts.outfit && PARAMS.outfit?.enabled !== false) {
       const lifeSnap = typeof life?.current === 'function' ? await life.current().catch(() => null) : null;
       outfitResult = await opts.outfit
-        .evolve(turns, { life: lifeSnap, intimacy: intimacyResult })
+        .evolve(turns, {
+          life: lifeSnap,
+          intimacy: intimacyResult,
+          emotionLabel: opts.emotionLabel ?? null,
+        })
         .catch(() => null);
       // O-2: 扫描用户消息中对当前穿搭的好评/嫌弃信号，写入 outfit 偏好列表。
-      const currentOutfitId = outfitResult?.current?.id ?? null;
-      if (currentOutfitId) {
-        const feedback = scanOutfitFeedback(turns, currentOutfitId);
+      const ratedOutfitId =
+        outfitResult?._meta?.previousOutfitId ??
+        outfitResult?.current?.id ??
+        null;
+      if (ratedOutfitId) {
+        const feedback = scanOutfitFeedback(turns, ratedOutfitId);
         if (feedback.liked.length || feedback.disliked.length) {
           const snap = outfitResult ?? await opts.outfit.snapshot().catch(() => null);
           if (snap) {
             const merged = mergeOutfitFeedback(snap, feedback);
             const updated = { ...snap, ...merged };
-            await opts.outfit.write?.(this.userId, this.companionId, updated).catch(() => null);
+            let persisted = false;
+            if (typeof opts.outfit.write === 'function') {
+              try {
+                await opts.outfit.write(
+                  this.userId,
+                  this.companionId,
+                  updated,
+                  opts.now ?? Date.now(),
+                );
+                persisted = true;
+                // observe 的返回值与刚落库的状态一致，调用方无需再读一次。
+                outfitResult = {
+                  ...updated,
+                  _meta: outfitResult?._meta,
+                };
+              } catch {
+                persisted = false;
+              }
+            }
+            outfitFeedback = {
+              ratedOutfitId,
+              liked: feedback.liked,
+              disliked: feedback.disliked,
+              persisted,
+            };
           }
         }
       }
@@ -130,24 +208,104 @@ export class Memory {
     let boosted = before && after ? applyMoodShiftBoost(extracted, moodShiftMagnitude(before, after)) : extracted;
     // L4: 这次"生病被照顾"作为一条 dyad 共同记忆存下来(她会记得你照顾过她)。
     if (coupling?.careEvent) boosted = [...boosted, buildCareMemory(this.subjectName, coupling.careEvent)];
-    // I4: 亲密轮次提高 preference 重要性下限敏感度（已在 extract 侧加权）
-    const stored = boosted.length === 0 ? [] : await storeMemories(this.userId, this.companionId, boosted);
+    // I-3: 只信任本次 observe 内部亲密维度的 before/after；不接触 turns 正文。
+    // 独立 type + 事件幂等键保证它不会混入普通 dyad 底色或因消息重放重复写入。
+    const intimateMemoryRecord =
+      intimacyBefore && intimacyResult
+        ? buildIntimateMemoryRecord({
+            before: intimacyBefore,
+            after: intimacyResult,
+            eventId: opts.eventId,
+            now: opts.now ?? Date.now(),
+          })
+        : null;
+    // E-5: 只接收编排器明确传入的“本轮新 journal event”。构建器不会读取 turns，
+    // cause 也只会归类成受控摘要，避免亲密正文或 prompt 内容旁路进入主记忆。
+    const emotionMemoryRecord = buildEmotionMemoryRecord({
+      emotionEvent: opts.emotionEvent,
+      eventId: opts.eventId,
+      sceneType: opts.sceneType,
+      intimacyPhase: intimacyResult?.scene_phase ?? intimacyBefore?.scene_phase,
+      now: opts.now ?? Date.now(),
+    });
+    // I4: 亲密轮次提高 preference 重要性下限敏感度（已在 extract 侧加权）。
+    // 若同轮已产生 I-3 安全摘要，阻止通用提取器把显式里程碑另存为普通 episode。
+    boosted = removeUnsafeIntimateEpisodes(boosted, intimateMemoryRecord);
+    const regularStored = boosted.length === 0 ? [] : await storeMemories(this.userId, this.companionId, boosted);
+    let intimateStored = [];
+    let intimateMemoryWriteFailed = false;
+    if (intimateMemoryRecord && typeof this.intimateMemoryStore === 'function') {
+      const written = await this.intimateMemoryStore(
+        this.userId,
+        this.companionId,
+        intimateMemoryRecord,
+      ).catch(() => {
+        intimateMemoryWriteFailed = true;
+        return [];
+      });
+      intimateStored = Array.isArray(written) ? written : written ? [written] : [];
+    }
+    let emotionStored = [];
+    let emotionMemoryWriteFailed = false;
+    if (emotionMemoryRecord && typeof this.emotionMemoryStore === 'function') {
+      const written = await this.emotionMemoryStore(
+        this.userId,
+        this.companionId,
+        emotionMemoryRecord,
+      ).catch(() => {
+        emotionMemoryWriteFailed = true;
+        return [];
+      });
+      emotionStored = Array.isArray(written) ? written : written ? [written] : [];
+    }
+    const stored = [...regularStored, ...intimateStored, ...emotionStored];
     const beliefs = this.beliefEngine
       ? await projectBeliefInputs(this.beliefEngine, {
-          memories: stored,
+          // 私密情境记忆不投影成日常 beliefs，避免从另一条召回链旁路泄漏。
+          memories: regularStored,
           events: opts.beliefEvents,
         })
       : [];
+    // M-4: 每次 observe 末尾以 1% 概率安排自动遗忘。删除任务自身失败隔离，
+    // 不增加回复链路延迟；夜间 maintain 仍作为确定性的兜底调度。
+    const autoForgetTriggered =
+      opts.autoForget === false
+        ? false
+        : this.maybePruneStale({
+            now: opts.now ?? Date.now(),
+            probability:
+              opts.autoForgetProbability ??
+              PARAMS.forget?.autoForgetProbability ??
+              0.01,
+          });
     return {
       state: after,
       desires: opts.desire ? await opts.desire.snapshot().catch(() => null) : null,
       intimacy: intimacyResult ? { ...intimacyResult, _meta: undefined } : opts.intimacy ? await opts.intimacy.snapshot().catch(() => null) : null,
       outfit: outfitResult ? { ...outfitResult, _meta: undefined } : opts.outfit ? await opts.outfit.snapshot().catch(() => null) : null,
+      outfitFeedback,
       stored,
       scheduled,
       coupling,
       knowledge,
       beliefs,
+      autoForgetTriggered,
+      intimateMemory: intimateMemoryRecord
+        ? {
+            transition: intimateMemoryRecord.transition,
+            stored: intimateStored.length > 0,
+            deduplicated: intimateStored.length === 0 && !intimateMemoryWriteFailed,
+            failed: intimateMemoryWriteFailed,
+          }
+        : null,
+      emotionMemory: emotionMemoryRecord
+        ? {
+            label: emotionMemoryRecord.emotion_label,
+            stored: emotionStored.length > 0,
+            deduplicated: emotionStored.length === 0 && !emotionMemoryWriteFailed,
+            failed: emotionMemoryWriteFailed,
+          }
+        : null,
     };
   }
 
@@ -210,9 +368,52 @@ export class Memory {
         });
       }
     }
+    // I-3 隐私兜底：即便底层 RPC/未来新检索器漏做过滤，非亲密场景也不能返回私密记忆；
+    // 亲密场景则稳定优先同类记忆。
+    hits = prioritizeIntimateMemories(hits, opts);
     // P1 不确定性表达 (#4): 相关度低/很久没强化/同话题情绪冲突 → _lowConfidence,
     // toPrompt 据此把"我记得 XXX"换成"我记得好像 XXX"。
     return attachConfidence(hits);
+  }
+
+  /** M-5: 读取 48h 内工作记忆，供新会话首轮建立确定性的跨会话桥。 */
+  async recallWorkingMemory(opts = {}) {
+    if (typeof this.workingMemoryLoader !== 'function') return [];
+    return this.workingMemoryLoader(this.userId, this.companionId, opts);
+  }
+
+  /**
+   * M-5 的 observe 专用支路。输入是 CEE 已生成的私有记忆摘要，不读取原始 turns。
+   * 同一 consolidation key 重放时 store 返回空数组，按 deduplicated 成功处理。
+   */
+  async observeWorkingMemory(input = {}, opts = {}) {
+    const record = buildWorkingMemoryRecord(input, opts);
+    if (!record || typeof this.workingMemoryStore !== 'function') {
+      return {
+        state: null,
+        stored: [],
+        beliefs: [],
+        workingMemory: null,
+      };
+    }
+    const written = await this.workingMemoryStore(
+      this.userId,
+      this.companionId,
+      record,
+    );
+    const stored = Array.isArray(written) ? written : written ? [written] : [];
+    return {
+      state: null,
+      stored,
+      beliefs: [],
+      workingMemory: {
+        type: record.type,
+        createdAt: record.created_at,
+        expiresAt: record.expires_at,
+        stored: stored.length > 0,
+        deduplicated: stored.length === 0,
+      },
+    };
   }
 
   /** 读她当前的心情 + 你俩关系状态 (M2 门控检索 / M3 重构会用) */
@@ -266,6 +467,8 @@ export class Memory {
    * fact_core = 摘要正文，永不被 reconsolidate 改写。
    */
   async recordEpisode(episode = {}) {
+    // 会话篇章启发式会截取原对话；亲密话题必须交给 I-3 的安全摘要路径，不能旁路成普通 dyad episode。
+    if (Array.isArray(episode.topics) && episode.topics.includes('亲密')) return [];
     const text = String(episode.content ?? episode.title ?? '').trim();
     if (!text) return [];
     return storeMemories(this.userId, this.companionId, [{
@@ -374,6 +577,22 @@ export class Memory {
     return mergeNearDuplicates(this.userId, this.companionId, opts);
   }
 
+  /** M-3: >200 条且距上次成功压缩满 24h 时，把旧 episode 聚成 reflection。 */
+  async compressIfNeeded(opts = {}) {
+    if (typeof this.memoryCompressor !== 'function') {
+      return { ran: false, reason: 'compressor_unavailable', compressed: 0, clusters: 0 };
+    }
+    try {
+      return await this.memoryCompressor(
+        this.userId,
+        this.companionId,
+        opts,
+      );
+    } catch {
+      return { ran: false, reason: 'compression_failed', compressed: 0, clusters: 0 };
+    }
+  }
+
   /** M9 每日训练 (如每晚) 调用: 知识滴灌 + 自我日记, 见 src/training.js。 */
   async train(opts = {}) {
     return dailyTraining(this.userId, this.companionId, opts);
@@ -381,7 +600,65 @@ export class Memory {
 
   /** 找出几乎被遗忘的记忆; 传 { purge: true } 可清理 */
   async forgettable(threshold = 0.05, opts = {}) {
-    return findForgettable(this.userId, this.companionId, threshold, opts);
+    return this.forgettableFinder(this.userId, this.companionId, threshold, opts);
+  }
+
+  /**
+   * M-4: 自动剪枝。findForgettable 负责完整候选契约与保护规则。
+   * 返回 { pruned: number }。任何失败静默。
+   */
+  async pruneStale({
+    threshold = PARAMS.forget?.pruneStrengthThreshold ?? 0.1,
+    baseLevelThreshold =
+      PARAMS.forget?.pruneBaseLevelThreshold ?? 0.03,
+    staleDays = PARAMS.forget?.staleDays ?? 90,
+    now = Date.now(),
+    dryRun = false,
+  } = {}) {
+    try {
+      const stale = await this.forgettableFinder(
+        this.userId,
+        this.companionId,
+        threshold,
+        {
+          purge: !dryRun,
+          now,
+          staleDays,
+          strengthThreshold: threshold,
+          baseLevelThreshold,
+          beforeDelete: async (targets) => {
+            if (typeof this.beliefEngine?.forgetMemoryIds === 'function') {
+              await this.beliefEngine.forgetMemoryIds(
+                targets.map((memory) => memory.id),
+              );
+            }
+          },
+        },
+      );
+      return { pruned: stale.length };
+    } catch {
+      return { pruned: 0 };
+    }
+  }
+
+  /**
+   * observe 的概率性 M-4 调度。只负责抽样并启动；pruneStale 内部保证失败隔离。
+   * @returns {boolean} 本轮是否触发了剪枝任务。
+   */
+  maybePruneStale({
+    probability = PARAMS.forget?.autoForgetProbability ?? 0.01,
+    now = Date.now(),
+    ...pruneOpts
+  } = {}) {
+    let sample;
+    try {
+      sample = this.autoForgetRandom();
+    } catch {
+      return false;
+    }
+    if (!shouldTriggerAutoForget(sample, probability)) return false;
+    void this.pruneStale({ ...pruneOpts, now });
+    return true;
   }
 
   /**

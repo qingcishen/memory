@@ -4,6 +4,10 @@ import { describe, expect, it } from 'vitest';
 const schemaSql = readFileSync(new URL('../sql/schema.sql', import.meta.url), 'utf8');
 const beliefSql = readFileSync(new URL('../sql/beliefs.sql', import.meta.url), 'utf8');
 const turnEventSql = readFileSync(new URL('../sql/turn_events.sql', import.meta.url), 'utf8');
+const continuousStateSql = readFileSync(
+  new URL('../sql/continuous_state.sql', import.meta.url),
+  'utf8',
+);
 
 describe('SQL migration contract parity', () => {
   it('keeps temporal belief interval constraints in both install paths', () => {
@@ -23,6 +27,17 @@ describe('SQL migration contract parity', () => {
       expect(sql).toContain(
         'grant execute on function renew_turn_event_lease(text,text,text,text,int)',
       );
+    }
+  });
+
+  it('keeps continuous-existence tables and silence dedupe in both install paths', () => {
+    for (const sql of [schemaSql, continuousStateSql]) {
+      expect(sql).toContain('companion_continuous_state');
+      expect(sql).toContain('companion_private_memory');
+      expect(sql).toContain('companion_personality');
+      expect(sql).toContain('companion_private_memory_silence_unique_idx');
+      expect(sql).toContain('last_interaction_at');
+      expect(sql).toContain('coherence_score');
     }
   });
 });

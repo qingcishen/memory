@@ -5,6 +5,7 @@ import { ChannelEventStore } from '../channels/idempotency.js';
 import { acquireProcessLock } from '../channels/process-lock.js';
 import { gateIncomingMessage } from '../product/gate.js';
 import { deliverHumanBubbles } from '../channels/humanSend.js';
+import { supabase } from '../config.js';
 
 dotenv.config();
 
@@ -28,6 +29,7 @@ export class DiscordMemoryBot {
       partials: [Partials.Channel],
     });
     this.eventStore = eventStore;
+    this.senderChannels = new Map();
     this.memory = new MemoryChannel({
       channel: 'discord',
       companionId: process.env.DISCORD_COMPANION_ID || process.env.TELEGRAM_COMPANION_ID || 'default',
@@ -35,6 +37,19 @@ export class DiscordMemoryBot {
       subjectName: process.env.DISCORD_SUBJECT_NAME || process.env.TELEGRAM_SUBJECT_NAME || '你',
       personaFile: process.env.DISCORD_PERSONA_FILE || `companions/${process.env.DISCORD_COMPANION_ID || process.env.TELEGRAM_COMPANION_ID || 'default'}.json`,
       replyTimeoutMs: Number(process.env.DISCORD_REPLY_TIMEOUT_MS || 90000),
+      onProactive: async ({ senderId, message }) => {
+        const channel = this.senderChannels.get(String(senderId));
+        if (!channel) {
+          console.warn(`[discord] proactive: no channel cached for senderId=${senderId}`);
+          return;
+        }
+        for (const part of message.parts ?? []) {
+          const text = String(part?.text || '').trim();
+          if (!text) continue;
+          await channel.send({ content: text, allowedMentions: { repliedUser: false } });
+        }
+        console.log(`[discord] proactive sent user=${senderId} parts=${(message.parts ?? []).length}`);
+      },
     });
     this.client.on('ready', () => console.log(`[discord] @${this.client.user.tag} started`));
     this.client.on('messageCreate', (message) => this.handleMessage(message));
@@ -47,6 +62,7 @@ export class DiscordMemoryBot {
     const text = cleanDiscordText(message.content, botId);
     if (!text) return;
     const senderId = message.author.id;
+    this.senderChannels.set(String(senderId), message.channel);
     const companionId = process.env.DISCORD_COMPANION_ID || process.env.TELEGRAM_COMPANION_ID || 'default';
     const gate = gateIncomingMessage({
       text,
@@ -91,7 +107,17 @@ export class DiscordMemoryBot {
     }
   }
 
-  start() { this.memory.startWorker(); return this.client.login(this.token); }
+  async start() {
+    this.memory.startWorker();
+    try {
+      const senderIds = await MemoryChannel.listActiveSenderIds(supabase, 'discord', this.memory.companionId);
+      await this.memory.warmupSessions(senderIds);
+      if (senderIds.length) console.log(`[discord] warmup restored sessions=${senderIds.length}`);
+    } catch (err) {
+      console.error('[discord] warmup failed:', err);
+    }
+    return this.client.login(this.token);
+  }
   stop() { this.memory.stopWorker(); this.client.destroy(); }
 }
 

@@ -20,7 +20,11 @@ dotenv.config();
 // 的启动日志) 全部改道 stderr, 否则会污染协议、把好好的回复变成"runner 输出异常"。
 console.log = (...args) => console.error(...args);
 
-import { Orchestrator } from '../../index.js';
+import {
+  Orchestrator,
+  createPersistentExistenceEngine,
+  personalitySeedFromCompanionConfig,
+} from '../../index.js';
 import { MemoryAdapter, StateLayerAdapter, RelationshipAdapter, PersonaAdapter } from '../orchestrator/adapters.js';
 import { DefaultLLM } from '../orchestrator/llm.js';
 import { loadPersonaConfig } from '../companion.js';
@@ -75,9 +79,19 @@ async function main() {
   const world = new WorldDimension({ userId, companionId });
   const narration = new SceneClassifier();
   const photos = [];
+  const historyStore = createHistoryStore();
+  const existence = createPersistentExistenceEngine({
+    userId,
+    companionId,
+    companionName,
+    userName: subjectName,
+    historyStore,
+    personalitySeed: personalitySeedFromCompanionConfig(persona?.config),
+  });
 
   let deps = {
-    historyStore: createHistoryStore(),
+    historyStore,
+    existence,
     weather,
     world,
     narration,
@@ -221,6 +235,7 @@ async function main() {
     lifeConfig: persona?.life ?? null,
     deps,
   });
+  existence.memory = bot.memory;
 
   const replyOpts = {
     debug: debugMode,
@@ -274,6 +289,8 @@ async function main() {
     await bot._lastAfterReply?.catch(() => {});
     await bot._lastHistoryPersist?.catch(() => {});
     await bot._lastEmotionPersist?.catch(() => {});
+    // E-3: done 已经发给 UI；短命进程退出前给异步分类一个有界落盘窗口。
+    await bot.waitForEmotionInference?.({ timeoutMs: 5000 }).catch(() => {});
     await bot._lastSessionPersist?.catch(() => {});
     if (!final) {
       process.stdout.write(`${JSON.stringify({ event: 'done', ok: false, message: '流式无结果' })}\n`);
@@ -366,6 +383,8 @@ async function main() {
   await bot._lastAfterReply?.catch(() => {});
   await bot._lastHistoryPersist?.catch(() => {});
   await bot._lastEmotionPersist?.catch(() => {});
+  // E-3: 回复已经写到 stdout，不增加用户可见延迟；只延后子进程退出。
+  await bot.waitForEmotionInference?.({ timeoutMs: 5000 }).catch(() => {});
   await bot._lastSessionPersist?.catch(() => {});
   process.exit(0);
 }

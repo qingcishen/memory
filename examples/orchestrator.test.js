@@ -349,6 +349,68 @@ console.log('Orchestrator.reply (useMonologue: false 时跳过内心独白)');
   ok('system 不含内心独白标记', !messages[0].content.includes('你此刻的想法'));
 }
 
+console.log('Orchestrator.reply 接入 Continuous Existence Engine 全链路');
+{
+  const deps = makeMocks();
+  const existenceCalls = [];
+  deps.existence = {
+    async perceive() {
+      existenceCalls.push('perceive');
+      return {
+        elapsed_minutes: 30,
+        anomaly: { type: 'normal', magnitude: 0 },
+        narrative: '已经隔了大约30分钟，开车这段路应该已经结束。',
+      };
+    },
+    async contextForTurn() {
+      existenceCalls.push('context');
+      return {
+        state: {
+          emotional: { current_emotion: 'calm' },
+          temporal: { longing: 0.2 },
+          volitional: { proactive_desire: 0.1 },
+          self: { coherence_score: 1 },
+        },
+        temporalPrompt: '【时间感知】开车这段路应该已经结束。',
+        personalityPrompt: '【五层人格·本轮行为指导】先接住对方。',
+        continuousStatePrompt: '【持续内部状态】有真实等待的余韵。',
+      };
+    },
+    async checkCoherence(draft) {
+      existenceCalls.push('coherence');
+      return { coherent: true, response: draft, conflicts: [], coherence_score: 1 };
+    },
+    async observeTurn() {
+      existenceCalls.push('commit');
+      return true;
+    },
+  };
+  const orch = new Orchestrator({
+    userId: 'u_existence',
+    deps,
+    options: { useMonologue: false },
+  });
+  const result = await orch.reply('到家了');
+  const system = deps.llm.generateCalls[0].messages[0].content;
+  ok(
+    '时间感知/参数人格/连续状态都进入同一条 system prompt',
+    system.includes('【时间感知】') &&
+      system.includes('【五层人格·本轮行为指导】') &&
+      system.includes('【持续内部状态】'),
+  );
+  ok(
+    '执行顺序覆盖 perceive→context→coherence→commit',
+    ['perceive', 'context', 'coherence', 'commit'].every((step) =>
+      existenceCalls.includes(step),
+    ),
+  );
+  ok(
+    '返回公开连续存在摘要',
+    result.continuousExistence?.coherenceScore === 1 &&
+      result.continuousExistence?.elapsedMinutes === 30,
+  );
+}
+
 console.log('Orchestrator.reply json 格式保留结构余量且限制网文长度');
 {
   // json 格式要装下 narration + 多条 dialogue + JSON 语法开销，比纯文本重得多。

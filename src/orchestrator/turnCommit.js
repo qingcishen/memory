@@ -16,6 +16,9 @@ export async function commitValidatedReply(orchestrator, input = {}) {
     existenceTurn = null,
     temporalContext = null,
     psychologicalCoherence = null,
+    sceneType = null,
+    emotionLabel = null,
+    emotionEvent = null,
   } = input;
 
   if (!eventId) {
@@ -73,16 +76,6 @@ export async function commitValidatedReply(orchestrator, input = {}) {
       priorState: priorProjectionState,
     });
 
-    await projections.run('session', () => {
-      orchestrator._sessionThread = input.updateSession(orchestrator._sessionThread, {
-        userMessage: historyUserMessage,
-        reply,
-        sceneLocks,
-        now: nowMs,
-      });
-      orchestrator.persistSessionThread();
-    }, { skip: input.sessionEnabled === false });
-
     await projections.run('emotion', () => orchestrator.persistEmotionResidue(), {
       successStatus: 'dispatched',
     });
@@ -109,6 +102,8 @@ export async function commitValidatedReply(orchestrator, input = {}) {
           turn: existenceTurn,
           psychologicalCoherence,
           emotionLabel: orchestrator._lastEmotionLabel ?? null,
+          emotion: stateSnapshot?.emotion ?? null,
+          emotionJournal: orchestrator._emotionJournal ?? null,
         }),
       {
         skip: typeof orchestrator.existence?.observeTurn !== 'function',
@@ -121,6 +116,9 @@ export async function commitValidatedReply(orchestrator, input = {}) {
         history: orchestrator.history,
         sceneLocks,
         relationshipStage,
+        sceneType,
+        emotionLabel,
+        emotionEvent,
       });
       return orchestrator.afterReplyEnqueue ? orchestrator._lastAfterReply : undefined;
     }, { successStatus: orchestrator.afterReplyEnqueue ? 'enqueued' : 'dispatched' });
@@ -153,6 +151,26 @@ export async function commitValidatedReply(orchestrator, input = {}) {
       });
     }, { successStatus: 'dispatched', skip: !photoRequested });
 
+    // SessionThread（含 I-5 beat cursor）最后提交并等待落盘。这样前面的任一关键
+    // projection 失败时都不会提前消耗节拍，reply 返回后冷启动也不会读到旧 cursor。
+    await projections.run('session', async () => {
+      const sessionUpdate = {
+        userMessage: historyUserMessage,
+        reply,
+        sceneLocks,
+        now: nowMs,
+        ...(Object.prototype.hasOwnProperty.call(input, 'intimacyBeat')
+          ? { intimacyBeat: input.intimacyBeat }
+          : {}),
+      };
+      orchestrator._sessionThread = input.updateSession(orchestrator._sessionThread, sessionUpdate);
+      await orchestrator.persistSessionThread();
+    }, { skip: input.sessionEnabled === false });
+
+    // I-5: 无会话线/未配置持久化时仍保留进程内 cursor；只在完整 Commit 成功后推进。
+    if (Object.prototype.hasOwnProperty.call(input, 'intimacyBeat')) {
+      orchestrator._intimacyBeatCursor = input.intimacyBeat ?? { phase: null, nextIndex: 0 };
+    }
     orchestrator._committedTurnEvents.add(eventId);
 
     const projectionState = projections.snapshot();

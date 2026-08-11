@@ -7,6 +7,10 @@ import { scoreActivation } from './engine/activation.js';
 import { setMemoryHits } from './trace.js';
 import { appendLlmCall } from './trace.js';
 import { recordLlmCall } from './metrics.js';
+import {
+  filterIntimateMemories,
+  prioritizeIntimateMemories,
+} from './state/intimacyMemory.js';
 
 /** Reciprocal Rank Fusion：不要求向量分与关键词分处于同一量纲。 */
 export function reciprocalRankFusion(lists, k = 60) {
@@ -130,9 +134,13 @@ export async function retrieveMemories(userId, companionId = 'default', query, o
     if (result.error) throw result.error;
     candidates = result.data;
   }
+  candidates = filterIntimateMemories(candidates, opts);
   if (!candidates || candidates.length === 0) return [];
 
-  const ranked = (await rerankCandidates(candidates, { ...opts, query })).slice(0, topK);
+  const ranked = prioritizeIntimateMemories(
+    await rerankCandidates(candidates, { ...opts, query }),
+    opts,
+  ).slice(0, topK);
   setMemoryHits(ranked);
   await reinforce(ranked);
   return ranked;
@@ -154,10 +162,15 @@ export async function retrieveSupersededTrail(userId, companionId = 'default', q
     match_count: opts.pool ?? PARAMS.candidatePool,
   });
   if (error) throw error;
-  if (!active || active.length === 0) return [];
+  const eligibleActive = filterIntimateMemories(active, opts);
+  if (eligibleActive.length === 0) return [];
 
-  const anchors = rerank(active).slice(0, opts.anchorK ?? PARAMS.topK);
-  const history = await fetchSupersededBy([...new Set(anchors.map((m) => m.id))], opts.maxDepth ?? 4);
+  const anchors = prioritizeIntimateMemories(rerank(eligibleActive), opts)
+    .slice(0, opts.anchorK ?? PARAMS.topK);
+  const history = filterIntimateMemories(
+    await fetchSupersededBy([...new Set(anchors.map((m) => m.id))], opts.maxDepth ?? 4),
+    opts,
+  );
   if (history.length === 0) return [];
 
   const byId = new Map([...anchors, ...history].map((m) => [m.id, m]));

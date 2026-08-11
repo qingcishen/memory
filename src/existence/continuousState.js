@@ -6,6 +6,11 @@
  * to care whether a state came from memory or Postgres.
  */
 
+import {
+  normalizeEmotionArcJournal,
+  normalizeWeeklyDistribution,
+} from './emotionArc.js';
+
 export const CONTINUOUS_STATE_TABLE = 'companion_continuous_state';
 export const DEFAULT_COMPANION_ID = 'default';
 
@@ -20,6 +25,8 @@ export function defaultContinuousState(now = Date.now()) {
       valence: 0,
       persistence: 0,
       label: null,
+      weekly_distribution: normalizeWeeklyDistribution(),
+      emotion_history: [],
     },
     temporal: {
       longing: 0,
@@ -68,6 +75,10 @@ export function normalizeContinuousState(state = {}, { now = Date.now() } = {}) 
       valence: clamp(finite(emotional.valence, 0), -1, 1),
       persistence: Math.max(0, finite(emotional.persistence, 0)),
       label: typeof emotional.label === 'string' && emotional.label ? emotional.label : null,
+      weekly_distribution: normalizeWeeklyDistribution(
+        emotional.weekly_distribution,
+      ),
+      emotion_history: normalizeEmotionArcJournal(emotional.emotion_history),
     },
     temporal: {
       longing: clamp01(temporal.longing),
@@ -332,6 +343,8 @@ export function continuousStateFromRow(row = {}, { now = Date.now() } = {}) {
         valence: row.valence,
         persistence: row.emotion_persistence ?? row.persistence,
         label: row.emotion_label ?? null,
+        weekly_distribution: row.weekly_distribution,
+        emotion_history: row.emotion_history,
       },
       temporal: {
         longing: row.longing,
@@ -374,6 +387,8 @@ export function continuousStateToRow(userId, companionId, state) {
     valence: normalized.emotional.valence,
     emotion_persistence: normalized.emotional.persistence,
     emotion_label: normalized.emotional.label ?? null,
+    weekly_distribution: normalized.emotional.weekly_distribution,
+    emotion_history: normalized.emotional.emotion_history,
     longing: normalized.temporal.longing,
     anticipation: normalized.temporal.anticipation,
     fatigue: normalized.temporal.fatigue,

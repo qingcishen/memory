@@ -8,7 +8,16 @@ import { EMOTION_LABELS } from './emotionLabel.js';
 import { PARAMS } from '../params.js';
 
 export const NEGATIVE_EMOTION_LABELS = new Set(['委屈', '吃醋', '生气', '失落', '担心', '烦躁']);
-export const POSITIVE_EMOTION_LABELS = new Set(['开心', '撒娇', '心疼']); // 心疼偏关怀，允许较快切换
+export const POSITIVE_EMOTION_LABELS = new Set([
+  '开心',
+  '撒娇',
+  '心疼',
+  '期待',
+  '害羞',
+  '暧昧',
+  '感动',
+  '骄傲',
+]); // 心疼偏关怀，允许较快切换；无聊保持中性。
 
 const DEFAULT_STICKY = {
   生气: { minTurns: 2, baseIntensity: 0.75, halfTurns: 4 },

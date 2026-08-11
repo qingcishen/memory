@@ -48,6 +48,38 @@ console.log('proactiveTick (有 scheduler 才跑, 委派 tick)');
   ok('没 scheduler → proactiveTick 返回 null', (await noSched.proactiveTick()) === null);
 }
 
+console.log('existenceTick (心跳越阈后仍委派主动调度硬门)');
+{
+  const calls = [];
+  const orch = {
+    async maintain() {},
+    existence: {
+      async heartbeat() {
+        return {
+          contactDecision: {
+            contact: true,
+            reason: { type: 'unfinished_topic', content: '那件事后来怎么样了' },
+          },
+        };
+      },
+    },
+  };
+  const sched = { async tick(ctx) { calls.push(ctx); return { sent: true }; } };
+  const rt = new CompanionRuntime({
+    orchestrator: orch,
+    proactiveScheduler: sched,
+    clock: () => 2000,
+  });
+  const result = await rt.existenceTick();
+  ok('运行连续状态心跳', result.contactDecision.contact === true);
+  ok(
+    '越阈后交给 scheduler 且保留具体理由',
+    calls.length === 1 &&
+      calls[0].now === 2000 &&
+      calls[0].reason === '那件事后来怎么样了',
+  );
+}
+
 console.log('start/stop (定时器可起可停, 不抛)');
 {
   const rt = new CompanionRuntime({ orchestrator: { async maintain() {} }, clock: () => 0, options: { maintainEveryMs: 999999 } });

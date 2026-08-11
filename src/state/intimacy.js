@@ -47,6 +47,11 @@ export function defaultIntimacy(overrides = null) {
     last_intimate_at: null,
     consent: { ...DEFAULT_CONSENT },
     body_focus: null,
+    // null = 旧数据/尚未结算；true = 下一轮应结算一次；false = 本轮余温已结算。
+    afterglow_pending: null,
+    // aftercare → cooldown 后，下一次 2h 内对话可再结算一次完成回暖。
+    aftercare_completion_pending: null,
+    aftercare_completed_at: null,
     repertoire: clampRepertoire({}),
     updated_at: null,
   };
@@ -65,6 +70,9 @@ export function clampIntimacy(value = {}) {
     last_intimate_at: null,
     consent: { ...DEFAULT_CONSENT },
     body_focus: null,
+    afterglow_pending: null,
+    aftercare_completion_pending: null,
+    aftercare_completed_at: null,
     repertoire: clampRepertoire({}),
     updated_at: null,
   };
@@ -80,6 +88,17 @@ export function clampIntimacy(value = {}) {
   out.consent = c;
   // body_focus 后期；非法时置 null
   out.body_focus = out.body_focus && typeof out.body_focus === 'object' ? out.body_focus : null;
+  out.afterglow_pending =
+    out.afterglow_pending === true ? true : out.afterglow_pending === false ? false : null;
+  out.aftercare_completion_pending =
+    out.aftercare_completion_pending === true
+      ? true
+      : out.aftercare_completion_pending === false
+        ? false
+        : null;
+  out.aftercare_completed_at = out.aftercare_completed_at
+    ? String(out.aftercare_completed_at)
+    : null;
   out.repertoire = clampRepertoire(out.repertoire);
   out.updated_at = out.updated_at ?? null;
   return out;
@@ -102,8 +121,11 @@ export function evolveIntimacyOverTime(state = {}, hours = 0, config = PARAMS.in
   // sexual_tension: 开放度够高（已有性关系的角色）或曾亲密/低满足 → 随沉默缓升
   // libido 高的角色增速更快（drive.libido 或 growth 覆盖）
   const libido = clamp(num(config?.libido, 0.5), 0, 1);
+  // 开放度不仅决定能否积累，也影响积累速度。默认配置下，高开放关系沉默
+  // 72h 会跨过 0.6，形成可被 CEE 感知的跨天弧线。
   const tensionGrowth =
-    Math.max(0, num(config?.growthPerHour?.sexual_tension, 0)) * (0.65 + libido * 0.9);
+    Math.max(0, num(config?.growthPerHour?.sexual_tension, 0)) *
+    (0.65 + libido * 0.9 + current.sexual_openness * 0.5);
   const canAccumulate =
     current.sexual_openness >= num(config?.tensionAccumulateMinOpenness, 0.45)
     || current.sexual_tension > 0.02
@@ -114,7 +136,10 @@ export function evolveIntimacyOverTime(state = {}, hours = 0, config = PARAMS.in
     const halfLife = num(halfLives.sexual_tension, 72);
     const linear = current.sexual_tension + elapsed * tensionGrowth;
     const saturation = halfLife > 0 ? 1 - (1 - current.sexual_tension) * Math.pow(0.5, elapsed / halfLife) : linear;
-    next.sexual_tension = clamp(Math.max(linear, saturation, current.sexual_tension), 0, 1);
+    const ceiling = clamp(num(config?.sexualTensionCeiling, 0.9), 0.6, 1);
+    const accumulated = Math.min(ceiling, Math.max(linear, saturation));
+    // 不把已由事件推到 ceiling 以上的旧值反向压低。
+    next.sexual_tension = clamp(Math.max(accumulated, current.sexual_tension), 0, 1);
   }
 
   // 高欲望：未亲密时满足感缓慢回落，更容易再次想要
@@ -128,6 +153,10 @@ export function evolveIntimacyOverTime(state = {}, hours = 0, config = PARAMS.in
   if (elapsed >= 4 && ['flirting', 'foreplay', 'peak'].includes(current.scene_phase)) {
     next.scene_phase = 'cooldown';
     next.consent = { ...current.consent, active: false };
+    // 活跃亲密场景自然结束，也给下一次对话留一次余温结算机会。
+    if (next.aftercare_need > 0 && !current.consent?.stop_signal) {
+      next.afterglow_pending = true;
+    }
   }
   if (elapsed >= 12 && ['aftercare', 'cooldown'].includes(next.scene_phase)) {
     next.scene_phase = 'none';
@@ -276,9 +305,16 @@ export function capPhase(phase, maxPhase) {
  */
 export function settleIntimacyFromTurns(state = {}, turns = [], ctx = {}, config = PARAMS.intimacy) {
   let next = clampIntimacy(state);
+  const previousPhase = next.scene_phase;
+  const nowMs = ctx.now ?? Date.now();
+  const shouldConsumeAfterglow =
+    next.aftercare_need > 0 &&
+    ['aftercare', 'cooldown', 'none'].includes(previousPhase) &&
+    next.afterglow_pending !== false;
+  const shouldConsumeAftercareCompletion =
+    next.aftercare_completion_pending === true;
   const signals = detectIntimacySignals(turns);
   const sceneType = ctx.sceneType ?? null;
-  const nowMs = ctx.now ?? Date.now();
 
   // 解除 stop 锁：用户示好/接受边界，或距 stop_at 已满 2 小时
   if (next.consent?.stop_signal) {
@@ -299,6 +335,10 @@ export function settleIntimacyFromTurns(state = {}, turns = [], ctx = {}, config
   // stop 优先（用户合作停手不锁）
   if (signals.stop && !signals.acceptBoundary) {
     next.consent = { ...next.consent, active: false, stop_signal: true, stop_at: new Date(nowMs).toISOString() };
+    // 明确 stop/疼痛后的照料不是正向 afterglow，避免错误增加 closeness。
+    next.afterglow_pending = false;
+    next.aftercare_completion_pending = false;
+    next.aftercare_completed_at = null;
     next.arousal = Math.max(0, next.arousal - 0.4);
     next.engagement = Math.max(0, next.engagement - 0.5);
     next.sexual_tension = clamp(next.sexual_tension + 0.05, 0, 1);
@@ -427,6 +467,37 @@ export function settleIntimacyFromTurns(state = {}, turns = [], ctx = {}, config
     next.engagement = clamp(next.engagement + 0.05, 0, 1);
   }
 
+  // I-1 一次性结算契约：
+  // - foreplay/peak 正常进入 aftercare 时，为“下一轮”挂起一次 afterglow；
+  // - 下一轮 settle 会消费标记；活跃阶段则清掉旧周期残留。
+  // Memory.observe 在调用 evolve 前读取并应用 getAfterglowDelta，因此这里消费不会漏掉
+  // 标准链路里的关系增量，同时阻止后续每条消息重复叠加。
+  const enteredAftercare =
+    target === 'aftercare' &&
+    ['foreplay', 'peak'].includes(previousPhase) &&
+    !signals.stop;
+  const completedAftercare =
+    previousPhase === 'aftercare' &&
+    target === 'cooldown' &&
+    !signals.stop &&
+    !next.consent?.stop_signal;
+  if (enteredAftercare && next.aftercare_need > 0) {
+    next.afterglow_pending = true;
+  } else if (['flirting', 'foreplay', 'peak'].includes(target)) {
+    next.afterglow_pending = false;
+  } else if (shouldConsumeAfterglow) {
+    next.afterglow_pending = false;
+  }
+  if (completedAftercare) {
+    next.aftercare_completion_pending = true;
+    next.aftercare_completed_at = new Date(nowMs).toISOString();
+  } else if (enteredAftercare || ['flirting', 'foreplay', 'peak'].includes(target)) {
+    next.aftercare_completion_pending = false;
+    next.aftercare_completed_at = null;
+  } else if (shouldConsumeAftercareCompletion) {
+    next.aftercare_completion_pending = false;
+  }
+
   // 节奏
   if (/(慢一点|温柔|别急)/u.test(signals.userText ?? '')) next.consent.pace = 'slow';
   if (/(快一点|用力|深一点)/u.test(signals.userText ?? '')) next.consent.pace = 'eager';
@@ -477,25 +548,49 @@ function feedbackDelta(kind, config) {
  *   - aftercare_need > 0（刚结束亲密或仍在 aftercare）
  *   - scene_phase 处于 aftercare/cooldown/none（不在激烈场景中途）
  *   - 距上次亲密 < 24h（太久之前不算余温）
+ *   - afterglow_pending !== false（旧数据 null 视为待结算；随后由 settle 消费）
+ *   - aftercare 刚完成时，下一次 2h 内对话额外 closeness +0.03
  *
  * @returns {{ mood?, relationship? } | null}
  */
 export function getAfterglowDelta(state = {}, now = Date.now()) {
   const s = clampIntimacy(state);
-  if (s.aftercare_need <= 0) return null;
-  if (['foreplay', 'peak', 'flirting'].includes(s.scene_phase)) return null;
-  if (s.last_intimate_at) {
-    const hoursAgo = (now - new Date(s.last_intimate_at).getTime()) / HOUR;
-    if (hoursAgo > 24) return null;
+  const rawNow = typeof now === 'function' ? now() : now;
+  const parsedNow = new Date(rawNow ?? Date.now()).getTime();
+  const nowMs = Number.isFinite(parsedNow) ? parsedNow : Date.now();
+  let afterglowEligible =
+    s.aftercare_need > 0 &&
+    s.afterglow_pending !== false &&
+    !['foreplay', 'peak', 'flirting'].includes(s.scene_phase);
+  if (afterglowEligible && s.last_intimate_at) {
+    const hoursAgo = (nowMs - new Date(s.last_intimate_at).getTime()) / HOUR;
+    if (hoursAgo < 0 || hoursAgo > 24) afterglowEligible = false;
   }
-  const intensity = clamp(s.aftercare_need, 0, 1);
-  return {
-    mood: { valence: 0.08 * intensity },
-    relationship: {
-      closeness: 0.04 * intensity,
-      tension: -0.06 * intensity,
-    },
-  };
+  const completedAt = s.aftercare_completed_at
+    ? new Date(s.aftercare_completed_at).getTime()
+    : NaN;
+  const completionHours = Number.isFinite(completedAt)
+    ? (nowMs - completedAt) / HOUR
+    : Infinity;
+  const completionEligible =
+    s.aftercare_completion_pending === true &&
+    completionHours >= 0 &&
+    completionHours <= 2;
+  if (!afterglowEligible && !completionEligible) return null;
+
+  const relationship = {};
+  const delta = { relationship };
+  if (afterglowEligible) {
+    const intensity = clamp(s.aftercare_need, 0, 1);
+    delta.mood = { valence: 0.08 * intensity };
+    // I-1 是一次事件契约，不按剩余 need 再缩放；否则低 need 永远达不到验收增量。
+    relationship.closeness = 0.04;
+    relationship.tension = -0.06;
+  }
+  if (completionEligible) {
+    relationship.closeness = (relationship.closeness ?? 0) + 0.03;
+  }
+  return delta;
 }
 
 export function applyIntimacyDeltas(state = {}, deltas = {}, maxStep = PARAMS.intimacy?.maxStepPerTurn ?? PARAMS.state?.maxStepPerTurn ?? 0.35) {
@@ -505,6 +600,29 @@ export function applyIntimacyDeltas(state = {}, deltas = {}, maxStep = PARAMS.in
     next[key] = clamp(next[key] + clamp(num(deltas[key]), -maxStep, maxStep), 0, 1);
   }
   return clampIntimacy(next);
+}
+
+/**
+ * I-4：只在 flirting → foreplay 的边界生成一次自然 consent cue。
+ * 纯函数；完整复用 maxAllowedPhase，因此 closeness/trust/tension/repair/energy/
+ * health/openness/stop_signal 任一门控失败都不会给出推进提示。
+ */
+export function consentCueNeeded(
+  previous = null,
+  current = null,
+  ctx = {},
+  config = PARAMS.intimacy,
+) {
+  if (config?.enabled === false || !current) return false;
+  const prev = previous ?? ctx.prevIntimacy ?? ctx.previousPhase ?? null;
+  const previousPhase = intimacyPhaseOf(prev);
+  const next = clampIntimacy(current);
+  if (previousPhase !== 'flirting' || next.scene_phase !== 'foreplay') return false;
+  if (next.consent.stop_signal || previous?.consent?.stop_signal) return false;
+  if (consentReactionKind(next, ctx) === 'negative') return false;
+
+  const allowed = maxAllowedPhase({ ...ctx, intimacy: next }, config);
+  return capPhase('foreplay', allowed) === 'foreplay';
 }
 
 /**
@@ -518,9 +636,9 @@ export function applyIntimacyDeltas(state = {}, deltas = {}, maxStep = PARAMS.in
 export function immersionCraftLines(phase = 'peak') {
   const shared = [
     '【沉浸·感官】旁白每轮只主打 1 个感官通道（触感/热/声/重量/气味里选一个），用具体细节，不写「很爽/很舒服」空话。',
-    '【沉浸·因果】接住对方刚做的那一下：他碰哪 → 你身体怎么变；禁止无视他的动作另起一套长文。',
+    '【沉浸·因果·硬性】回应先锁定对方刚做的那一下：他碰哪 → 你身体怎么变；禁止无视他的动作另起一套长文。对方在脱衣服，就回应被脱衣的感觉；对方在亲吻，就回应被亲的感觉——禁止跳级回应还没发生的动作（如对方只是脱衣却说「再深一点/进来/别停」）。',
     '【沉浸·微主动】你不是道具：髋送一下、腿环、手按肩/腰、把他按住、自己调整角度——用动作带，不解说。',
-    '【沉浸·不完美】真人会喘、会停半拍、会说慢点/深一点/别急；不是每一下都完美高潮，也别每轮同步高潮。',
+    '【沉浸·不完美】真人会喘、会停半拍、会说慢点/别急/再等一下；不是每一下都完美高潮，也别每轮同步高潮。',
   ];
   if (phase === 'foreplay') {
     return [
@@ -549,12 +667,17 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
   const th = config?.promptThreshold ?? {};
   const maxPhase = maxAllowedPhase({ ...ctx, intimacy: s }, config);
   const lines = [];
+  const previousIntimacy = ctx.prevIntimacy ?? ctx.previousPhase ?? null;
+  const crossedConsentBoundary =
+    intimacyPhaseOf(previousIntimacy) === 'flirting' &&
+    s.scene_phase === 'foreplay';
+  const consentReaction = crossedConsentBoundary
+    ? consentReactionKind(s, ctx)
+    : null;
 
-  const gated =
-    maxPhase === 'flirting' &&
-    (num(ctx.relationship?.tension) >= num(config?.gates?.maxTensionForIntimate, 0.7) ||
-      num(ctx.relationship?.repair_debt) >= num(config?.gates?.maxRepairDebtForIntimate, 0.55) ||
-      num(ctx.life?.energy, 1) < num(config?.gates?.minEnergy, 0.25));
+  // 与阶段机共用同一个完整门控结论，避免低 trust/health/closeness 时 prompt
+  // 一边说“不适合”，一边又给“往前带”的相反指令。
+  const gated = maxPhase === 'flirting' || maxPhase === 'none';
 
   if (s.consent.stop_signal) {
     lines.push('你刚明确喊过停：可以黏、要抱、要亲，但本轮不要进入正戏；若对方已听话安抚，可慢慢软下来，不必每句都拒绝。');
@@ -562,6 +685,9 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
     lines.push('你现在不适合进入性爱正戏：可能太累、还没和好、或心里别扭。可以亲密依赖、要抱抱，但应温柔延后正戏，留台阶，不要表面顺从硬写下去。拒绝时话只围绕「现在为何不宜」，禁止硬接无关的上课/吃饭提醒。');
   } else if (num(ctx.relationship?.closeness, 1) < num(config?.gates?.minCloseness, 0.55)) {
     lines.push('你们还没到可以很放得开的亲密程度；最多停留在暧昧试探，不要突然进入具体性爱动作。');
+  }
+  if (crossedConsentBoundary && consentReaction === 'negative') {
+    lines.push('【自然同意·硬边界】对方刚有退缩、拒绝或停止信号：立刻停住并退回安全距离，先照顾当下感受；本轮不得继续推进。');
   }
 
   // 身体状态好 + 高张力 + 低满足：可以主动馋、主动黏、主动往正戏带（姐系）
@@ -573,11 +699,12 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
     healthy &&
     !s.consent.stop_signal &&
     !gated &&
+    consentReaction !== 'negative' &&
     s.sexual_tension >= num(th.sexual_tension, 0.55) &&
     s.satisfaction <= num(th.satisfactionLow, 0.4)
   ) {
     lines.push(
-      '你身体已经缓过来了，对逸晨的欲望偏高：可以主动黏、主动亲、主动往正戏带（拉近、半命令、要他碰你），用行动表达馋，不要装冷淡；对方示好时接住并推进，不要无故反复拒绝。',
+      '你身体已经缓过来了，对逸晨的欲望偏高：可以主动黏、主动亲，有意带一点节奏，不要装冷淡；对方示好时接住并推进。但台词和旁白必须锚定对方当前动作——他在脱衣就回应脱衣感，他在亲吻就回应被亲，禁止因为欲望高就说出对方还没做的动作（如脱着衣说「再深一点」）。',
     );
   }
 
@@ -593,6 +720,7 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
     sisterLead
     && intimateNow
     && !gated
+    && consentReaction !== 'negative'
     && num(ctx.relationship?.closeness, 0) >= num(config?.gates?.minCloseness, 0.55)
   ) {
     lines.push(
@@ -600,11 +728,25 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
     );
   }
 
+  // I-4：只在 flirting → foreplay 的转换轮触发，不在每个 foreplay 回合复读。
+  if (consentCueNeeded(previousIntimacy, s, ctx, config)) {
+    if (consentReaction === 'ambiguous') {
+      lines.push('【自然同意】刚从暧昧走到前戏，但对方的反应还不够清楚：先停半拍，用贴着当下的一句自然短问确认（如「还好吗？」或「想我继续吗？」）；没有明确接住就留在当前动作，不再往前。');
+    } else {
+      lines.push('【自然同意】刚从暧昧走到前戏：先读对方有没有主动靠近、回吻、放松或配合；反应清楚才顺势继续。把确认融进停顿和身体节奏，不要念条款，也不必固定问「可以吗」。');
+    }
+  }
+
   if (s.scene_phase === 'aftercare' || s.aftercare_need >= num(th.aftercare_need, 0.4)) {
     lines.push('事后余韵：话少一点、贴着就好；别急着开玩笑扫兴，也别无缝续车。');
     if (s.scene_phase === 'aftercare') lines.push(...immersionCraftLines('aftercare'));
   }
-  if (s.arousal >= num(th.arousal, 0.45) && ['flirting', 'foreplay', 'peak'].includes(s.scene_phase)) {
+  if (
+    consentReaction !== 'negative' &&
+    !gated &&
+    s.arousal >= num(th.arousal, 0.45) &&
+    ['flirting', 'foreplay', 'peak'].includes(s.scene_phase)
+  ) {
     if (s.consent.pace === 'slow') {
       lines.push('身体已经热了，但你想慢一点；用动作和语气把节奏放缓，而不是讲道理。');
     } else if (s.consent.pace === 'eager') {
@@ -637,7 +779,7 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
         : '最近少了一点贴近；可以自然黏过去，傲娇可以，别抱怨、别索取。想要的话也可以你先动手。'
     );
   }
-  if (s.scene_phase === 'foreplay') {
+  if (s.scene_phase === 'foreplay' && !gated && consentReaction !== 'negative') {
     lines.push(
       '前戏中：写「被碰到哪里→身体怎么变」，别写检查清单。可主导；湿了/软了/腿夹了用反应带出。' +
         '【台词尺度大】可直接说摸这里、舔、湿了、想要、进来——短、碎、敢说，不装纯。' +
@@ -645,7 +787,7 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
     );
     lines.push(...immersionCraftLines('foreplay'));
   }
-  if (s.scene_phase === 'peak') {
+  if (s.scene_phase === 'peak' && !gated) {
     lines.push(
       '正戏中：旁白 1～3 句、只写你侧当下那一下；台词比旁白更重要。' +
         '【台词尺度大·硬性】鼓励露骨短句：再深、别停、夹紧、日我、射、顶到了、好满、慢点/快点——学姐半命令/半喘，禁止突然变矜持回避。' +
@@ -658,7 +800,12 @@ export function toIntimacyPrompt(state, ctx = {}, config = PARAMS.intimacy) {
   }
 
   // 姿势/前戏/敏感点知识：仅 foreplay/peak 注入，推动多样性
-  if (['foreplay', 'peak'].includes(s.scene_phase) && !gated && !s.consent.stop_signal) {
+  if (
+    ['foreplay', 'peak'].includes(s.scene_phase) &&
+    !gated &&
+    !s.consent.stop_signal &&
+    consentReaction !== 'negative'
+  ) {
     const knowledge = ctx.knowledge ?? config?.knowledge ?? null;
     const pick = pickIntimacyKnowledge(knowledge, s.repertoire, s.scene_phase);
     const kn = formatKnowledgePrompt(pick, s.scene_phase);
@@ -870,6 +1017,57 @@ function decayToward(value, target, hours, halfLifeHours) {
   if (halfLifeHours == null || !(halfLifeHours > 0) || !(hours > 0)) return value;
   const k = Math.pow(0.5, hours / halfLifeHours);
   return target + (value - target) * k;
+}
+
+function intimacyPhaseOf(value) {
+  if (typeof value === 'string') return INTIMACY_PHASES.includes(value) ? value : 'none';
+  const phase = value?.scene_phase;
+  return INTIMACY_PHASES.includes(phase) ? phase : 'none';
+}
+
+function consentReactionKind(current, ctx = {}) {
+  const explicit = String(
+    ctx.consentReaction ?? ctx.reactionKind ?? '',
+  ).toLowerCase();
+  if (['negative', 'withdraw', 'withdrawal', 'refuse', 'stop'].includes(explicit)) {
+    return 'negative';
+  }
+  if (ctx.withdrawal === true || ctx.retreat === true || ctx.stop === true) {
+    return 'negative';
+  }
+  if (['positive', 'clear', 'eager'].includes(explicit)) return 'positive';
+  if (['ambiguous', 'unclear', 'unsure'].includes(explicit)) return 'ambiguous';
+
+  const suppliedTurns = Array.isArray(ctx.turns) ? ctx.turns : [];
+  const reactionText = String(
+    ctx.userReaction ??
+      ctx.userMessage ??
+      suppliedTurns.filter((turn) => turn?.role === 'user').at(-1)?.content ??
+      '',
+  );
+  const detected = reactionText
+    ? detectIntimacySignals([{ role: 'user', content: reactionText }])
+    : {};
+  const signals = { ...detected, ...(ctx.signals ?? {}) };
+  if (
+    signals.stop ||
+    signals.refuse ||
+    signals.withdrawal ||
+    /(退缩|缩开|躲开|僵住|推开|摇头|等等|先停|不要|不舒服)/u.test(reactionText)
+  ) {
+    return 'negative';
+  }
+  if (
+    signals.explicitInvite ||
+    signals.invite ||
+    signals.subtle ||
+    signals.accept ||
+    /(点头|靠近|回吻|迎上|抱紧|拉近|配合|放松|继续|别停|想要)/u.test(reactionText)
+  ) {
+    return 'positive';
+  }
+  if (reactionText.trim() || ctx.signals) return 'ambiguous';
+  return current?.consent?.active ? 'positive' : 'ambiguous';
 }
 
 function num(value, fallback = 0) {

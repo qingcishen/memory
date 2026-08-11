@@ -81,14 +81,35 @@ export { CompanionRuntime, isNightlyDue, localDayKey, localHour } from './src/ru
 // 轻量监控
 export { incr, get, metricsSnapshot, resetMetrics, recordLlmCall } from './src/metrics.js';
 // 真实世界感知 · 天气
-export { WeatherProvider, weatherCodeToZh, buildWeatherLine } from './src/world/weather.js';
+export {
+  WeatherProvider,
+  weatherCodeToZh,
+  buildWeatherLine,
+  fetchWeather,
+  simulateWeather,
+} from './src/world/weather.js';
 // 世界观系统 · 动态世界状态 (背景剧情线/氛围随对话演变)
 export {
+  defaultStableFacts,
+  normalizeStableFacts,
   defaultWorldState,
+  materializeWorldState,
   readWorldState,
   writeWorldState,
   toWorldPrompt,
   composeEvolveInput,
+  extractStableFactsFromTurns,
+  mergeWorldEvents,
+  inferSeason,
+  chinaFestivalOn,
+  chinaFestivalWindow,
+  isChinaHoliday,
+  daysToEvent,
+  upcomingHolidays,
+  worldCalendarContext,
+  getWorldAffectOverride,
+  applyWorldAffectToSnapshot,
+  weatherAffectOverride,
   WorldDimension,
 } from './src/world/index.js';
 // 旁白系统 · 按场景动态给旁白指令
@@ -149,6 +170,28 @@ export {
   clampToOrigin,
   driftFromOrigin,
 } from './src/memory/reconsolidate.js';
+export {
+  WORKING_MEMORY_TYPE,
+  WORKING_MEMORY_TTL_MS,
+  WORKING_MEMORY_CONTEXT_MULTIPLIER,
+  buildWorkingMemoryRecord,
+  toWorkingMemoryRow,
+  storeWorkingMemory,
+  isFreshWorkingMemory,
+  effectiveMemoryType,
+  workingMemoryContextMultiplier,
+  selectWorkingMemoryBridge,
+  loadWorkingMemoryBridge,
+} from './src/memory/workingMemory.js';
+export {
+  DEFAULT_COMPRESSION_POLICY,
+  shouldCompressMemoryHierarchy,
+  shouldScheduleCompressionProbe,
+  clusterCompressionCandidates,
+  inspectCompressionEligibility,
+  compressMemoryIfNeeded,
+  compressEpisodeClusters,
+} from './src/memory/compress.js';
 export { filterBySubject, formatPersonaBlock, seedPersona, personaBlock } from './src/persona.js';
 export {
   CompanionConfigSchema,
@@ -230,3 +273,4 @@ export { retrieveTurn, emptyEvidencePack } from './src/orchestrator/retrieveStag
 export { deliberateTurn, planRetrievalTurn } from './src/orchestrator/deliberate.js';
 export { composeTurn, compositionFromStream } from './src/orchestrator/composeStage.js';
 export { validateTurn } from './src/orchestrator/validateStage.js';
+export * from './src/existence/index.js';

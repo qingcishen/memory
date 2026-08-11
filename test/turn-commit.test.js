@@ -32,6 +32,7 @@ describe('turn commit boundary', () => {
 
   it('commits history and background work through one boundary', async () => {
     const orchestrator = fakeOrchestrator();
+    orchestrator.existence = { observeTurn: vi.fn(async () => true) };
     const result = await commitValidatedReply(orchestrator, {
       eventId: 'evt-1',
       historyUserMessage: 'hi',
@@ -39,6 +40,9 @@ describe('turn commit boundary', () => {
       sceneLocks: [],
       relationshipStage: { id: 'close' },
       stateSnapshot: {},
+      sceneType: 'intimate',
+      emotionLabel: '期待',
+      emotionEvent: { toLabel: '期待', intensity: 0.8, cause: '见面了' },
       photoRequested: true,
       updateSession: (thread, turn) => ({ ...thread, lastReply: turn.reply }),
     });
@@ -54,9 +58,21 @@ describe('turn commit boundary', () => {
     expect(orchestrator.afterReply).toHaveBeenCalledWith(
       'hi',
       'hello',
-      expect.objectContaining({ eventId: 'evt-1' }),
+      expect.objectContaining({
+        eventId: 'evt-1',
+        sceneType: 'intimate',
+        emotionLabel: '期待',
+        emotionEvent: { toLabel: '期待', intensity: 0.8, cause: '见面了' },
+      }),
     );
     expect(orchestrator.maybePhoto).toHaveBeenCalled();
+    expect(orchestrator.existence.observeTurn).toHaveBeenCalledWith(
+      expect.objectContaining({
+        eventId: 'evt-1',
+        userMessage: 'hi',
+        reply: 'hello',
+      }),
+    );
   });
 
   it('preserves caller event ids and creates scoped ids otherwise', () => {
@@ -166,7 +182,7 @@ describe('turn commit boundary', () => {
     });
 
     expect(result.status).toBe('committed');
-    expect(renew).toHaveBeenCalledTimes(7);
+    expect(renew).toHaveBeenCalledTimes(8);
     expect(renew.mock.calls.every(([scope]) => scope.leaseToken)).toBe(true);
   });
 });

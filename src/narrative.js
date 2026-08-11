@@ -11,6 +11,7 @@
 import { supabase, llm, LLM_MODEL, PARAMS } from './config.js';
 import { embed } from './embeddings.js';
 import { readStateHistory, summarizeTrajectory, formatTrajectory } from './state/affect.js';
+import { INTIMATE_MEMORY_TYPE } from './state/intimacyMemory.js';
 
 // ---- 纯逻辑 ----
 
@@ -20,7 +21,12 @@ import { readStateHistory, summarizeTrajectory, formatTrajectory } from './state
  */
 export function pickDyadBackdrop(mems, n = 1) {
   return (mems ?? [])
-    .filter((m) => m.subject_kind === 'dyad' && !m.superseded_by)
+    .filter(
+      (m) =>
+        m.subject_kind === 'dyad' &&
+        m.type !== INTIMATE_MEMORY_TYPE &&
+        !m.superseded_by,
+    )
     .sort((a, b) => {
       const di = (b.importance ?? 0) - (a.importance ?? 0);
       if (di !== 0) return di;
@@ -34,7 +40,9 @@ export function pickDyadBackdrop(mems, n = 1) {
  * @param trajectory summarizeTrajectory(history) 的结果, 给则附一行关系走向。
  */
 export function composeNarrativeInput(dyadMems, state, trajectory = null) {
-  const events = (dyadMems ?? []).map((m) => `- ${m.fact_core || m.content}${m.narrative ? ` (${m.narrative})` : ''}`);
+  const events = (dyadMems ?? [])
+    .filter((m) => m.type !== INTIMATE_MEMORY_TYPE)
+    .map((m) => `- ${m.fact_core || m.content}${m.narrative ? ` (${m.narrative})` : ''}`);
   const rel = state?.relationship ?? {};
   const stateLine = `当前关系: 亲密度 ${fmt(rel.closeness)}, 紧张 ${fmt(rel.tension)}, 信任 ${fmt(rel.trust)}, 待和好 ${fmt(rel.repair_debt)}`;
   const trendLine = trajectory ? formatTrajectory(trajectory) : '';
@@ -48,10 +56,11 @@ export async function dyadBackdrop(userId, companionId = 'default', n = PARAMS.r
   if (n <= 0) return [];
   const { data, error } = await supabase
     .from('memories')
-    .select('id, fact_core, content, narrative, importance, subject_kind, created_at')
+    .select('id, type, fact_core, content, narrative, importance, subject_kind, created_at')
     .eq('user_id', userId)
     .eq('companion_id', companionId)
     .eq('subject_kind', 'dyad')
+    .neq('type', INTIMATE_MEMORY_TYPE)
     .is('superseded_by', null)
     .order('importance', { ascending: false })
     .limit(n);
@@ -67,10 +76,11 @@ export async function synthesizeNarrative(userId, companionId = 'default', state
   const lookback = opts.lookback ?? PARAMS.relationship_memory.narrativeLookback;
   const { data: mems, error } = await supabase
     .from('memories')
-    .select('fact_core, content, narrative, importance, created_at')
+    .select('type, fact_core, content, narrative, importance, created_at')
     .eq('user_id', userId)
     .eq('companion_id', companionId)
     .in('subject_kind', ['dyad'])
+    .neq('type', INTIMATE_MEMORY_TYPE)
     .is('superseded_by', null)
     .order('created_at', { ascending: false })
     .limit(lookback);

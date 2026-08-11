@@ -113,7 +113,13 @@ export class StateLayer {
       relationship: ctx.relationship ?? snapshot.relationship,
       life: snapshot.life,
       desires: snapshot.desires,
+      // I-4: prompt 需要知道这是一次真实的阶段转换，而不是在 foreplay 每轮重复 consent cue。
+      prevIntimacy: ctx.prevIntimacy ?? null,
+      previousPhase: ctx.previousPhase ?? null,
+      userMessage: ctx.userMessage ?? '',
+      signals: ctx.intimacySignals,
       hardBoundaries: ctx.hardBoundaries ?? this.intimacy?.hardBoundaries,
+      knowledge: ctx.intimacyKnowledge ?? this.intimacy?.knowledge ?? intimacyCfg?.knowledge,
     };
     // 标量温度由 StateLayer 注入；离散【情绪表现】由 Orchestrator 统一拼（避免真适配器跳过表现段）
     return [

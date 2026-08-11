@@ -87,6 +87,42 @@ export async function validateTurn(input = {}) {
     }
   }
 
+  if (typeof input.checkPsychologicalCoherence === 'function') {
+    try {
+      const coherence = await input.checkPsychologicalCoherence(reply);
+      const conflicts = Array.isArray(coherence?.conflicts)
+        ? coherence.conflicts.map((item) =>
+            typeof item === 'string' ? item : item?.reason ?? item?.type ?? 'identity_conflict',
+          )
+        : [];
+      const reconciled =
+        coherence?.reconciled_response ??
+        coherence?.response ??
+        null;
+      if (typeof reconciled === 'string' && reconciled.trim() && reconciled !== reply) {
+        const normalized = normalizeReplyResult(reconciled);
+        reply = normalized.text;
+        parts = normalized.parts;
+      }
+      checks.push({
+        id: 'psychological_coherence',
+        passed: coherence?.coherent === true || Boolean(reconciled),
+        reasons: conflicts,
+        score:
+          Number.isFinite(Number(coherence?.coherence_score))
+            ? Number(coherence.coherence_score)
+            : undefined,
+      });
+    } catch {
+      // 自我模型属于软校验；检测器异常不应吞掉已经生成好的有效回复。
+      checks.push({
+        id: 'psychological_coherence',
+        passed: false,
+        reasons: ['check_failed'],
+      });
+    }
+  }
+
   if (typeof input.postProcess === 'function') {
     const processed = input.postProcess(reply, parts);
     reply = processed.reply;

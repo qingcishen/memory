@@ -4,7 +4,15 @@ import https from 'node:https';
 import path from 'node:path';
 import { HttpsProxyAgent } from 'https-proxy-agent';
 import { ProxyAgent } from 'undici';
-import { Orchestrator, ProactiveScheduler, SupabaseRateLimitStore, LocalJsonHistoryStore, SupabaseHistoryStore } from '../../index.js';
+import {
+  Orchestrator,
+  ProactiveScheduler,
+  SupabaseRateLimitStore,
+  LocalJsonHistoryStore,
+  SupabaseHistoryStore,
+  createPersistentExistenceEngine,
+  personalitySeedFromCompanionConfig,
+} from '../../index.js';
 import { loadPersonaConfig } from '../companion.js';
 import { CompanionRuntime } from '../runtime/index.js';
 import { metricsSnapshot } from '../metrics.js';
@@ -15,7 +23,7 @@ import { WeatherProvider } from '../world/weather.js';
 import { WorldDimension } from '../world/index.js';
 import { SceneClassifier } from '../narration.js';
 import { pickSpeakableText, shouldReplyWithVoice, synthesizeSpeech } from '../modal/speech.js';
-import { TTS_CONFIGURED } from '../config.js';
+import { TTS_CONFIGURED, supabase } from '../config.js';
 import { BehaviorStateStore, normalizeBehaviorState } from '../state/behavior.js';
 import { gateIncomingMessage } from '../product/gate.js';
 import {
@@ -442,8 +450,13 @@ export class TelegramMemoryBot {
     this.jobKind = 'telegram:after_reply';
     this.mediaJobKind = 'telegram:media_delivery';
     this.worker = new Worker({ handlers: {
-      [this.jobKind]: ({ chatId, userMessage, reply, eventId }) =>
-        this.botForChat(chatId).runAfterReply(userMessage, reply, { eventId }),
+      [this.jobKind]: ({ chatId, userMessage, reply, eventId, sceneType, emotionLabel, emotionEvent }) =>
+        this.botForChat(chatId).runAfterReply(userMessage, reply, {
+          eventId,
+          sceneType,
+          emotionLabel,
+          emotionEvent,
+        }),
       [this.mediaJobKind]: ({ chatId, asset }) => this.deliverPhoto(chatId, asset),
     } });
     // 主动性策略: 安静时段 + 冷却 + 每日上限 (东八区)。
@@ -458,8 +471,19 @@ export class TelegramMemoryBot {
   botForChat(chatId) {
     const key = String(chatId);
     if (!this.bots.has(key)) {
+      const userId = telegramUserId(chatId);
+      const existence = createPersistentExistenceEngine({
+        userId,
+        companionId: this.companionId,
+        companionName: this.companionName,
+        userName: this.subjectName,
+        historyStore: this.historyStore,
+        personalitySeed: personalitySeedFromCompanionConfig(
+          this.persona?.config,
+        ),
+      });
       const orchestrator = new Orchestrator({
-        userId: telegramUserId(chatId),
+        userId,
         companionId: this.companionId,
         companionName: this.companionName,
         subjectName: this.subjectName,
@@ -474,15 +498,16 @@ export class TelegramMemoryBot {
         lifeConfig: this.persona?.life ?? null,
         deps: {
           historyStore: this.historyStore,
+          existence,
           weather: this.weather,
           // 世界观系统: 按 (userId, companionId) 维护各自的背景剧情线, 因此每个 chat 一个实例。
-          world: new WorldDimension({ userId: telegramUserId(chatId), companionId: this.companionId }),
+          world: new WorldDimension({ userId, companionId: this.companionId }),
           narration: this.narration,
-          afterReplyEnqueue: ({ userMessage, reply, eventId }) => enqueue(
-            telegramUserId(chatId),
+          afterReplyEnqueue: ({ userMessage, reply, eventId, sceneType, emotionLabel, emotionEvent }) => enqueue(
+            userId,
             this.companionId,
             this.jobKind,
-            { chatId: String(chatId), userMessage, reply, eventId },
+            { chatId: String(chatId), userMessage, reply, eventId, sceneType, emotionLabel, emotionEvent },
             { idempotencyKey: eventId ? `${eventId}:after_reply` : null },
           ),
           onPhoto: (photo) => dispatchMediaOutbox({
@@ -492,7 +517,7 @@ export class TelegramMemoryBot {
             projection: photo.projection,
             enqueue: (payload, opts) =>
               enqueue(
-                telegramUserId(chatId),
+                userId,
                 this.companionId,
                 this.mediaJobKind,
                 payload,
@@ -502,6 +527,7 @@ export class TelegramMemoryBot {
           }),
         }, // 短期历史落库 + 真实天气 + 世界观 + 旁白
       });
+      existence.memory = orchestrator.memory;
       this.bots.set(key, orchestrator);
       this.startRuntime(chatId, orchestrator);
     }
@@ -627,8 +653,10 @@ export class TelegramMemoryBot {
     );
     console.log('[telegram] waiting for messages...');
     this.startStatusReporter();
-    // 不等用户再发“继续”：启动即把崩溃/超时前落盘的完整回合放进每个 chat 的串行队列。
+    // 不等用户再发”继续”：启动即把崩溃/超时前落盘的完整回合放进每个 chat 的串行队列。
     await this.resumePendingTurns();
+    // 恢复重启前沉默用户的连续存在心跳，避免等到下一条消息才重启。
+    await this.warmupActiveRuntimes();
     let pollErrorStreak = 0;
     while (!this.stopped) {
       await this.pollOnce()
@@ -716,6 +744,41 @@ export class TelegramMemoryBot {
       .catch((error) => console.error('[telegram] update error:', formatError(error)));
     this.chatQueues.set(key, next);
     await next;
+  }
+
+  /** 进程重启后预热最近活跃用户的心跳，避免等到下一条消息才恢复。 */
+  async warmupActiveRuntimes(maxAgeHours = 48) {
+    try {
+      const companionId = this.companionId;
+      const since = new Date(Date.now() - maxAgeHours * 60 * 60 * 1000).toISOString();
+      const { data, error } = await supabase
+        .from('companion_continuous_state')
+        .select('user_id')
+        .eq('companion_id', companionId)
+        .gte('updated_at', since);
+      if (error) throw error;
+      const prefix = 'telegram:';
+      const chatIds = (data ?? [])
+        .map((row) => row.user_id)
+        .filter((uid) => uid.startsWith(prefix))
+        .map((uid) => uid.slice(prefix.length));
+      let warmed = 0;
+      for (const chatId of chatIds) {
+        if (!isAllowedChat(chatId, this.allowedChatIds)) continue;
+        if (this.runtimes.has(String(chatId))) continue;
+        try {
+          this.initRuntime(chatId);
+          warmed++;
+        } catch (err) {
+          console.error('[telegram] warmup failed chat=', chatId, err);
+        }
+      }
+      if (warmed) console.log(`[telegram] warmup restored runtimes=${warmed}`);
+      return warmed;
+    } catch (err) {
+      console.error('[telegram] warmup query failed:', err);
+      return 0;
+    }
   }
 
   async resumePendingTurns() {

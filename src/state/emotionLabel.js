@@ -34,7 +34,12 @@ export function inferEmotionLabel(state = {}, desires = {}, lastTurns = [], opts
   });
 
   if (opts.withResidual || opts.previousResidual != null) {
-    return { label, residual, rawLabel };
+    return {
+      label,
+      residual,
+      rawLabel,
+      confidence: emotionHeuristicConfidence(userMessage, rawLabel),
+    };
   }
   // 无残留上下文时保持旧 API：只返回字符串
   return label;
@@ -72,6 +77,15 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   }
   // attention 积累驱动的委屈（依赖 desire 先升高后触发，不误判无 attention 的新会话）
   if (attention >= 0.72 && userText) return '委屈';
+  // 明确愤怒必须先于「算了」类释怀词判断；“算了吧，我很生气”不是已经和好。
+  // “别生气/对不起”里的 anger 指向对方，不代表说话者仍在发怒。
+  const explicitRepair = /(对不起|抱歉|我错了|原谅|和好|别生气)/u.test(userText);
+  const explicitAnger =
+    !explicitRepair && (
+      /(我很生气|气死|太过分了|你凭什么)/u.test(userText) ||
+      (/(你怎么这样|算了吧)/u.test(userText) && /(生气|烦|讨厌|分手)/u.test(userText))
+    );
+  if (explicitAnger) return '生气';
   // 和好/释怀语境：repair 场景完成，余情是失落而非委屈
   if (/(说开了|和好了|和好吧|没事了|放下了|算了)/u.test(userText) && repairDebt >= 0.1) return '失落';
   if (/(对不起|抱歉|我错了|原谅我|别生气)/u.test(userText) && repairDebt > 0.2) return '委屈';
@@ -79,6 +93,16 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   if (/(让我.{0,8}(难受|伤心|失望|心寒|委屈)|说那句话|让我很|我不是小题大做|站在我这边)/u.test(userText)) {
     return '委屈';
   }
+  // E-1: 明确的新标签证据要先于宽泛的“开心/失落/心疼”数值兜底。
+  // 例如“好期待”和“谢谢你懂我”不能先被旧的开心关键词吞掉。
+  const extended = inferExtendedEmotionEvidence({
+    userText,
+    companionText,
+    closeness,
+    tension,
+    repairDebt,
+  });
+  if (extended) return extended;
   // 用户生病/受苦 → 心疼（需要更高 closeness，低亲密度时倾向于失落）
   if (/(我|最近|今天).{0,8}(难过|伤心|哭了|生病|发烧|不舒服|被欺负|很累|好累|崩溃|失败|失眠|睡不着|头疼|头晕)|被.{0,8}(骂|拒绝|裁员|开除)/u.test(userText) && closeness >= 0.6) {
     return '心疼';
@@ -89,10 +113,6 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
     /(陪我说说话|陪陪我)/u.test(userText)
   ) {
     if (valence <= 0.15) return '失落';
-  }
-  // 明确愤怒口吻：不依赖 tension 已升高（新会话首轮也能挂生气）
-  if (/(我很生气|气死|太过分了|你凭什么)/u.test(userText) || (/(你怎么这样|算了吧)/u.test(userText) && /(生气|烦|讨厌|分手)/u.test(userText))) {
-    return '生气';
   }
   if ((tension >= 0.62 || repairDebt >= 0.55) && /(吵|生气|烦|滚|别理|分手|讨厌|失望|对不起|抱歉)/u.test(`${userText}\n${companionText}`)) {
     return '生气';
@@ -113,48 +133,33 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
     return warmth >= 0.92 && closeness >= 0.78 ? '撒娇' : '开心';
   }
 
-  // ── 扩展标签（8 个）─── 以下规则优先级低于上面所有判断 ──
+  return '平静';
+}
 
-  // 感动：用户做了暖心/贴心的事（记住细节/特意做/说真心话）
+function inferExtendedEmotionEvidence({
+  userText = '',
+  companionText = '',
+  closeness = 0,
+  tension = 0,
+  repairDebt = 0,
+} = {}) {
   if (
     closeness >= 0.5 &&
-    /(记得|帮我记|特意|专门|就是为了你|第一个想到你|你不是一个人|我在|陪着你|我支持你|谢谢你懂我|你真好|心疼你|我懂你)/u.test(userText)
+    /(记得你说过|帮你记着|特意|专门|就是为了你|第一个想到你|你不是一个人|我会陪着你|我支持你|谢谢你懂我|真的懂我|一直陪着你)/u.test(userText)
   ) {
     return '感动';
   }
-
-  // 期待：用户提到即将发生的好事或约定
   if (
     /(好期待|期待死了|迫不及待|下次见|什么时候见|还有几天|明天.{0,8}(见|约|去)|周末.{0,8}(见|约|去|一起)|终于等到|快了吧)/u.test(userText) ||
     /(好期待|期待死了|迫不及待)/u.test(companionText)
   ) {
     return '期待';
   }
-
-  // 担心：用户提到可能有风险或困难的事，closeness 足够时才会担心对方
   if (
-    closeness >= 0.5 &&
-    /(你注意安全|路上小心|好好照顾自己|记得吃饭|你没事吧|还好吗|身体怎么样|别太拼|你最近好吗|不会有事吧)/u.test(userText)
-  ) {
-    return '担心';
-  }
-  // 用户自述处于危险/压力状态，closeness 高时她担心对方
-  if (
-    closeness >= 0.6 &&
-    /(生病|发烧|受伤|出事了|快撑不住|哭了好久|一个人扛|没人知道|好害怕|压力好大|要崩了)/u.test(userText) &&
-    valence > -0.2
-  ) {
-    return '担心';
-  }
-
-  // 骄傲：用户或她有成就/胜利
-  if (
-    /(我做到了|成功了|拿到了|考过了|晋升了|录取了|赢了|第一名|offer|过了|通过了|终于完成|做出来了)/u.test(userText)
+    /(我做到了|成功了|拿到了|考过了|晋升了|录取了|赢了|第一名|offer|通过了|终于完成|做出来了)/iu.test(userText)
   ) {
     return '骄傲';
   }
-
-  // 烦躁：用户表达焦躁/疲惫但不是冲着她（tension 不高）
   if (
     tension < 0.4 &&
     repairDebt < 0.3 &&
@@ -162,8 +167,17 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   ) {
     return '烦躁';
   }
-
-  // 暧昧：closeness 中高、无紧张、有轻微亲密信号
+  if (
+    /(好无聊|无聊死了|没事做|不知道干嘛|闲着没事|好无趣|没意思|干嘛好|打发时间|随便聊|没什么事)/u.test(userText)
+  ) {
+    return '无聊';
+  }
+  if (
+    closeness >= 0.5 &&
+    /(你好可爱|你好漂亮|你好美|你真的很迷人|你让我心动|我好喜欢你|喜欢你|爱你|你是最|你最好|你真棒|夸你)/u.test(userText)
+  ) {
+    return '害羞';
+  }
   if (
     closeness >= 0.55 &&
     tension < 0.25 &&
@@ -171,23 +185,13 @@ export function inferEmotionLabelRaw(state = {}, desires = {}, lastTurns = []) {
   ) {
     return '暧昧';
   }
-
-  // 害羞：被夸奖/被表白/closeness 高
   if (
     closeness >= 0.5 &&
-    /(你好可爱|你好漂亮|你好美|你真的很|你让我|我好喜欢你|喜欢你|爱你|你是最|你最好|你真棒|夸你)/u.test(userText)
+    /(你注意安全|路上小心|好好照顾自己|记得吃饭|你没事吧|还好吗|身体怎么样|别太拼|不会有事吧|我有点担心|担心你|明天.{0,8}(面试|手术|考试)|一个人.{0,8}(开夜车|走夜路)|好害怕|压力好大|要崩了)/u.test(userText)
   ) {
-    return '害羞';
+    return '担心';
   }
-
-  // 无聊：用户或她说没事做/无聊
-  if (
-    /(好无聊|无聊死了|没事做|不知道干嘛|闲着没事|好无趣|没意思|干嘛好|打发时间|随便聊|没什么事)/u.test(userText)
-  ) {
-    return '无聊';
-  }
-
-  return '平静';
+  return null;
 }
 
 /**
@@ -229,6 +233,131 @@ export function emotionLabelToPrompt(label = '平静', residual = null) {
 }
 
 const NEGATIVE = new Set(['委屈', '吃醋', '生气', '失落', '担心', '烦躁']);
+
+// ── E-3: LLM 情绪推断触发策略 ──────────────────────────────────────────────
+
+// 启发式已能直接解释的显式信号。长文本没有这些信号时，才值得交给 LLM
+// 处理反语、委婉和上下文依赖；短问候/纯表情不触发。
+const HEURISTIC_EMOTION_SIGNAL_RE =
+  /生气|气死|过分|讨厌|委屈|难受|伤心|失望|心寒|哭|发烧|不舒服|很累|好累|崩溃|失败|失眠|睡不着|焦虑|发慌|担心|害怕|烦死|烦躁|无聊|没意思|喜欢你|爱你|想你|脸红|心跳|期待|迫不及待|成功了|做到了|录取|晋升|谢谢|感动|对不起|抱歉|和好|不回我|不理我|前女友|女同事/u;
+
+/**
+ * 对规则标签给出可解释置信度。这里只判断“规则是否看见了明确文本证据”，
+ * 不冒充统计模型概率：长而无显式信号的中性结果为低置信度，触发 E-3。
+ */
+export function emotionHeuristicConfidence(text = '', label = '平静') {
+  const value = String(text ?? '').trim();
+  if (!value) return label === '平静' ? 0.65 : 0.72;
+  if (HEURISTIC_EMOTION_SIGNAL_RE.test(value)) return 0.9;
+  if (label !== '平静') return 0.72;
+  return [...value].length > 15 ? 0.35 : 0.65;
+}
+
+/**
+ * 判断本轮是否值得花 LLM 做情绪分类。
+ * 新调用协议：shouldLLMInfer(text, {
+ *   confidence, currentTurn, lastInferTurn, pending
+ * })
+ * 只在 confidence < 0.5、文本 > 15 字、没有尚未完成任务，且距上次触发至少
+ * 3 轮时返回 true。数字旧签名仍兼容，但仅用于旧调用方平滑迁移。
+ */
+export function shouldLLMInfer(text = '', context = {}, legacyInferCount = 0) {
+  const t = String(text ?? '').trim();
+  if ([...t].length <= 15) return false;
+
+  const legacy = typeof context === 'number';
+  const currentTurn = Math.max(
+    0,
+    Math.floor(Number(legacy ? context : context.currentTurn) || 0),
+  );
+  const confidence = Number(
+    legacy
+      ? emotionHeuristicConfidence(t, '平静')
+      : context.confidence ?? emotionHeuristicConfidence(t, context.label),
+  );
+  if (!Number.isFinite(confidence) || confidence >= 0.5) return false;
+  if (!legacy && context.pending) return false;
+
+  if (legacy) {
+    const inferCount = Math.max(0, Number(legacyInferCount) || 0);
+    return inferCount === 0 || currentTurn / inferCount >= 3;
+  }
+  const lastInferTurn =
+    context.lastInferTurn != null &&
+    Number.isFinite(Number(context.lastInferTurn))
+      ? Number(context.lastInferTurn)
+      : null;
+  return lastInferTurn == null || currentTurn - lastInferTurn >= 3;
+}
+
+/**
+ * 启动一个非阻塞 LLM 分类任务。状态对象会在 promise 完成时原地变为
+ * settled；下一轮只读取已完成值，不在回复链上等待网络。
+ */
+export function startLLMEmotionInference(
+  text,
+  llmCall,
+  { sourceTurn = 0 } = {},
+) {
+  const task = {
+    status: 'pending',
+    label: null,
+    sourceTurn: Math.max(0, Math.floor(Number(sourceTurn) || 0)),
+    promise: null,
+  };
+  task.promise = llmInferEmotionLabel(text, llmCall)
+    .then((label) => {
+      task.status = 'settled';
+      task.label = EMOTION_LABELS.includes(label) ? label : null;
+      return task.label;
+    })
+    .catch(() => {
+      task.status = 'settled';
+      task.label = null;
+      return null;
+    });
+  return task;
+}
+
+/**
+ * 消费已经完成的上一轮结果。pending 任务不会阻塞；悬挂超过 maxPendingTurns
+ * 会被丢弃，让后续轮次可以再次尝试。
+ */
+export function consumeLLMEmotionInference(
+  task,
+  { currentTurn = 0, maxPendingTurns = 3 } = {},
+) {
+  if (!task) return { label: null, task: null, consumed: false };
+  if (task.status === 'settled') {
+    return {
+      label: EMOTION_LABELS.includes(task.label) ? task.label : null,
+      task: null,
+      consumed: true,
+    };
+  }
+  const age = Math.max(0, Number(currentTurn) - Number(task.sourceTurn || 0));
+  if (age >= Math.max(1, Number(maxPendingTurns) || 3)) {
+    return { label: null, task: null, consumed: false, expired: true };
+  }
+  return { label: null, task, consumed: false };
+}
+
+/**
+ * 调用 LLM 对用户消息做情绪分类，返回 EMOTION_LABELS 中的一个标签或 null。
+ * @param text 用户消息原文
+ * @param llmCall async (messages) => string  —— 由调用方注入，避免循环依赖
+ */
+export async function llmInferEmotionLabel(text, llmCall) {
+  if (!text || typeof llmCall !== 'function') return null;
+  try {
+    const prompt = `用一个词标注对话中"用户"当前的情绪:\n可选: ${EMOTION_LABELS.join('/')}\n用户说: "${String(text).slice(0, 200)}"\n只输出标签，不解释。`;
+    const raw = await llmCall([{ role: 'user', content: prompt }]);
+    const label = String(raw ?? '').trim().replace(/["""「」]/g, '');
+    return EMOTION_LABELS.includes(label) ? label : null;
+  } catch {
+    return null;
+  }
+}
 
 function recentText(turns, role) {
   return (turns ?? [])

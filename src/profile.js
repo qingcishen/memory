@@ -7,7 +7,9 @@ export const USER_PROFILE_KIND = 'user_profile';
 
 export function normalizeUserProfile(value = {}) {
   const list = (items, max = 8) => [...new Set((Array.isArray(items) ? items : []).map((v) => sanitizeForPrompt(v)).filter(Boolean))].slice(0, max);
+  const validGenders = ['男', '女', '非二元'];
   return {
+    gender: validGenders.includes(value?.gender) ? value.gender : null,
     summary: sanitizeForPrompt(value?.summary).slice(0, 240),
     habits: list(value?.habits),
     sensitivities: list(value?.sensitivities),
@@ -19,6 +21,7 @@ export function normalizeUserProfile(value = {}) {
 export function profileToText(profile) {
   const p = normalizeUserProfile(profile);
   const parts = [];
+  if (p.gender) parts.push(`性别：${p.gender}`);
   if (p.summary) parts.push(`总体印象：${p.summary}`);
   if (p.habits.length) parts.push(`习惯：${p.habits.join('；')}`);
   if (p.sensitivities.length) parts.push(`在意和雷点：${p.sensitivities.join('；')}`);
@@ -46,7 +49,7 @@ export async function updateUserProfile(userId, companionId = 'default', opts = 
     response = await llmClient.chat.completions.create({
       model: opts.model ?? LLM_MODEL, temperature: 0.2, response_format: { type: 'json_object' },
       messages: [
-        { role: 'system', content: '根据长期记忆维护“她眼中的对方”。只提炼有证据、对相处有用的稳定观察；不要编造身份和经历。严格输出 JSON：{"summary":"总体印象","habits":[],"sensitivities":[],"importantPeople":[],"needs":[]}。' },
+        { role: 'system', content: '根据长期记忆维护”她眼中的对方”。只提炼有证据、对相处有用的稳定观察；不要编造身份和经历。严格输出 JSON：{“gender”:”男|女|非二元|null（无法判断时填null）”,”summary”:”总体印象”,”habits”:[],”sensitivities”:[],”importantPeople”:[],”needs”:[]}。gender 字段从记忆中推断（称呼/性别词/自述），无法确定时填 null。' },
         { role: 'user', content: `${evidence}${old}` },
       ],
     });

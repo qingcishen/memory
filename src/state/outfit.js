@@ -5,6 +5,7 @@
 import { supabase } from '../config.js';
 import { PARAMS } from '../params.js';
 import { isSick } from './health.js';
+import { resolvePreferId } from './outfitPreference.js';
 
 const HOUR = 60 * 60 * 1000;
 
@@ -21,6 +22,7 @@ export function defaultOutfitState(overrides = null) {
     daily_photo: null,
     preferred_ids: [],  // O-2: 用户夸过的造型 id（最近优先）
     disliked_ids: [],   // O-2: 用户嫌弃/要换的造型 id
+    recent_looks: [],   // O-3: 最近 14 天穿搭历史 [{date, lookId}]，去重用
   };
   return clampOutfitState(overrides ? { ...base, ...overrides } : base);
 }
@@ -50,6 +52,11 @@ export function clampOutfitState(value = {}) {
     daily_photo: clampDailyPhoto(value?.daily_photo),
     preferred_ids: Array.isArray(value?.preferred_ids) ? value.preferred_ids.map(String).slice(0, 12) : [],
     disliked_ids: Array.isArray(value?.disliked_ids) ? value.disliked_ids.map(String).slice(0, 12) : [],
+    recent_looks: Array.isArray(value?.recent_looks)
+      ? value.recent_looks
+          .filter((r) => r && typeof r.date === 'string' && typeof r.lookId === 'string')
+          .slice(0, 14)
+      : [],
   };
 }
 
@@ -129,6 +136,87 @@ export function piecesToSummary(pieces = {}) {
   if (pieces.makeup) parts.push(pieces.makeup);
   if (pieces.perfume) parts.push(pieces.perfume);
   return parts.join('，') || '高级简约装扮';
+}
+
+const WARM_LAYER_RE = /羊绒|羊毛|毛呢|大衣|外套|开衫|针织|毛衣|羽绒|风衣|夹克|披肩|coat|jacket|cardigan|knit|wool|cashmere|down|parka|blazer/i;
+const BREATHABLE_RE = /透气|轻薄|薄款|亚麻|棉麻|真丝|丝质|linen|cotton|silk|breathable|lightweight/i;
+const OPEN_SHOE_RE = /凉鞋|拖鞋|穆勒|露趾|露跟|人字拖|sandal|slipper|mule|open[- ]?toe|barefoot|赤脚|光脚/i;
+const COVERED_SHOE_RE = /包头|雨鞋|短靴|长靴|靴|运动鞋|跑鞋|球鞋|小白鞋|乐福|皮鞋|牛津鞋|德比鞋|芭蕾鞋|平底鞋|高跟鞋|低跟鞋|sneaker|trainer|boot|loafer|oxford|derby|pump|flat/i;
+const BRIGHT_COLOR_RE = /明快|亮色|彩色|鲜艳|亮红|宝蓝|湖蓝|明黄|柠檬黄|玫红|翠绿|橙色|bright|vivid|colorful/i;
+
+function lookSearchText(look) {
+  const normalized = normalizeLook(look);
+  if (!normalized) return '';
+  return [
+    normalized.summary,
+    normalized.style,
+    ...Object.values(normalized.pieces || {}).flatMap((value) => (Array.isArray(value) ? value : [value])),
+  ].filter(Boolean).join(' ');
+}
+
+/** 天冷时，造型中是否已经包含可用的保暖外层。 */
+export function hasWarmLayer(look) {
+  const normalized = normalizeLook(look);
+  if (!normalized) return false;
+  const outer = String(normalized.pieces?.outer || '').trim();
+  return Boolean(outer) && WARM_LAYER_RE.test(outer);
+}
+
+/** 高温时，核心衣物是否明确是轻薄/透气面料。 */
+export function hasBreathableFabric(look) {
+  const normalized = normalizeLook(look);
+  if (!normalized) return false;
+  const core = [normalized.pieces?.dress, normalized.pieces?.top, normalized.pieces?.bottom]
+    .filter(Boolean)
+    .join(' ');
+  return BREATHABLE_RE.test(core || normalized.summary || '');
+}
+
+/** 雨天鞋履是否为包覆式；凉鞋、拖鞋、穆勒鞋和赤脚均不算。 */
+export function hasCoveredShoes(look) {
+  const normalized = normalizeLook(look);
+  const shoes = String(normalized?.pieces?.shoes || '').trim();
+  if (!shoes || OPEN_SHOE_RE.test(shoes)) return false;
+  return COVERED_SHOE_RE.test(shoes) || /鞋/.test(shoes);
+}
+
+function styleHintTokens(styleHint = null) {
+  const hint = String(styleHint || '').toLowerCase();
+  return {
+    layering: /\blayering\b|\bwarm\b/.test(hint),
+    breathable: /\bbreathable\b|\blightweight\b/.test(hint),
+    rainProof: /\brain-proof\b|\bcovered-shoes\b/.test(hint),
+    windproof: /\bwindproof\b/.test(hint),
+    brightColor: /\bbright-color\b|\bcolorful\b/.test(hint),
+    casual: /\bcasual\b|\brelaxed\b/.test(hint),
+    polished: /\bpolished\b|\bdate-ready\b/.test(hint),
+  };
+}
+
+/**
+ * 纯函数：评估一个 look 对 styleHint 的满足度。
+ * pickOutfit 用它让天气/情绪提示真正参与候选选择，而不只是被传入后丢弃。
+ */
+export function outfitStyleHintScore(look, styleHint = null) {
+  const tokens = styleHintTokens(styleHint);
+  const text = lookSearchText(look);
+  let score = 0;
+  if (tokens.layering && hasWarmLayer(look)) score += 1;
+  if (tokens.breathable && hasBreathableFabric(look)) score += 1;
+  if (tokens.rainProof && hasCoveredShoes(look)) score += 1;
+  if (tokens.windproof && WARM_LAYER_RE.test(text)) score += 1;
+  if (tokens.brightColor && BRIGHT_COLOR_RE.test(text)) score += 1;
+  if (tokens.casual && /居家|休闲|松弛|柔软|针织|home|casual|relaxed/i.test(text)) score += 1;
+  if (tokens.polished && /约会|精致|裙|珠宝|耳钉|date|polished/i.test(text)) score += 1;
+  return score;
+}
+
+function stylePreferredPool(pool, styleHint = null) {
+  if (!Array.isArray(pool) || !pool.length || !String(styleHint || '').trim()) return pool;
+  const scored = pool.map((look) => ({ look, score: outfitStyleHintScore(look, styleHint) }));
+  const maxScore = Math.max(...scored.map((item) => item.score));
+  if (maxScore <= 0) return pool;
+  return scored.filter((item) => item.score === maxScore).map((item) => item.look);
 }
 
 /** 内衣抽屉：日常款 + 精致款 + 私密款，全是一线 */
@@ -482,6 +570,48 @@ export function defaultWardrobeCatalog() {
       },
     },
     {
+      id: 'date_silk_ivory',
+      context: 'date',
+      style: '约会',
+      summary: 'Totême 象牙白真丝长裙，Manolo Blahnik 低跟，Bottega Veneta 手包',
+      pieces: { dress: 'Totême 象牙白真丝长裙', shoes: 'Manolo Blahnik 低跟鞋', bag: 'Bottega Veneta Jodie', jewelry: ['珍珠耳钉'] },
+    },
+    {
+      id: 'date_burgundy',
+      context: 'date',
+      style: '约会',
+      summary: 'Khaite 酒红针织裙，Saint Laurent 黑色高跟，Celine Triomphe',
+      pieces: { dress: 'Khaite 酒红针织裙', shoes: 'Saint Laurent 黑色高跟鞋', bag: 'Celine Triomphe', jewelry: ['Cartier 细链'] },
+    },
+    {
+      id: 'date_navy',
+      context: 'date',
+      style: '约会',
+      summary: 'Loro Piana 深海军蓝套裙，Roger Vivier 方扣低跟，Hermès Constance',
+      pieces: { dress: 'Loro Piana 深海军蓝套裙', shoes: 'Roger Vivier 方扣低跟鞋', bag: 'Hermès Constance', jewelry: ['Boucheron 耳环'] },
+    },
+    {
+      id: 'date_satin_green',
+      context: 'date',
+      style: '约会',
+      summary: 'Victoria Beckham 墨绿缎面裙，Gianvito Rossi 细跟，The Row 手包',
+      pieces: { dress: 'Victoria Beckham 墨绿缎面裙', shoes: 'Gianvito Rossi 细跟鞋', bag: 'The Row 手包', jewelry: ['金色细耳圈'] },
+    },
+    {
+      id: 'date_cashmere',
+      context: 'date',
+      style: '约会',
+      summary: 'Brunello Cucinelli 奶咖羊绒裙，Loro Piana 短靴，Loewe Puzzle',
+      pieces: { dress: 'Brunello Cucinelli 奶咖羊绒裙', outer: 'Max Mara 羊绒大衣', shoes: 'Loro Piana 包头短靴', bag: 'Loewe Puzzle 迷你' },
+    },
+    {
+      id: 'date_blue',
+      context: 'date',
+      style: '约会',
+      summary: 'Akris 雾蓝连衣裙，Ferragamo 低跟鞋，Chanel Classic Flap',
+      pieces: { dress: 'Akris 雾蓝连衣裙', shoes: 'Ferragamo 包头低跟鞋', bag: 'Chanel Classic Flap 中号', jewelry: ['Van Cleef 蓝玛瑙耳钉'] },
+    },
+    {
       id: 'outing_casual',
       context: 'outing',
       style: '外出',
@@ -518,27 +648,126 @@ export function defaultWardrobeCatalog() {
 /**
  * 根据时间/活动/健康/亲密阶段推断穿搭情境。
  */
-export function inferOutfitContext({ hour = 12, life = null, intimacy = null, now = Date.now() } = {}) {
+/**
+ * O-5: 情绪 → 穿搭情境和风格偏移。
+ * 工作、运动、睡眠、病中和亲密是硬情境，情绪不能覆盖。
+ * @param emotionLabel 当前 EMOTION_LABELS 标签
+ * @param baseContext 时间/生活情境已推导的 context
+ */
+export function emotionToOutfitHint(emotionLabel = null, baseContext = 'home') {
+  const context = OUTFIT_CONTEXTS.includes(baseContext) ? baseContext : 'home';
+  const label = String(emotionLabel || '').trim();
+  if (!label || ['work', 'sport', 'sleep', 'intimate', 'sick'].includes(context)) {
+    return { context, styleHint: null };
+  }
+  if (['无聊', '烦躁', '委屈', '失落', '担心'].includes(label)) {
+    return { context: 'home', styleHint: 'casual relaxed' };
+  }
+  if (label === '期待') {
+    return {
+      context: ['home', 'date', 'outing'].includes(context) ? 'date' : context,
+      styleHint: 'polished date-ready',
+    };
+  }
+  if (['骄傲', '暧昧'].includes(label)) {
+    return {
+      context: ['home', 'date', 'outing'].includes(context) ? 'date' : context,
+      styleHint: 'polished',
+    };
+  }
+  if (label === '开心') return { context, styleHint: 'bright-color' };
+  return { context, styleHint: null };
+}
+
+export function applyEmotionToContext(emotionLabel = null, baseContext = 'home') {
+  return emotionToOutfitHint(emotionLabel, baseContext).context;
+}
+
+/**
+ * 将情绪风格落到最终 look。开心时加入可被旁白读取的明快色彩标签；
+ * 亲密等硬情境保持原样，避免情绪映射破坏场景穿搭。
+ */
+export function applyEmotionToLook(look, emotionLabel = null) {
+  const normalized = normalizeLook(look);
+  if (!normalized) return null;
+  const hint = emotionToOutfitHint(emotionLabel, normalized.context);
+  if (!hint.styleHint || normalized.context === 'intimate') return normalized;
+
+  const pieces = { ...(normalized.pieces || {}) };
+  let style = normalized.style || '';
+  if (hint.styleHint.includes('bright-color')) {
+    if (!BRIGHT_COLOR_RE.test(lookSearchText(normalized))) {
+      const accessories = Array.isArray(pieces.accessories)
+        ? [...pieces.accessories]
+        : pieces.accessories
+          ? [String(pieces.accessories)]
+          : [];
+      accessories.push('明快亮色点缀');
+      pieces.accessories = accessories.slice(0, 8);
+    }
+    if (!style.includes('明快亮色')) {
+      style = [style, '明快亮色'].filter(Boolean).join('·');
+    }
+  } else if (hint.styleHint.includes('casual')) {
+    if (!style.includes('松弛休闲')) {
+      style = [style, '松弛休闲'].filter(Boolean).join('·');
+    }
+  } else if (hint.styleHint.includes('polished')) {
+    if (!style.includes('精致期待感')) {
+      style = [style, '精致期待感'].filter(Boolean).join('·');
+    }
+  }
+  return normalizeLook({
+    ...normalized,
+    context: hint.context,
+    pieces,
+    style,
+    summary: piecesToSummary(pieces),
+  });
+}
+
+export function inferOutfitContext({ hour = 12, life = null, intimacy = null, now = Date.now(), emotionLabel = null } = {}) {
   if (isSick(life, now)) return 'sick';
   const phase = intimacy?.scene_phase;
-  if (['foreplay', 'peak', 'aftercare', 'flirting'].includes(phase) && (hour >= 21 || hour < 9 || phase !== 'flirting')) {
-    if (['foreplay', 'peak', 'aftercare'].includes(phase)) return 'intimate';
+  // O-4: 亲密场景感知穿搭切换
+  // flirting/foreplay/peak → intimate 前置或亲密装；aftercare → home 宽松装。
+  if (phase === 'flirting' || phase === 'foreplay' || phase === 'peak') {
+    return 'intimate';
   }
+  if (phase === 'aftercare') return 'home';
   const act = String(life?.current_activity ?? '');
   if (/健身|运动|跑步/.test(act)) return 'sport';
   if (/睡|床上|被窝|困/.test(act) || hour >= 23 || hour < 6) return 'sleep';
-  if (/开会|公司|办公|董事长|工位/.test(act) || (hour >= 9 && hour < 18 && !/在家|居家/.test(act))) return 'work';
   if (/约会|餐厅|电影|逛街/.test(act)) return 'date';
   if (/外面|出门|咖啡|商场|公园/.test(act)) return 'outing';
-  if (hour >= 21 || hour < 8) return 'home';
-  return 'home';
+  if (/开会|公司|办公|董事长|工位/.test(act) || (hour >= 9 && hour < 18 && !/在家|居家/.test(act))) return 'work';
+  const base = hour >= 21 || hour < 8 ? 'home' : 'home';
+  // O-5: 情绪微调穿搭情境（不覆盖明确活动/时间指向）
+  return applyEmotionToContext(emotionLabel, base);
 }
 
-/** 从衣橱按情境选一套；preferId 优先；outing/home 可按季节偏好四季主 look。 */
-export function pickOutfit(wardrobe, context = 'home', { preferId = null, avoidId = null, rng = Math.random, season = null, now = Date.now() } = {}) {
+/**
+ * 从衣橱按情境选一套。
+ * O-3: avoidIds 是七日去重硬约束，先于 preferId 和所有软排序；只有情境内
+ * 已无未穿候选时才回退到完整池，此时可重新采用喜欢款。
+ */
+export function pickOutfit(wardrobe, context = 'home', {
+  preferId = null,
+  avoidId = null,
+  avoidIds = null,
+  rng = Math.random,
+  season = null,
+  now = Date.now(),
+  styleHint = null,
+} = {}) {
   const cat = normalizeWardrobe(wardrobe);
   const ctx = OUTFIT_CONTEXTS.includes(context) ? context : 'home';
   const seasonNow = OUTFIT_SEASONS.includes(season) ? season : inferSeason(now);
+  // O-3: 合并单个 avoidId 与批量 avoidIds 为一个 Set
+  const avoidSet = new Set(avoidIds ? (Array.isArray(avoidIds) ? avoidIds : [...avoidIds]) : []);
+  if (avoidId) avoidSet.add(avoidId);
+  const shouldAvoid = (id) => avoidSet.size > 0 && avoidSet.has(id);
+
   let pool = cat.wardrobe.filter((w) => w.context === ctx || (Array.isArray(w.contexts) && w.contexts.includes(ctx)));
   // contexts 字段兼容：normalizeLook 只存单一 context；支持 multi via raw
   if (!pool.length) {
@@ -548,15 +777,32 @@ export function pickOutfit(wardrobe, context = 'home', { preferId = null, avoidI
   if (!pool.length && ctx === 'sick') pool = cat.wardrobe.filter((w) => w.context === 'home');
   if (!pool.length) pool = cat.wardrobe;
 
+  // 先应用七日去重，再做天气/情绪/偏好等软排序。若仍有任何未穿候选，
+  // preferred/default/seasonal 都不得把已穿款重新带回池中。
+  const unavoidedPool = avoidSet.size > 0
+    ? pool.filter((w) => !shouldAvoid(w.id))
+    : pool;
+  const avoidanceExhausted =
+    avoidSet.size > 0 && unavoidedPool.length === 0;
+  pool = unavoidedPool.length ? unavoidedPool : pool;
+  pool = stylePreferredPool(pool, styleHint);
+
   if (preferId) {
-    const hit = pool.find((w) => w.id === preferId) || cat.wardrobe.find((w) => w.id === preferId);
+    const hit = pool.find((w) => w.id === preferId)
+      || (!String(styleHint || '').trim()
+        ? cat.wardrobe.find(
+            (w) =>
+              w.id === preferId &&
+              (avoidanceExhausted || !shouldAvoid(w.id)),
+          )
+        : null);
     if (hit) return attachDefaultLingerie({ ...hit, context: ctx }, cat.lingerie) || { ...hit, context: ctx };
   }
   // 季节主 look：outing / 无强默认时优先
   const seasonalId = cat.seasonal?.[seasonNow];
   if (seasonalId && (ctx === 'outing' || ctx === 'home' || ctx === 'date')) {
-    const hit = cat.wardrobe.find((w) => w.id === seasonalId);
-    if (hit && hit.id !== avoidId) {
+    const hit = pool.find((w) => w.id === seasonalId);
+    if (hit && !shouldAvoid(hit.id)) {
       return attachDefaultLingerie({ ...hit, context: ctx }, cat.lingerie) || { ...hit, context: ctx };
     }
   }
@@ -567,54 +813,116 @@ export function pickOutfit(wardrobe, context = 'home', { preferId = null, avoidI
   }
   const defaultId = cat.defaults?.[ctx];
   if (defaultId) {
-    const hit = cat.wardrobe.find((w) => w.id === defaultId);
-    if (hit && hit.id !== avoidId) return attachDefaultLingerie({ ...hit, context: ctx }, cat.lingerie) || { ...hit, context: ctx };
+    const hit = pool.find((w) => w.id === defaultId);
+    if (hit && !shouldAvoid(hit.id)) return attachDefaultLingerie({ ...hit, context: ctx }, cat.lingerie) || { ...hit, context: ctx };
   }
-  const filtered = avoidId ? pool.filter((w) => w.id !== avoidId) : pool;
-  const list = filtered.length ? filtered : pool;
-  const i = Math.min(list.length - 1, Math.floor(rng() * list.length));
-  const chosen = { ...list[i], context: ctx };
+  const i = Math.min(pool.length - 1, Math.floor(rng() * pool.length));
+  const chosen = { ...pool[i], context: ctx };
   // 自动补内衣（衣橱未写时从内衣抽屉按情境取）
   return attachDefaultLingerie(chosen, cat.lingerie) || chosen;
+}
+
+/**
+ * O-2：为真实换装路径解析已持久化偏好。候选先按目标情境收窄；嫌弃款和当前款
+ * 不得成为 preferId，避免用户说“换一套”却因为旧好评又选回原装。
+ */
+function outfitPreferenceChoice(state, wardrobe, context) {
+  const cur = clampOutfitState(state);
+  const cat = normalizeWardrobe(wardrobe);
+  const ctx = OUTFIT_CONTEXTS.includes(context) ? context : 'home';
+  let pool = cat.wardrobe.filter((look) => look.context === ctx);
+  if (!pool.length && ctx === 'intimate') {
+    pool = cat.wardrobe.filter(
+      (look) => look.context === 'home' || look.id.includes('shirt'),
+    );
+  }
+  if (!pool.length && ctx === 'sick') {
+    pool = cat.wardrobe.filter((look) => look.context === 'home');
+  }
+  if (!pool.length) pool = cat.wardrobe;
+
+  const avoidIds = new Set([
+    ...(cur.current?.id ? [cur.current.id] : []),
+    ...cur.disliked_ids,
+  ]);
+  const preferId = resolvePreferId(
+    cur,
+    pool.map((look) => look.id).filter((id) => !avoidIds.has(id)),
+  );
+  return { wardrobe: cat, preferId, avoidIds: [...avoidIds] };
 }
 
 /**
  * 读取时：若无当前穿搭或情境变了太久，可惰性换装。
  * 不每小时乱换——情境变化或超过 maxHours 才换。
  */
-export function evolveOutfitState(state, { hour, life, intimacy, wardrobe, now = Date.now(), config = PARAMS.outfit } = {}) {
+export function evolveOutfitState(state, {
+  hour,
+  life,
+  intimacy,
+  emotionLabel = null,
+  wardrobe,
+  now = Date.now(),
+  config = PARAMS.outfit,
+} = {}) {
   const cur = clampOutfitState(state);
-  const targetCtx = inferOutfitContext({ hour, life, intimacy, now });
+  const targetCtx = inferOutfitContext({
+    hour,
+    life,
+    intimacy,
+    emotionLabel,
+    now,
+  });
   const maxHours = num(config?.maxHoursSameOutfit, 14);
   const hoursSince =
     cur.changed_at || cur.updated_at
       ? Math.max(0, (now - new Date(cur.changed_at || cur.updated_at).getTime()) / HOUR)
       : 999;
 
+  const phase = intimacy?.scene_phase;
+  const immediateSceneSwitch =
+    ['flirting', 'foreplay', 'peak', 'aftercare'].includes(phase) &&
+    cur.context !== targetCtx;
+  const immediateEmotionSwitch =
+    Boolean(emotionLabel) &&
+    cur.context !== targetCtx &&
+    applyEmotionToContext(emotionLabel, cur.context) !== cur.context;
   const needChange =
     !cur.current ||
-    (cur.context !== targetCtx && hoursSince >= num(config?.minHoursBeforeSwitch, 0.5)) ||
+    immediateSceneSwitch ||
+    immediateEmotionSwitch ||
+    (cur.context !== targetCtx &&
+      hoursSince >= num(config?.minHoursBeforeSwitch, 0.5)) ||
     (hoursSince >= maxHours && cur.context !== targetCtx);
 
   if (!needChange) {
+    const styledCurrent = applyEmotionToLook(cur.current, emotionLabel);
+    const styleChanged =
+      JSON.stringify(styledCurrent) !== JSON.stringify(cur.current);
+    const stamp = styleChanged ? new Date(now).toISOString() : cur.changed_at;
     return clampOutfitState({
       ...cur,
+      current: styledCurrent,
       context: cur.current?.context || cur.context,
+      changed_at: stamp,
+      updated_at: styleChanged ? stamp : cur.updated_at,
       daily_key: cur.daily_key,
       composed_from: cur.composed_from,
       daily_photo: cur.daily_photo,
     });
   }
 
-  const look = pickOutfit(wardrobe, targetCtx, {
-    preferId: null,
-    avoidId: cur.current?.id,
+  const preference = outfitPreferenceChoice(cur, wardrobe, targetCtx);
+  const look = applyEmotionToLook(pickOutfit(preference.wardrobe, targetCtx, {
+    preferId: preference.preferId,
+    avoidIds: preference.avoidIds,
     now,
     season: inferSeason(now),
-  });
+  }), emotionLabel);
   const stamp = new Date(now).toISOString();
   // 同日情境换装：保留 daily_key / 今日成片，不覆盖日更相册
   return clampOutfitState({
+    ...cur,
     current: look,
     context: targetCtx,
     changed_at: stamp,
@@ -628,7 +936,7 @@ export function evolveOutfitState(state, { hour, life, intimacy, wardrobe, now =
 /** 对话触发换装（用户说换衣服 / 她说换了衣服） */
 export function detectOutfitIntent(text = '') {
   const s = String(text ?? '');
-  const change = /(换(件|套|身)?衣服|换装|换好了|穿上了|换上|脱掉|只穿|衬衫|睡衣|西装|裙子|内衣)/u.test(s);
+  const change = /(换(一)?(件|套|身)(衣服)?|换衣服|换装|换好了|穿上了|换上|脱掉|只穿|衬衫|睡衣|西装|裙子|内衣)/u.test(s);
   const ask = /(穿(的|了)?什么|今天穿|你穿|身上|衣服|好看|打扮)/u.test(s);
   return { change, ask };
 }
@@ -639,7 +947,8 @@ export function detectOutfitIntent(text = '') {
 export function applyOutfitFromTurns(state, turns = [], wardrobe, now = Date.now()) {
   const text = turns.map((t) => t?.content ?? '').join('\n');
   const intent = detectOutfitIntent(text);
-  if (!intent.change && !intent.ask) return { state: clampOutfitState(state), changed: false };
+  const cur = clampOutfitState(state);
+  if (!intent.change && !intent.ask) return { state: cur, changed: false };
 
   const cat = normalizeWardrobe(wardrobe);
   let look = null;
@@ -648,12 +957,19 @@ export function applyOutfitFromTurns(state, turns = [], wardrobe, now = Date.now
   if (!look && /西装|开会|公司/u.test(text)) look = cat.wardrobe.find((w) => w.context === 'work');
   if (!look && /运动|健身/u.test(text)) look = cat.wardrobe.find((w) => w.context === 'sport');
   if (!look && /裙子|约会/u.test(text)) look = cat.wardrobe.find((w) => w.context === 'date');
-  if (!look && intent.change) look = pickOutfit(cat, clampOutfitState(state).context || 'home', { avoidId: state?.current?.id });
+  if (!look && intent.change) {
+    const preference = outfitPreferenceChoice(cur, cat, cur.context || 'home');
+    look = pickOutfit(preference.wardrobe, cur.context || 'home', {
+      preferId: preference.preferId,
+      avoidIds: preference.avoidIds,
+    });
+  }
 
-  if (!look) return { state: clampOutfitState(state), changed: false, asked: intent.ask };
+  if (!look) return { state: cur, changed: false, asked: intent.ask };
   const stamp = new Date(now).toISOString();
   return {
     state: clampOutfitState({
+      ...cur,
       current: look,
       context: look.context,
       changed_at: stamp,
@@ -799,6 +1115,7 @@ export class OutfitDimension {
     now = () => Date.now(),
     wardrobe = null,
     config = PARAMS.outfit,
+    weatherProvider = null,
   } = {}) {
     Object.assign(this, {
       userId,
@@ -808,6 +1125,7 @@ export class OutfitDimension {
       now,
       wardrobe: normalizeWardrobe(wardrobe),
       config: config ?? PARAMS.outfit,
+      weatherProvider,
     });
   }
 
@@ -828,18 +1146,45 @@ export class OutfitDimension {
     return this.config?.enabled !== false;
   }
 
-  async snapshot({ life = null, intimacy = null } = {}) {
+  async snapshot({
+    life = null,
+    intimacy = null,
+    emotionLabel = null,
+    weatherContext = null,
+  } = {}) {
     if (!this.enabled()) return defaultOutfitState();
     const stored = this.userId ? await this.read(this.userId, this.companionId) : defaultOutfitState();
     const hour = new Date(this.now()).getHours();
     const now = this.now();
+    let resolvedWeather = weatherContext;
+    if (!resolvedWeather && this.weatherProvider) {
+      try {
+        const raw =
+          typeof this.weatherProvider === 'function'
+            ? await this.weatherProvider()
+            : typeof this.weatherProvider.weather === 'function'
+              ? await this.weatherProvider.weather()
+              : await this.weatherProvider.fetch?.();
+        if (raw) {
+          resolvedWeather = {
+            temperature: raw.temperature ?? raw.tempC,
+            condition: raw.condition ?? raw.desc,
+            humidity: raw.humidity ?? null,
+          };
+        }
+      } catch {
+        resolvedWeather = null;
+      }
+    }
     // 动态 import 避免 outfit ↔ dailyLook 环依赖
-    const { ensureDailyLookState } = await import('./dailyLook.js');
+    const { ensureDailyLookState, enforceWeatherOutfit } = await import('./dailyLook.js');
     // 新的一天：从衣橱+抽屉组合今日主 look
     const daily = ensureDailyLookState(stored, {
       wardrobe: this.wardrobe,
       life,
       intimacy,
+      emotionLabel,
+      weatherContext: resolvedWeather,
       now,
       config: this.config,
     });
@@ -848,13 +1193,20 @@ export class OutfitDimension {
       hour,
       life,
       intimacy,
+      emotionLabel,
       wardrobe: this.wardrobe,
       now,
       config: this.config,
     });
+    const weatherSafeCurrent = enforceWeatherOutfit(
+      evolved.current,
+      this.wardrobe,
+      resolvedWeather,
+    );
     // 情境换装后仍挂上 daily_key（若 ensure 刚写入）
     const next = clampOutfitState({
       ...evolved,
+      current: weatherSafeCurrent,
       daily_key: evolved.daily_key || base.daily_key,
       composed_from: evolved.composed_from || base.composed_from,
       daily_photo: evolved.daily_photo || base.daily_photo,
@@ -862,6 +1214,7 @@ export class OutfitDimension {
     const changed =
       daily.composed
       || (next.changed_at && next.changed_at !== stored.changed_at)
+      || JSON.stringify(next.current) !== JSON.stringify(stored.current)
       || next.daily_key !== stored.daily_key;
     if (this.userId && changed) {
       await this.write(this.userId, this.companionId, next, now).catch(() => {});
@@ -872,6 +1225,7 @@ export class OutfitDimension {
   async evolve(turns = [], ctx = {}) {
     if (!this.enabled()) return defaultOutfitState();
     let base = await this.snapshot(ctx);
+    const previousOutfitId = base.current?.id ?? null;
     const applied = applyOutfitFromTurns(base, turns, this.wardrobe, this.now());
     let next = applied.state;
     if (!applied.changed) {
@@ -880,6 +1234,7 @@ export class OutfitDimension {
         hour: new Date(this.now()).getHours(),
         life: ctx.life,
         intimacy: ctx.intimacy,
+        emotionLabel: ctx.emotionLabel,
         wardrobe: this.wardrobe,
         now: this.now(),
         config: this.config,
@@ -892,7 +1247,14 @@ export class OutfitDimension {
       daily_photo: next.daily_photo ?? base.daily_photo,
     });
     if (this.userId) await this.write(this.userId, this.companionId, next, this.now());
-    return { ...next, _meta: { changed: applied.changed || next.changed_at !== base.changed_at, asked: applied.asked } };
+    return {
+      ...next,
+      _meta: {
+        changed: applied.changed || next.changed_at !== base.changed_at,
+        asked: applied.asked,
+        previousOutfitId,
+      },
+    };
   }
 
   toPrompt(outfit, opts = {}) {

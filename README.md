@@ -143,6 +143,46 @@ const scheduler = new ProactiveScheduler({
 await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 ```
 
+## 持续存在引擎
+
+`ContinuousExistenceEngine` 把时间感知、主动意志、参数化人格与自我一致性绑定到同一份连续状态。Telegram、飞书、Discord 的生产会话和控制台试聊已经自动接入；`CompanionRuntime` 每 30 秒推进一次心跳，用户消息则按 `Perceive → Prompt → Validate → Commit` 顺序接入。
+
+老库先执行一次幂等迁移：
+
+```bash
+npm run db:sql -- sql/continuous_state.sql
+```
+
+也可以像以往一样重新执行完整 `sql/schema.sql`。迁移新增：
+
+- `companion_continuous_state`：情绪、思念、期待、疲惫、主动冲动与自我一致性
+- `companion_private_memory`：沉默超过 2 小时后形成的私有主观记忆（不会进入聊天记录）
+- `companion_personality`：五层人格参数、自我模型与渐进漂移历史
+
+独立接入时：
+
+```js
+import {
+  createPersistentExistenceEngine,
+  personalitySeedFromCompanionConfig,
+} from 'cyber-memory';
+
+const existence = createPersistentExistenceEngine({
+  userId: 'u_123',
+  companionId: 'default',
+  historyStore,
+  personalitySeed: personalitySeedFromCompanionConfig(companionConfig),
+});
+
+const bot = new Orchestrator({
+  userId: 'u_123',
+  deps: { historyStore, existence },
+});
+existence.memory = bot.memory; // 允许沉默固化后重加权已有记忆
+```
+
+心跳产生的主动冲动不会直接绕过投递策略：仍须通过 `ProactiveScheduler` 的安静时段、冷却和每日上限。没有足够具体的内部理由或缺少可学习的接收窗口时，决策默认不发送。
+
 ## 本地控制台
 
 ```bash
@@ -306,6 +346,8 @@ Discord 私聊会直接回复；服务器频道中只有提及机器人时才回
 | `src/knowledge/` | K1 结构化知识图谱: `extract`(对话→实体关系三元组) / `store`(幂等 upsert) / `recall`(入口实体向量召回 + 有界多跳展开 + 注入格式化); observe/recall 自动参与, 失败安全降级 |
 | `src/memory.js` | 门面类 `Memory` |
 | `src/orchestrator/` | 编排器: `Orchestrator` 门面 + 把 Memory/persona/stateLayer/relationship 适配成统一 `toPrompt` 接口, `assemble` 纯本地拼接 prompt |
+| `src/existence/` | 持续存在引擎: 连续状态、时间预测、心跳、主动意志、人格编译、自我一致性与跨会话固化 |
+| `src/eval/` | 模型适配评测: probe、judge 评分、参数 sweep、人设适配与上线建议报告 |
 | `src/ui/` | 本地控制台 (`npm run ui`): 浏览器里填密钥写回 `.env` + 连接体检 + Telegram bot 启停; `envfile.js` 为纯逻辑可单测 |
 
 ## 测试
@@ -327,6 +369,11 @@ npm run test:reconsolidate # M3 灵魂: 和好后旧怨回暖, 但 fact_core 一
 npm run bench:memory       # 记忆检索基准，输出 Recall@5/10 与 MRR
 npm run eval:dialogue      # 多轮场景的五维 rubric 报告
 npm run bench:ablation     # 七项机制消融报告
+npm run eval:fitness:probe # 只采集模型回复并写入按日缓存
+npm run eval:fitness:score # 对默认参数做一次 probe + judge，生成报告
+npm run eval:fitness:sweep # 只搜索 temperature/top_p，不继续跑人设适配
+npm run eval:fitness:persona # 用指定/默认参数单独比较四套人设
+npm run eval:fitness       # 完整执行 baseline → sweep → persona → final report
 npm run inspect -- trace 2026-07-27  # 查看逐轮 trace 与当日成本
 npm run labels:prepare -- 2026-07-27 # 从真实 trace 生成脱敏待标注集
 ```

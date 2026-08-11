@@ -254,6 +254,22 @@ export class ProactiveScheduler {
     const relState = typeof this.orchestrator.relationship?.current === 'function'
       ? await this.orchestrator.relationship.current().catch(() => null)
       : null;
+    const supportsExistence =
+      typeof this.orchestrator.existence?.decideContact === 'function';
+    const existenceDecision =
+      ctx.existenceDecision ??
+      (supportsExistence
+        ? await this.orchestrator.existence
+            .decideContact({
+              now,
+              stateSnapshot,
+              relationship: relState?.relationship ?? relState ?? {},
+            })
+            .catch(() => null)
+        : null);
+    const existenceReason = existenceDecision?.contact
+      ? formatExistenceReason(existenceDecision.reason)
+      : null;
     const urgency = desireUrgency(stateSnapshot?.desires);
     // I5: 亲密紧迫度（仅冷却系数与语气；仍受 quietHours / 每日上限硬约束）
     let intimacyUrg = { urgent: false, cooldownFactor: 1, tone: '', kind: null };
@@ -331,20 +347,24 @@ export class ProactiveScheduler {
       bedtimeTier,
       lifeActivity: stateSnapshot?.life?.current_activity,
       life: stateSnapshot?.life,
-      defaultReason: this.defaultReason,
+      defaultReason: ctx.reason ?? existenceReason ?? this.defaultReason,
       emotionLabel: emotionResidue?.label || null,
       emotionResidue,
     });
 
     const gateKinds = new Set(['prospective', 'story', 'desire', 'intimacy', 'bedtime', 'silence']);
+    const contentPackGate =
+      gateKinds.has(contentPack.primary?.kind) &&
+      !(supportsExistence && contentPack.primary?.kind === 'silence');
     const hasGate =
       Boolean(ctx.reason) ||
       dueItems.length > 0 ||
       urgency.urgent ||
       intimacyUrg.urgent ||
       Boolean(bedtimeTier) ||
-      Boolean(silenceTier) ||
-      gateKinds.has(contentPack.primary?.kind);
+      Boolean(existenceDecision?.contact) ||
+      (!supportsExistence && Boolean(silenceTier)) ||
+      contentPackGate;
 
     // 新版接入有需求快照时，不再让纯 cron / 仅 activity 在无动机时凭空发消息。
     if (supportsDesires && !hasGate) {
@@ -366,6 +386,7 @@ export class ProactiveScheduler {
       unfinished,
       silenceTier,
       bedtimeTier,
+      existenceDecision,
       shouldSend: true,
     });
     if (!message) return { sent: false, reason: 'orchestrator_skipped' };
@@ -376,6 +397,11 @@ export class ProactiveScheduler {
     }
     const nextState = markProactiveSent(state, now, effectivePolicy);
     await this.stateStore.save(nextState, { userId, companionId });
+    if (typeof this.orchestrator.existence?.markContacted === 'function') {
+      await this.orchestrator.existence
+        .markContacted({ now, decision: existenceDecision, message })
+        .catch(() => {});
+    }
 
     const firedIds = dueItems.map((item) => item?.id).filter(Boolean);
     if (firedIds.length > 0) await this.markFired(firedIds).catch(() => {});
@@ -390,6 +416,7 @@ export class ProactiveScheduler {
       urgency,
       emotionLabel,
       behaviorPolicy: behavior,
+      existenceDecision,
       state: nextState,
     };
   }
@@ -421,6 +448,20 @@ function formatDesireReason(urgency) {
     security: '对这段关系有点不踏实，想得到一点温柔的确认',
   }[urgency.need];
   return reason ?? null;
+}
+
+function formatExistenceReason(reason) {
+  if (!reason) return '就是有点想对方了';
+  if (typeof reason === 'string') return reason;
+  if (reason.content) return String(reason.content);
+  const fallback = {
+    pure_longing: '就是有点想对方了',
+    concern: '今天比平时安静，有一点惦记',
+    unfinished_topic: '还有一件没说完的事一直挂在心里',
+    memory_surfaced: '刚刚有段共同记忆忽然浮上来',
+    recurring_thought: '有个念头反复冒出来，很想告诉对方',
+  }[reason.type];
+  return fallback ?? '心里有个具体念头想跟对方说';
 }
 
 function localHour(now, timezoneOffsetMinutes) {

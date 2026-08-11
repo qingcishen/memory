@@ -1,7 +1,7 @@
 # 技术突破 v1 — 五大系统全面升级设计文档
 
 > 编写日期：2026-07-29  
-> 状态：**设计冻结，分循环实现**  
+> 状态：**结构实现与本地回归完成；真实数据/付费质量验收仍有待办**
 > 优先级顺序：记忆系统 > 情绪系统 > 亲密系统 > 穿搭系统 > 世界系统
 
 ---
@@ -181,7 +181,8 @@ Sprint E-4（3天）：
   测试：test/emotion-arc.test.js
 
 Sprint E-5（2天）：
-  修改 src/memory.js::observe：检测情绪账本，写强度高的事件为记忆
+  修改 src/memory.js::observe：接收本轮新增情绪账本事件，强度 ≥ 0.7 时安全写入
+  新建 src/state/emotionMemory.js：受控摘要 + eventId 幂等
   修改 src/state/emotionResonance.js：接入 emotion_event 类型记忆
   测试：test/emotion-memory.test.js
 ```
@@ -217,14 +218,14 @@ Sprint E-5（2天）：
 - 修改 `src/state/intimacy.js::evolveIntimacy()`
 
 **I-2：跨天张力弧线**（3天）
-- `sexual_tension` 每天沉默积累 `+0.02`（上限 0.9）
+- `sexual_tension` 按开放度、libido 与沉默时长连续积累（上限 0.9）
 - CEE heartbeat 检测：`sexual_tension > 0.6 + days_without_intimacy > 2` → `proactive_desire` 加权
 - 注入 prompt 层：张力 > 0.5 时添加"气氛微妙"暗示
 
 **I-3：亲密场景记忆**（3天）
-- `scene_phase = peak` 阶段对话结束后，自动提取场景摘要存入 `type=intimate_memory`
-- 只存事实（"第一次…""她特别…"），不存显式内容
-- `intimate_memory` 在日常对话不会被 recall（用 subject_kind 过滤），只在 intimate 场景中置优先级
+- `Memory.observe()` 根据权威 before/after 首次进入 `peak` / `aftercare`，写入 `type=intimate_memory`
+- 使用固定安全事实摘要，不接收或保存显式对话正文；`eventId + phase` 幂等
+- `intimate_memory` 在日常、romantic、关系底色与关系故事中均不可见，只在 intimate 场景中优先
 
 **I-4：自然 consent 节点**（2天）
 - 在 `src/state/intimacy.js` 中新增 `consentCueNeeded()` 检测
@@ -236,6 +237,7 @@ Sprint E-5（2天）：
 - beat 包含：`{ scene_beat, pace_instruction, sensory_focus, emotional_tone }`
 - 每个 beat 注入 system prompt（相当于给 LLM 一个"导演指令"）
 - 支持的 beat 模板：flirting × 3，foreplay × 5，peak × 4，aftercare × 3
+- beat cursor 只在完整 Commit 成功后推进，并随 SessionThread 持久化以支持冷启动续拍
 
 ### 3.3 实现计划
 
@@ -243,29 +245,29 @@ Sprint E-5（2天）：
 Sprint I-1（2天）：
   修改 src/state/intimacy.js：getAfterglowDelta() 函数
   修改 src/memory.js::observe：intimacy.afterglowDelta 注入 affect 合并
-  测试：test/intimacy-afterglow.test.js
+  测试：test/intimacy-core-acceptance.test.js
 
 Sprint I-2（3天）：
   修改 src/state/intimacy.js：evolveIntimacyOverTime 添加 tension 积累
   修改 src/existence/heartbeat.js：张力弧线检测 + desire 权重加成
   修改 src/existence/continuousState.js：sexual_tension 字段
-  测试：test/intimacy-arc.test.js
+  测试：test/intimacy-core-acceptance.test.js
 
 Sprint I-3（3天）：
-  新建 src/state/intimacyMemory.js：extractIntimateScene()
+  新建 src/state/intimacyMemory.js：权威 phase 迁移 → 安全摘要
   修改 src/memory.js::observe：intimate 场景结束时调用
-  修改 src/engine/index.js：intimate_memory subject 过滤
-  测试：test/intimacy-memory.test.js
+  修改 src/engine/index.js / src/retrieve.js：intimate_memory 场景隔离
+  测试：test/intimacy-memory.test.js + test/intimacy-memory-observe.test.js
 
 Sprint I-4（2天）：
   修改 src/state/intimacy.js：新增 consentCueNeeded()
-  修改 src/appearance/promptKit.js：注入 consent cue 片段
-  测试：test/intimacy-consent.test.js
+  修改 StateLayer / Orchestrator：透传转换前状态与当前反应
+  测试：test/intimacy-core-acceptance.test.js
 
 Sprint I-5（5天）：
   新建 src/state/intimacyScript.js：beat 模板库 + generateBeat()
-  修改 src/orchestrator.js（或等效）：亲密场景注入 beat
-  测试：test/intimacy-script.test.js
+  修改 Orchestrator / SessionThread / TurnCommit：注入并在成功提交后持久化 cursor
+  测试：test/intimacy-script.test.js + test/intimacy-beat-orchestrator.test.js
 ```
 
 ---
@@ -468,41 +470,50 @@ Sprint W-5（2天）：
 
 ## 七、验收标准
 
-每个系统突破完成后需满足：
+标记口径：
+
+- `[x]`：生产调用路径已接通，且有本地确定性测试或已有真实 bench 证据。
+- `[ ]`：验收明确要求真实库存、人工金标或付费模型评测，本轮没有用模拟结果冒充。
 
 ### 记忆系统
-- [ ] M-1: bench MRR ≥ 0.97，Recall@5 = 1.0（activation-hybrid 为默认）
-- [ ] M-2: 知识图谱 recall 命中率（实体查询）≥ 70%（100 条测试）
-- [ ] M-3: 300 条记忆的会话 recall latency p95 < 5s
-- [ ] M-4: 90d 未访问 + importance<3 记忆自动清除（测试套件验证）
-- [ ] M-5: 跨会话测试：上次对话末尾关键信息，下次对话无需用户重复可自动召回
+- [x] M-1: activation-hybrid 已为默认；真实 bench MRR = 1.0，Recall@5 = 1.0
+- [x] M-2（离线结构验收）: 2-hop 图谱作为 RRF 第三路接入；100 条确定性实体查询命中 85 条，并有 200ms 超时降级
+- [x] M-3（结构验收）: `>200` 触发、24h 冷却、旧 episode 链接 reflection、不删除原记录
+- [ ] M-3（性能验收）: 仍缺“同一会话真实库存 300 条记忆”的 recall p95 < 5s；现有 p95=3429ms bench 未证明库存为 300 条
+- [x] M-4: 正好 90d 未访问 + importance<3 的无保护记忆自动清除；fact_locked / dyad / relationship / 私密事件受保护
+- [x] M-5: 真实 `loadSessionThread → perceive → prompt` 跨会话路径可在首轮自动召回，且已消费桥不会泄漏到第三场会话
 
 ### 情绪系统
-- [ ] E-1: 16 标签全部有覆盖测试，新标签 F1 ≥ 0.7（vs 手标样本）
-- [ ] E-2: M1 mood.valence 与 CEE emotion_intensity 在同一对话内同向一致率 ≥ 85%
-- [ ] E-3: LLM 推断仅在 heuristic 置信度 < 0.5 时触发（每 3 轮最多 1 次）
-- [ ] E-4: 情绪弧线 weekly_distribution 在 3 天模拟数据后有准确更新
-- [ ] E-5: 情绪记忆在 E3 bench 中 naturalness ≥ 3.2
+- [x] E-1（结构验收）: 16 个标签全部有确定性覆盖测试，并补齐 sticky / prompt 下游
+- [ ] E-1（质量验收）: 尚无覆盖 16 类的人工金标集证明新标签 F1 ≥ 0.7；旧 8 类校准 artifact 的 macro-F1=0.346，不能作为通过证据
+- [x] E-2: CEE 离散标签为单一真相，M1 提供数值 valence；100 轮方向一致 100/100（原“intensity 同向”表述无符号意义，已按 CEE valence 验收）
+- [x] E-3: LLM 推断仅在 heuristic 置信度 < 0.5 时触发（每 3 轮最多 1 次）
+- [x] E-4: 情绪弧线 weekly_distribution 在 3 天模拟数据后准确更新，并由 heartbeat 维护 7 天滚动窗口
+- [x] E-5（结构验收）: 强度 ≥ 0.7 写 `emotion_event`，安全摘要、幂等重放并参与情绪共振
+- [ ] E-5（质量验收）: 情绪记忆在 E3 bench 中 naturalness ≥ 3.2（本轮未运行付费模型评测）
+- [x] E-6: 无聊/烦躁/期待/开心可驱动穿搭情境与风格，且不覆盖亲密场景
 
 ### 亲密系统
-- [ ] I-1: aftercare 后 M1 closeness 增量 ≥ 0.04（测试验证）
-- [ ] I-2: sexual_tension 弧线在 3 天沉默后 > 0.6（数学验证）
-- [ ] I-3: 亲密记忆不出现在日常召回（subject 过滤测试）
-- [ ] I-4: consent cue 在 flirting→foreplay 必然触发（单测验证）
-- [ ] I-5: E3 bench intimacy 场景 naturalness ≥ 3.5
+- [x] I-1: aftercare 后 M1 closeness 一次性 `+0.04`，完成后 2h 内再 `+0.03`（测试验证）
+- [x] I-2: 高开放关系 sexual_tension 在 3 天沉默后 `>0.6`、上限 `0.9`（数学验证）
+- [x] I-3: 亲密记忆使用独立类型、安全摘要和幂等键，日常召回/关系底色均不可见
+- [x] I-4: consent cue 仅在 `flirting → foreplay` 转换触发，并通过完整关系/身体/stop 门控
+- [x] I-5（结构验收）: 四阶段 15 个结构化 beat；普通、流式、冷启动、失败与重放均有回归测试
+- [ ] I-5（质量验收）: E3 bench intimacy 场景 naturalness ≥ 3.5（本轮未运行付费模型评测，不能提前勾选）
 
 ### 穿搭系统
-- [ ] O-1: 气温 < 15°C 时日常造型 100% 包含保暖款（100 次模拟验证）
-- [ ] O-2: 用户夸赞某件衣服后，下次 outfit 中该 item 出现频率增加（A/B 测试）
-- [ ] O-3: 连续 7 天约会造型无重复（循环测试）
-- [ ] O-4: intimacy.foreplay 阶段 outfit.context = 'intimate' 100% 覆盖
+- [x] O-1: 气温 < 15°C 时日常造型 100% 包含保暖款（100 次模拟验证；高温/雨天各另有 100 次）
+- [x] O-2: 用户夸赞某件衣服后，下次 outfit 中该 item 出现频率增加（100 vs 100 A/B：50% → 100%）
+- [x] O-3: 连续 7 天约会造型无重复（循环测试）
+- [x] O-4: flirting / foreplay 阶段 outfit.context = `intimate` 100% 覆盖，aftercare 回到 `home`
+- [x] O-5: 情绪会即时改变穿搭情境/风格，并保留亲密内搭优先级
 
 ### 世界系统
-- [ ] W-1: worldState 包含 location / season / events 结构化字段
-- [ ] W-2: stable_facts 经过 50 轮 evolve 调用后不变（回归测试）
-- [ ] W-3: weather.fetchWeather 在城市已知时返回 temperature + condition（集成测试）
-- [ ] W-4: 节假日当天 worldCalendar.isChinaHoliday 返回 true（节日表测试）
-- [ ] W-5: 雨天情绪基线 valence 比晴天低 0.05（数学验证）
+- [x] W-1: worldState 包含 location / timezone / season / weather / events 结构化字段
+- [x] W-2: stable_facts 经过 50 轮 evolve 和并发设置更新后保持不被 LLM 覆盖
+- [x] W-3: 已知城市天气返回 temperature + condition + humidity，缓存 1h，失败回退稳定季节模拟
+- [x] W-4: 中国节假日表、前后窗口、周几和事件倒计时均有测试
+- [x] W-5: 恶劣天气相对晴天 valence 精确 -0.05、arousal -0.1；使用瞬时副本，避免每轮累计漂移
 
 ---
 
@@ -523,3 +534,21 @@ Sprint W-5（2天）：
 | 日期 | 完成 Sprint | 备注 |
 |------|------------|------|
 | 2026-07-29 | 文档编写完成 | 代码实现从 M-1 开始 |
+| 2026-07-29 | M-2 知识图谱 RRF 第三路 | `knowledgeEntityRecall` 接入 `engineRecall`，3路 RRF |
+| 2026-07-29 | E-3 LLM 情绪推断触发 | `shouldLLMInfer` + `llmInferEmotionLabel`，异步 1/3 轮次 |
+| 2026-07-29 | O-3 日期穿搭去重 | `recent_looks[14]` 存储，最近 7 天 avoidIds 过滤 |
+| 2026-07-29 | W-4 中国节假日日历 | `upcomingHolidays()` 纯函数，注入 `toWorldPrompt` |
+| 2026-07-29 | W-5 天气情绪基线耦合 | `weatherToValenceDelta()` + 临时状态注入 interpretTurn |
+| 2026-07-29 | M-3 记忆层级压缩 | `src/memory/compress.js::compressEpisodeClusters()` |
+| 2026-07-29 | M-4 自动遗忘剪枝 | `Memory.pruneStale()` 接入夜间维护 maintain |
+| 2026-07-29 | O-4 亲密场景穿搭切换 | aftercare→home, flirting→date 上线 |
+| 2026-07-29 | O-5 情绪驱动穿搭 | `applyEmotionToContext()` 偏移穿搭情境 |
+| 2026-07-29 | M-5 跨会话工作记忆桥接 | `_buildCrossSessionBridge()` + session thread crossSessionContext |
+| 2026-07-29 | E-4 情绪弧线追踪 | CEE `weekly_distribution` 字段 + `_observeTurn` 计数 |
+| 2026-07-29 | E-5 情绪事件记忆重构 | journal 强事件经 Commit/队列进入 `Memory.observe`；安全摘要、事件幂等、resonance 接入 |
+| 2026-07-29 | I-1/I-2 验收修复 | afterglow 一次性结算 + aftercare 完成回暖；72h 张力弧线和 heartbeat 注入时钟 |
+| 2026-07-29 | I-3 亲密场景记忆重构 | `Memory.observe` 权威迁移写 `intimate_memory`；安全摘要、事件幂等、三层召回隔离 |
+| 2026-07-29 | I-4 自然同意节点重构 | 只在 `flirting → foreplay` 转换触发；模糊短问、积极反应顺势、退缩立即停 |
+| 2026-07-29 | I-5 结构化叙事脚本 | 四阶段 15 beat；cursor 仅在成功 Commit 后推进并随 SessionThread 持久化 |
+| 2026-07-29 | 修复后全量回归 | 39 个测试文件、1911/1911；typecheck；golden 20/20；v2 14/14；live matrix 逻辑项 11/11（付费自然度评测仍待运行） |
+| 2026-08-11 | 模型质量评测工作流收口 | probe/score/sweep/persona/full 阶段独立，当前配置缓存隔离与延迟统计修正；52 个测试文件、2037/2037 + typecheck 通过 |

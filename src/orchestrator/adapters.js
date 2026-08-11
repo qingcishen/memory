@@ -62,6 +62,11 @@ export class MemoryAdapter {
     return { block, hits, knowledge };
   }
 
+  /** M-5: 只读 48h 内工作记忆，供新会话首轮桥接。 */
+  recallWorkingMemory(opts = {}) {
+    return this._mem.recallWorkingMemory(opts);
+  }
+
   formatEvidence(hits = [], { knowledge = '' } = {}) {
     return [this._mem.toPrompt(hits), knowledge].filter(Boolean).join('\n\n');
   }
@@ -71,14 +76,14 @@ export class MemoryAdapter {
    * useLLM: true —— 让 M1 的状态机用 LLM 增量; life 注入后, 身心耦合增量在这次 affect 写入里一起落库。
    */
   async observe(turns, opts = {}) {
-    await this._mem.observe(turns, {
-      useLLM: true,
-      life: this._life,
-      desire: this._desire,
-      intimacy: this._intimacy,
-      outfit: this._outfit,
-      sceneType: opts.sceneType ?? this._lastSceneType,
+    return this._mem.observe(turns, {
       ...opts,
+      useLLM: opts.useLLM ?? true,
+      life: opts.life ?? this._life,
+      desire: opts.desire ?? this._desire,
+      intimacy: opts.intimacy ?? this._intimacy,
+      outfit: opts.outfit ?? this._outfit,
+      sceneType: opts.sceneType ?? this._lastSceneType,
     });
   }
 
@@ -97,6 +102,12 @@ export class MemoryAdapter {
   }
   dedupe(opts) {
     return this._mem.dedupe(opts);
+  }
+  compressIfNeeded(opts) {
+    return this._mem.compressIfNeeded(opts);
+  }
+  pruneStale(opts) {
+    return this._mem.pruneStale(opts);
   }
   /** M9 每日训练: 知识滴灌 + 自我日记, 见 src/training.js。 */
   train(opts) {

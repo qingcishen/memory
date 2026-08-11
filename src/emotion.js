@@ -54,10 +54,15 @@ export function moodToEmotion(state) {
 export function toEmotionPrompt(state) {
   if (!state) return '';
   const s = clampEmotion(state);
+  const rawArousal = Number(state.arousal);
   const mood = s.valence > 0.4 ? '心情不错' : s.valence < -0.2 ? '有点低落' : '比较平静';
   const warmth = s.warmth < 0.35 ? '对对方会稍微收着一点' : s.warmth > 0.72 ? '语气可以更柔软亲近' : '';
   const parts = [`你现在${mood}`];
   if (warmth) parts.push(warmth);
+  if (Number.isFinite(rawArousal)) {
+    if (rawArousal <= 0.4) parts.push('精神节奏偏低，反应可以更舒缓一点');
+    else if (rawArousal >= 0.75) parts.push('精神比较活跃，回应可以更有劲一些');
+  }
   return `${parts.join(', ')}。让它自然影响语气和话量, 别明说自己的情绪状态（禁止说「我现在心情不错/有点低落」这类自我播报）。`;
 }
 
