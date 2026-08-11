@@ -119,4 +119,24 @@ describe('belief repository temporal queries', () => {
       valid_to: renewedUntil,
     });
   });
+
+  it('supersedes a slot through the atomic temporal RPC', async () => {
+    const rpc = vi.fn(async () => ({ data: ['old-1', 'old-2'], error: null }));
+    const repository = new BeliefRepository({ client: { rpc } });
+
+    await expect(repository.supersedeSlot(
+      'u1',
+      'c1',
+      'user:current_activity',
+      '11111111-1111-1111-1111-111111111111',
+      '2026-08-11T12:00:00.000Z',
+    )).resolves.toEqual(['old-1', 'old-2']);
+    expect(rpc).toHaveBeenCalledWith('supersede_belief_slot', {
+      p_user_id: 'u1',
+      p_companion_id: 'c1',
+      p_slot_key: 'user:current_activity',
+      p_new_id: '11111111-1111-1111-1111-111111111111',
+      p_observed_at: '2026-08-11T12:00:00.000Z',
+    });
+  });
 });

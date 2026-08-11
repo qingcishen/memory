@@ -160,22 +160,15 @@ export class BeliefRepository {
   }
 
   async supersedeSlot(userId, companionId, slotKey, newId, now) {
-    const { data, error } = await this.client
-      .from('beliefs')
-      .update({
-        status: 'superseded',
-        superseded_by: newId,
-        valid_to: now,
-        updated_at: now,
-      })
-      .eq('user_id', userId)
-      .eq('companion_id', companionId)
-      .eq('slot_key', slotKey)
-      .eq('status', 'active')
-      .neq('id', newId)
-      .select('id');
+    const { data, error } = await this.client.rpc('supersede_belief_slot', {
+      p_user_id: userId,
+      p_companion_id: companionId,
+      p_slot_key: slotKey,
+      p_new_id: newId,
+      p_observed_at: now,
+    });
     if (error) throw error;
-    return (data ?? []).map((row) => row.id);
+    return Array.isArray(data) ? data.map(String) : [];
   }
 
   async insertEvidence(userId, companionId, beliefId, evidence) {

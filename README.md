@@ -4,7 +4,7 @@
 
 架构参考斯坦福 Generative Agents 的记忆模型,针对伴侣场景做了改动(情绪保护衰减、矛盾不覆盖而是 supersede)。
 
-完整介绍、接入流程和 API 说明见 [项目介绍与使用指南](docs/INTRODUCTION_AND_USAGE.md)。当前能力与验收见 [五系统升级文档](docs/tech-breakthrough-v1.md)，持续运行架构见 [持续存在引擎](docs/continuous-existence-engine.md)，回复主路径契约见 [v4 Turn Pipeline](docs/turn-pipeline-v4.md)，正在进行的任务与阻塞见 [协作日志](docs/collab.md)。早期 M0–M5、伴侣升级 v2 和可度量升级 v3 已移入 [历史文档归档](docs/archive/README.md)。
+完整介绍、接入流程和 API 说明见 [项目介绍与使用指南](docs/INTRODUCTION_AND_USAGE.md)。当前能力与验收见 [五系统升级文档](docs/tech-breakthrough-v1.md)，持续运行架构见 [持续存在引擎](docs/continuous-existence-engine.md)，回复主路径契约见 [v4 Turn Pipeline](docs/turn-pipeline-v4.md)，数据库地址与无密钥连接方式见 [Supabase 连接记录](docs/database-connection.md)，正在进行的任务与阻塞见 [协作日志](docs/collab.md)。早期 M0–M5、伴侣升级 v2 和可度量升级 v3 已移入 [历史文档归档](docs/archive/README.md)。
 
 ## 它解决什么
 

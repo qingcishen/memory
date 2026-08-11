@@ -73,6 +73,45 @@ create index if not exists belief_evidence_belief_idx
 create index if not exists belief_evidence_source_idx
   on belief_evidence (user_id, companion_id, source_kind, source_id);
 
+-- 同一 slot 的新信念原子取代旧信念。若两条证据具有完全相同的 observed_at，
+-- 旧信念至少保留 1 微秒有效区间，避免 valid_to = valid_from 违反时态约束。
+create or replace function supersede_belief_slot(
+  p_user_id text,
+  p_companion_id text,
+  p_slot_key text,
+  p_new_id uuid,
+  p_observed_at timestamptz
+) returns uuid[]
+language sql
+security definer
+set search_path = public
+as $$
+  with updated as (
+    update beliefs
+    set status = 'superseded',
+        superseded_by = p_new_id,
+        valid_to = case
+          when valid_from is not null
+            and coalesce(p_observed_at, now()) <= valid_from
+          then valid_from + interval '1 microsecond'
+          else coalesce(p_observed_at, now())
+        end,
+        updated_at = coalesce(p_observed_at, now())
+    where user_id = p_user_id
+      and companion_id = coalesce(p_companion_id, 'default')
+      and slot_key = p_slot_key
+      and status = 'active'
+      and id <> p_new_id
+    returning id
+  )
+  select coalesce(array_agg(id), '{}'::uuid[]) from updated;
+$$;
+
+revoke all on function supersede_belief_slot(text,text,text,uuid,timestamptz)
+  from public, anon, authenticated;
+grant execute on function supersede_belief_slot(text,text,text,uuid,timestamptz)
+  to service_role;
+
 create or replace function forget_memory_beliefs(
   p_user_id text,
   p_companion_id text,
@@ -149,3 +188,4 @@ grant execute on function forget_memory_beliefs(text,text,uuid[])
 
 alter table public.beliefs enable row level security;
 alter table public.belief_evidence enable row level security;
+notify pgrst, 'reload schema';
