@@ -129,6 +129,7 @@ export class Memory {
     const extraDeltas = mergeExtraDeltas(coupling ? couplingToDelta(coupling) : null, intimacyAffect, afterglowDelta, opts.extraDeltas);
 
     const extractOpts = {
+      eventId: opts.eventId ?? null,
       intimate: Boolean(
         opts.sceneType === 'intimate' ||
           ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyResult?.scene_phase)

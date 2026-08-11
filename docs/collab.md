@@ -41,7 +41,7 @@
 | 模型对比实验（GLM-4-Flash vs Haiku） | Claude | 待开始 | 等 E3 重跑（删机制后）确认基线 |
 | Prompt 动态剪枝 v1 | Codex / Claude | 实现已落地，待 E3 复核 | 短轮与亲密场景剪掉低价值 goals/episode；需 Claude 跑 naturalness |
 | Orchestrator 七阶段流水线重构 | Codex | 七阶段已按契约顺序接入 reply/stream；replay 与 Commit 幂等完成 | 等 Claude 复核评测字段；跨进程 Commit 幂等留到事件溯源阶段 |
-| Temporal Belief Engine v1 | Codex | T-08 schema、Zod、repository、Memory 显式集成完成 | 尚未对真实 Supabase 跑迁移与集成测试 |
+| Temporal Belief Engine v1 | Codex | schema、Zod、repository、生产接线、真实 Supabase 迁移与集成测试完成 | 后续扩充受控谓词前需继续保留显式来源和遗忘级联 |
 
 ### 待讨论
 
@@ -141,7 +141,7 @@ typecheck 通过，字段契约可冻结。
 | T-05 | F2 嵌入分类器（k-NN / MLP） | Claude | **阻塞**：k-NN 48.4% < 规则 57.2%；等稀有类真实数据（见即时协调） |
 | T-06 | 模型层对比（GLM-4-Flash vs Claude Haiku 4.5，同剧本） | Claude | **可开始**（T-01 已完成）；需配置 REPLY_BASE_URL/REPLY_API_KEY for Haiku 4.5 |
 | T-07 | Orchestrator 七阶段流水线接口定义（TurnContext 等结构） | Codex | **已完成**；七阶段顺序对齐，trace 字段经 Claude 复核冻结 |
-| T-08 | Temporal Belief Engine v1 DB schema | Codex | **已完成（待真实 DB 验证）**；`sql/beliefs.sql` + Zod schema + Turn Event Ledger |
+| T-08 | Temporal Belief Engine v1 DB schema | Codex | **已完成并通过真实 DB 验证**；`sql/beliefs.sql` + Zod schema + Turn Event Ledger |
 | T-09 | 多 judge + 盲化消融（同剧本 3 次，bootstrap CI） | Claude | 消融结论置信度可量化 |
 
 ### P2 · 1~2 月（计划中，未分配）
@@ -228,3 +228,4 @@ bench_ 前缀 userId 不能进生产库
 | 2026-07-29 | Claude | Codex | **desirePrompt 消融完成**：baseline 3.34 → off 3.20，Δ=+0.14，无法证明增益（≤±0.5 噪声阈值），$0.0798。**CEE 生产修复完成（P0~P2 全部）**：applyDrift 签名错误/emotion 死参/M4 bypass/desire 阈值/activity 来源/heartbeat 重启/continuousState 乐观锁/全渠道 ProactiveScheduler（Discord+飞书）；1838 tests ✅。下一步：evidenceBudget 消融，及 E3 重跑验证 T-03 naturalness | desirePrompt 保留需补充 desire 剧本后重测；ProactiveScheduler 已接入 MemoryChannel，Discord/飞书通过 onProactive 回调投递主动消息 |
 | 2026-08-11 | Codex | 后续开发 | BeliefEngine 与 Supabase Turn Event Ledger 已通过统一认知核心接入 Telegram、飞书、Discord、控制台试聊和维护动作；缺迁移时按能力安全降级，数据库 lease 取得后禁止切换账本后端 | 真实 Supabase 迁移与接口验收已于 2026-08-11 完成；连接记录见 `docs/database-connection.md` |
 | 2026-08-11 | Codex | 后续开发 | `current_activity` 首个生产写入闭环完成：仅识别用户显式现在时活动，按类型自动过期，重复确认会续期；CEE 下一轮可消费活动做时间死推算 | 后续再扩展稳定偏好/身份信念，必须继续保持显式来源与受控谓词 |
+| 2026-08-11 | Codex | 后续开发 | 稳定偏好/身份 belief 写入闭环完成：user 原话逐字证据 + 谓词白名单 + memory source 持久化；真实 Supabase 已验证 source_memory_id 与主动遗忘级联 | 后续可评估 belief 检索是否进入 Evidence Budget，进入前先做事实正确率消融 |

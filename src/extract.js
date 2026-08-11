@@ -1,6 +1,24 @@
 import { llm, LLM_MODEL, PARAMS } from './config.js';
 import { recordLlmCall } from './metrics.js';
 import { normalizeMemory } from './ontology.js';
+import { normalizeBelief } from './belief/ontology.js';
+
+const STABLE_PREFERENCE_PREDICATES = new Set([
+  'likes',
+  'dislikes',
+  'avoids',
+  'prefers',
+  'has_boundary',
+]);
+const STABLE_IDENTITY_PREDICATES = new Set([
+  'name',
+  'birth_date',
+  'lives_in',
+  'works_at',
+  'studies_at',
+  'occupation',
+  'allergic_to',
+]);
 
 const EXTRACT_SYSTEM = `你是一个记忆提取器, 服务于一个 AI 伴侣。
 从给定对话中提取值得"长期记住"的信息。只提取持久的事实、重要事件、明确的偏好或关系变化。
@@ -15,6 +33,10 @@ const EXTRACT_SYSTEM = `你是一个记忆提取器, 服务于一个 AI 伴侣�
 - fact_locked: true 仅用于绝对不容出错的硬事实(生日、名字、明确承诺、性/关系硬边界), 其余 false
 - importance: 一时兴起的口味/想试一次 → 2-3；稳定偏好 → 4-6；硬边界/承诺 → 7-10
 - affect: {"valence": -1..1, "intensity": 0..1} —— 这件事的情绪正负向与强度
+- belief: (可选) 仅当 user 本人明确陈述稳定偏好或身份事实时输出：
+  {"subject":"user","asserted_by":"user","predicate":"...","object":"...","evidence_quote":"用户原话中的逐字片段"}
+  predicate 只能是 likes / dislikes / avoids / prefers / has_boundary / name / birth_date / lives_in / works_at / studies_at / occupation / allergic_to。
+  evidence_quote 必须逐字出现在 user 的原消息里；助手猜测、隐含推断、临时想法、计划和不确定说法一律 belief=null。
 
 偏好分层（系统会自动推断，你按事实写即可）:
 - 硬边界: fact_locked=true（雷点、停词、过敏、名字生日）
@@ -58,18 +80,121 @@ export async function extractMemories(turns, subjectName = '用户', companionNa
   });
   recordLlmCall('extract', res.usage);
 
+  return parseMemoryExtraction(
+    res.choices[0].message.content,
+    subjectName,
+    companionName,
+    { ...opts, turns },
+  );
+}
+
+/** 解析并收紧 LLM 输出；belief 只有通过显式来源与谓词白名单后才会进入 memory.source。 */
+export function parseMemoryExtraction(
+  content,
+  subjectName = '用户',
+  _companionName = '她',
+  opts = {},
+) {
   let parsed;
   try {
-    parsed = JSON.parse(res.choices[0].message.content);
+    parsed = typeof content === 'string' ? JSON.parse(content) : content;
   } catch {
     return [];
   }
-  const list = Array.isArray(parsed.memories) ? parsed.memories : [];
+  const list = Array.isArray(parsed?.memories) ? parsed.memories : [];
+  const userEvidence = (opts.turns ?? [])
+    .filter((turn) => turn?.role === 'user')
+    .map((turn) => String(turn.content ?? '').normalize('NFKC'));
 
-  // 规范化成两层本体 (ontology.normalizeMemory 负责裁剪/补默认) + 过滤低重要性
   return list
-    .map((m) => normalizeMemory(m))
-    .filter((m) => m.fact_core && m.importance >= PARAMS.minImportance);
+    .map((raw) => {
+      const memory = normalizeMemory(raw);
+      const belief = opts.intimate
+        ? null
+        : normalizeStableExtractedBelief(raw?.belief, memory, {
+            subjectName,
+            userEvidence,
+          });
+      if (!belief) return memory;
+      return {
+        ...memory,
+        source: {
+          kind: 'conversation_extract',
+          version: 1,
+          speaker: 'user',
+          ...(opts.eventId ? { eventId: String(opts.eventId) } : {}),
+          beliefs: [belief],
+        },
+      };
+    })
+    .filter((memory) =>
+      memory.fact_core && memory.importance >= PARAMS.minImportance,
+    );
+}
+
+export function normalizeStableExtractedBelief(raw, memory, {
+  subjectName = '用户',
+  userEvidence = [],
+} = {}) {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return null;
+  if (memory?.subject_kind !== 'user') return null;
+  if (raw.subject !== 'user' || (raw.asserted_by ?? raw.assertedBy) !== 'user') return null;
+  const predicate = String(raw.predicate ?? '').trim().toLowerCase();
+  const isPreference = STABLE_PREFERENCE_PREDICATES.has(predicate);
+  const isIdentity = STABLE_IDENTITY_PREDICATES.has(predicate);
+  if (!isPreference && !isIdentity) return null;
+  if (isPreference && memory.type !== 'preference') return null;
+  if (isIdentity && memory.type !== 'fact') return null;
+  if (predicate === 'has_boundary' && !memory.fact_locked) return null;
+  if (['name', 'birth_date', 'allergic_to'].includes(predicate) && !memory.fact_locked) {
+    return null;
+  }
+
+  const evidenceQuote = String(raw.evidence_quote ?? raw.evidenceQuote ?? '')
+    .normalize('NFKC')
+    .trim();
+  if (
+    evidenceQuote.length < 2 ||
+    !userEvidence.some((message) => message.includes(evidenceQuote))
+  ) {
+    return null;
+  }
+  const rawObject = raw.objectValue ?? raw.object_value ?? raw.object;
+  if (!['string', 'number', 'boolean'].includes(typeof rawObject)) return null;
+  const objectText = String(rawObject).normalize('NFKC').trim().slice(0, 120);
+  if (!objectText) return null;
+  const objectValue = typeof rawObject === 'string' ? objectText : rawObject;
+
+  const slotKey = isPreference
+    ? `user:preference:${stableSlotPart(objectText)}`
+    : predicate === 'allergic_to'
+      ? `user:allergy:${stableSlotPart(objectText)}`
+      : `user:identity:${predicate}`;
+  try {
+    return normalizeBelief({
+      subjectKey: 'user',
+      subjectLabel: subjectName,
+      predicate,
+      objectValue,
+      objectText,
+      beliefKind: isPreference ? 'preference' : 'identity',
+      epistemicStatus: 'asserted',
+      confidence: 0.95,
+      slotKey,
+      metadata: { extractor: 'stable_memory_v1' },
+    }, { sourceKind: 'user' });
+  } catch {
+    return null;
+  }
+}
+
+function stableSlotPart(value) {
+  return String(value)
+    .normalize('NFKC')
+    .toLocaleLowerCase()
+    .replace(/\s+/g, '_')
+    .replace(/[^\p{L}\p{N}_.-]/gu, '')
+    .slice(0, 80) || 'value';
 }
 
 /**

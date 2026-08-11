@@ -75,6 +75,10 @@ npm run db:sql -- -e "select current_database(), current_user"
 checkpoint、renew、complete 和重复 claim。验收使用独立探针 scope，结束后已确认
 `beliefs`、`belief_evidence`、`turn_events` 均无探针数据残留。
 
+稳定偏好来源链也已单独验收：临时 memory 的结构化 source 成功生成
+`source_memory_id` evidence；按 memory id 遗忘后，证据和无其他来源的 belief 同步删除，
+随后 resolve 返回 unknown。临时 memory 与 belief 数据均已清理。
+
 ## 运维约束
 
 - 日常应用只使用 `SUPABASE_URL` + `SUPABASE_KEY`，不要给聊天进程数据库密码。

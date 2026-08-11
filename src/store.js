@@ -54,29 +54,7 @@ export async function storeMemories(userId, companionId = 'default', memories) {
     // 1) 插入新记忆 (两层本体)
     const { data, error } = await supabase
       .from('memories')
-      .insert({
-        user_id: userId,
-        companion_id: companionId,
-        type: m.type,
-        content: m.fact_core ?? m.content,   // 兼容旧列, 等于事实核
-        fact_core: m.fact_core ?? m.content,
-        narrative: m.narrative ?? null,
-        affect_valence: m.affect_valence ?? 0,
-        affect_intensity: m.affect_intensity ?? m.emotion ?? 0,
-        // 原始情感锚 = 诞生时的情感, 写入后不可变 (重构靠它回弹)
-        affect_origin_valence: m.affect_valence ?? 0,
-        affect_origin_intensity: m.affect_intensity ?? m.emotion ?? 0,
-        subject_kind: m.subject_kind ?? 'user',
-        fact_locked: m.fact_locked ?? false,
-        // M6 多模态字段 (纯文本记忆为默认值)
-        modality: m.modality ?? 'text',
-        media_ref: m.media_ref ?? null,
-        media_embedding: m.media_embedding ?? null,
-        dedup_hash: m.dedup_hash ?? null,
-        embedding,
-        importance: m.importance,
-        emotion: m.emotion ?? m.affect_intensity ?? 0,
-      })
+      .insert(toMemoryInsertRow(userId, companionId, m, embedding))
       .select()
       .single();
     if (error) {
@@ -96,6 +74,40 @@ export async function storeMemories(userId, companionId = 'default', memories) {
     await supersedeContradictions(data, candidates ?? []);
   }
   return inserted;
+}
+
+export function toMemoryInsertRow(userId, companionId = 'default', memory, embedding) {
+  const m = memory ?? {};
+  return {
+    user_id: userId,
+    companion_id: companionId,
+    type: m.type,
+    content: m.fact_core ?? m.content,
+    fact_core: m.fact_core ?? m.content,
+    narrative: m.narrative ?? null,
+    affect_valence: m.affect_valence ?? 0,
+    affect_intensity: m.affect_intensity ?? m.emotion ?? 0,
+    // 原始情感锚 = 诞生时的情感, 写入后不可变 (重构靠它回弹)
+    affect_origin_valence: m.affect_valence ?? 0,
+    affect_origin_intensity: m.affect_intensity ?? m.emotion ?? 0,
+    subject_kind: m.subject_kind ?? 'user',
+    fact_locked: m.fact_locked ?? false,
+    // M6 多模态字段 (纯文本记忆为默认值)
+    modality: m.modality ?? 'text',
+    media_ref: m.media_ref ?? null,
+    media_embedding: m.media_embedding ?? null,
+    dedup_hash: m.dedup_hash ?? null,
+    embedding,
+    importance: m.importance,
+    emotion: m.emotion ?? m.affect_intensity ?? 0,
+    source: plainSource(m.source),
+  };
+}
+
+function plainSource(value) {
+  return value && typeof value === 'object' && !Array.isArray(value)
+    ? value
+    : {};
 }
 
 /** 拉一批指纹对应的现存(未取代)记忆, 建 hash→记忆 映射 (用于去重)。 */
