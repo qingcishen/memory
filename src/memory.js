@@ -43,6 +43,7 @@ import {
   storeWorkingMemory,
 } from './memory/workingMemory.js';
 import { compressMemoryIfNeeded } from './memory/compress.js';
+import { extractExplicitTurnBeliefs } from './belief/turnBeliefs.js';
 
 /**
  * 记忆系统门面。一个用户一个 userId, 所有记忆按 (userId, companionId) 隔离。
@@ -73,7 +74,7 @@ export class Memory {
     this.companionId = companionId;
     this.subjectName = subjectName;
     this.companionName = companionName;
-    // 显式启用：老部署未执行 beliefs.sql 时不产生额外数据库请求。
+    // 仅在注入时启用；生产入口注入的 resilient wrapper 会在老库缺 schema 时安全降级。
     this.beliefEngine = beliefEngine;
     this.intimateMemoryStore = intimateMemoryStore;
     this.emotionMemoryStore = emotionMemoryStore;
@@ -133,6 +134,11 @@ export class Memory {
           ['foreplay', 'peak', 'aftercare', 'flirting'].includes(intimacyResult?.scene_phase)
       ),
     };
+    const explicitBeliefEvents = extractExplicitTurnBeliefs(turns, {
+      eventId: opts.eventId,
+      observedAt: opts.now ?? Date.now(),
+      subjectName: this.subjectName,
+    });
 
     const [{ before, after, desireDeltas }, extracted, scheduled, knowledge] = await Promise.all([
       updateFromTurn(this.userId, this.companionId, turns, { ...opts, extraDeltas }).catch(() => ({ before: null, after: null })),
@@ -206,6 +212,14 @@ export class Memory {
     }
     // 情绪 → 记忆重要性 (emotion-design.md §8): 这一轮心情位移大, 说明发生了要紧的事。
     let boosted = before && after ? applyMoodShiftBoost(extracted, moodShiftMagnitude(before, after)) : extracted;
+    const eventBeliefsPromise = this.beliefEngine
+      ? projectBeliefInputs(this.beliefEngine, {
+          events: [
+            ...explicitBeliefEvents,
+            ...(Array.isArray(opts.beliefEvents) ? opts.beliefEvents : []),
+          ],
+        })
+      : Promise.resolve([]);
     // L4: 这次"生病被照顾"作为一条 dyad 共同记忆存下来(她会记得你照顾过她)。
     if (coupling?.careEvent) boosted = [...boosted, buildCareMemory(this.subjectName, coupling.careEvent)];
     // I-3: 只信任本次 observe 内部亲密维度的 before/after；不接触 turns 正文。
@@ -259,13 +273,13 @@ export class Memory {
       emotionStored = Array.isArray(written) ? written : written ? [written] : [];
     }
     const stored = [...regularStored, ...intimateStored, ...emotionStored];
-    const beliefs = this.beliefEngine
+    const memoryBeliefs = this.beliefEngine
       ? await projectBeliefInputs(this.beliefEngine, {
           // 私密情境记忆不投影成日常 beliefs，避免从另一条召回链旁路泄漏。
           memories: regularStored,
-          events: opts.beliefEvents,
         })
       : [];
+    const beliefs = [...await eventBeliefsPromise, ...memoryBeliefs];
     // M-4: 每次 observe 末尾以 1% 概率安排自动遗忘。删除任务自身失败隔离，
     // 不增加回复链路延迟；夜间 maintain 仍作为确定性的兜底调度。
     const autoForgetTriggered =

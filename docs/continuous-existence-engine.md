@@ -179,6 +179,11 @@ export async function heartbeatTick(userId: string, companionId: string) {
 
 每次收到新消息时，**先于 pipeline 运行**，推断两条消息之间发生了什么。
 
+> 当前实现：`src/belief/turnBeliefs.js` 只把用户明确的现在时活动声明投影为
+> `current_activity`，并附带活动类型 TTL；计划、过去式、否定句和助手陈述不会进入
+> 信念层。`Memory.observe` 在 after-reply 投影该事件，下一轮
+> `ContinuousExistenceEngine.perceive()` 通过 BeliefEngine 读取。
+
 ```typescript
 // src/existence/temporalPerception.ts
 

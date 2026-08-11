@@ -72,4 +72,51 @@ describe('belief repository temporal queries', () => {
       p_memory_ids: [memoryId],
     });
   });
+
+  it('extends valid_to when the same temporal belief is confirmed again', async () => {
+    let updatePatch = null;
+    const request = {
+      eq() { return this; },
+      select() { return this; },
+      async single() {
+        return { data: { id: 'b1', ...updatePatch }, error: null };
+      },
+    };
+    const client = {
+      from() {
+        return {
+          update(patch) {
+            updatePatch = patch;
+            return request;
+          },
+        };
+      },
+    };
+    const repository = new BeliefRepository({ client });
+    const renewedUntil = '2026-08-11T22:00:00.000Z';
+
+    await repository.reinforce(
+      {
+        id: 'b1',
+        user_id: 'u1',
+        companion_id: 'c1',
+        confidence: 0.8,
+        epistemic_status: 'asserted',
+        observation_count: 1,
+        valid_to: '2026-08-11T13:00:00.000Z',
+      },
+      {
+        confidence: 0.9,
+        epistemic_status: 'asserted',
+        valid_to: renewedUntil,
+      },
+      '2026-08-11T12:30:00.000Z',
+    );
+
+    expect(updatePatch).toMatchObject({
+      observation_count: 2,
+      last_confirmed_at: '2026-08-11T12:30:00.000Z',
+      valid_to: renewedUntil,
+    });
+  });
 });

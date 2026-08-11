@@ -104,6 +104,11 @@ export {
 } from './ontology.js';
 export { BeliefRepository, combineConfidence } from './repository.js';
 export {
+  CURRENT_ACTIVITY_TTL_MINUTES,
+  detectExplicitCurrentActivity,
+  extractExplicitTurnBeliefs,
+} from './turnBeliefs.js';
+export {
   BeliefKindSchema,
   EpistemicStatusSchema,
   EvidenceSourceKindSchema,

@@ -17,6 +17,9 @@ export {
   BeliefRecordSchema,
   BeliefEvidenceSchema,
   BeliefQuerySchema,
+  CURRENT_ACTIVITY_TTL_MINUTES,
+  detectExplicitCurrentActivity,
+  extractExplicitTurnBeliefs,
 } from './src/belief/index.js';
 export { extractMemories } from './src/extract.js';
 export { storeMemories } from './src/store.js';

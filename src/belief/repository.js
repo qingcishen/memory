@@ -145,6 +145,9 @@ export class BeliefRepository {
             : incoming.epistemic_status,
         observation_count: count + 1,
         last_confirmed_at: now,
+        // 同一时态事实再次被明确确认时续期；例如“我还在开会”不能因为首条
+        // current_activity 的 TTL 到点而立刻变成 unknown。
+        valid_to: incoming.valid_to ?? existing.valid_to ?? null,
         updated_at: now,
       })
       .eq('id', existing.id)

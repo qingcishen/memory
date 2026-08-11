@@ -112,4 +112,39 @@ describe('Memory.observe owns authoritative intimacy before/after', () => {
     expect(intimateMemoryStore).not.toHaveBeenCalled();
     expect(result.intimateMemory).toBeNull();
   });
+
+  it('projects an explicit user activity as a structured belief event', async () => {
+    const beliefEngine = {
+      projectEvent: vi.fn(async (event) => event.beliefs.map((belief) => ({ belief }))),
+      projectMemory: vi.fn(async () => []),
+    };
+    const memory = new Memory({ userId: 'u1', beliefEngine });
+
+    const result = await memory.observe(
+      [
+        { role: 'user', content: '我正在开会，晚点回来' },
+        { role: 'assistant', content: '好，你先忙' },
+      ],
+      {
+        eventId: 'evt-activity',
+        now: Date.parse('2026-08-11T12:00:00.000Z'),
+        prospective: false,
+        knowledge: false,
+        useLLM: false,
+      },
+    );
+
+    expect(beliefEngine.projectEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'evt-activity:belief:current_activity',
+        sourceKind: 'user',
+        beliefs: [expect.objectContaining({
+          predicate: 'current_activity',
+          objectValue: 'working',
+          slotKey: 'user:current_activity',
+        })],
+      }),
+    );
+    expect(result.beliefs).toHaveLength(1);
+  });
 });
