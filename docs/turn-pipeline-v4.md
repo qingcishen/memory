@@ -366,7 +366,7 @@ Replay 默认禁止 Commit。显式传入测试 store 时才允许写入隔离�
 - Slice D：完成；
 - `decision-replay` / `compose-replay`：完成；
 - Commit 同进程 eventId 幂等：完成；
-- 跨进程 Commit 竞争仲裁：完成基础版；注入 `SupabaseTurnEventStore` 后由
+- 跨进程 Commit 竞争仲裁：生产入口已启用；由 `SupabaseTurnEventStore` 和
   `(user_id, companion_id, event_id)` 唯一键保证只有一个实例取得写权限；
 - 崩溃恢复：完成租约基础；`failed` 或租约过期的 `processing` 事件可以重新 claim，
   `lease_token` 会阻止旧 worker 覆盖新 worker 的提交结果；
@@ -384,9 +384,10 @@ get(scope)               // 查询审计状态
 checkpoint(scope, name)  // fencing token 保护的逐投影进度
 ```
 
-生产环境通过 `deps.turnEventStore` 向 Orchestrator 注入
-`SupabaseTurnEventStore`。未注入时保留原有单进程 Set 幂等，避免旧部署在 SQL
-迁移前产生行为变化。数据库迁移见 `sql/turn_events.sql`。
+Telegram、飞书、Discord 和控制台试聊通过 `createPersistentCognitiveCore()` 自动向
+Orchestrator 注入账本。数据库未执行 `sql/turn_events.sql` 时，首次 claim 会在主账本
+产生任何成功响应之前切到 `InMemoryTurnEventStore` 并告警；主账本一旦成功响应，同一
+实例绝不会中途更换后端。自行构造 Orchestrator 且未注入时仍保留原有单进程 Set 幂等。
 
 账本通过数据库 RPC 原子 claim，并使用有限租约和 fencing token 支持崩溃接管，但暂不
 宣称跨多个外部存储的 exactly-once：history、memory、媒体等投影尚未共享单个数据库

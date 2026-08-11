@@ -4,7 +4,7 @@
 
 架构参考斯坦福 Generative Agents 的记忆模型,针对伴侣场景做了改动(情绪保护衰减、矛盾不覆盖而是 supersede)。
 
-完整介绍、接入流程和 API 说明见 [项目介绍与使用指南](docs/INTRODUCTION_AND_USAGE.md)。开发计划和架构验收见 [开发文档与路线图](docs/DEVELOPMENT.md)。下一轮"从功能齐到像人"的升级计划(需求系统/情绪行为策略/生活叙事引擎)见 [伴侣升级开发文档 v2](docs/companion-upgrade-v2.md)。亲密/性爱状态机与落地切片见 [性爱系统开发文档](docs/intimacy-design.md)。当前主线:"从像人到可证明"(评测闭环/检索升级/数据学习/工程底盘)见 [全面升级开发文档 v3](docs/upgrade-v3-measurable.md)。技术升级全面审查(架构诊断/六大突破方向/v4路线)见 [技术升级审查](docs/technical-upgrade-audit.md)。Codex × Claude 协作分工与进度见 [协作日志](docs/collab.md)。
+完整介绍、接入流程和 API 说明见 [项目介绍与使用指南](docs/INTRODUCTION_AND_USAGE.md)。当前能力与验收见 [五系统升级文档](docs/tech-breakthrough-v1.md)，持续运行架构见 [持续存在引擎](docs/continuous-existence-engine.md)，回复主路径契约见 [v4 Turn Pipeline](docs/turn-pipeline-v4.md)，正在进行的任务与阻塞见 [协作日志](docs/collab.md)。早期 M0–M5、伴侣升级 v2 和可度量升级 v3 已移入 [历史文档归档](docs/archive/README.md)。
 
 ## 它解决什么
 
@@ -151,6 +151,8 @@ await scheduler.tick(); // 可由 cron / setInterval / 队列定时调用
 
 ```bash
 npm run db:sql -- sql/continuous_state.sql
+npm run db:sql -- sql/beliefs.sql
+npm run db:sql -- sql/turn_events.sql
 ```
 
 也可以像以往一样重新执行完整 `sql/schema.sql`。迁移新增：
@@ -158,25 +160,36 @@ npm run db:sql -- sql/continuous_state.sql
 - `companion_continuous_state`：情绪、思念、期待、疲惫、主动冲动与自我一致性
 - `companion_private_memory`：沉默超过 2 小时后形成的私有主观记忆（不会进入聊天记录）
 - `companion_personality`：五层人格参数、自我模型与渐进漂移历史
+- `beliefs` / `belief_evidence`：带有效时间和证据来源的结构化信念投影
+- `turn_events`：带租约与 fencing token 的跨进程 Commit 账本
+
+生产聊天入口会自动启用这两项认知能力；老库缺少对应迁移时，信念层安全返回空结果，
+提交账本回退到进程内实现并输出一次告警，对话主链不会因缺表中断。
 
 独立接入时：
 
 ```js
 import {
+  createPersistentCognitiveCore,
   createPersistentExistenceEngine,
   personalitySeedFromCompanionConfig,
 } from 'cyber-memory';
 
+const cognitiveCore = createPersistentCognitiveCore({
+  userId: 'u_123',
+  companionId: 'default',
+});
 const existence = createPersistentExistenceEngine({
   userId: 'u_123',
   companionId: 'default',
   historyStore,
+  beliefs: cognitiveCore.beliefEngine,
   personalitySeed: personalitySeedFromCompanionConfig(companionConfig),
 });
 
 const bot = new Orchestrator({
   userId: 'u_123',
-  deps: { historyStore, existence },
+  deps: { ...cognitiveCore, historyStore, existence },
 });
 existence.memory = bot.memory; // 允许沉默固化后重加权已有记忆
 ```

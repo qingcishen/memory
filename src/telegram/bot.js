@@ -10,6 +10,7 @@ import {
   SupabaseRateLimitStore,
   LocalJsonHistoryStore,
   SupabaseHistoryStore,
+  createPersistentCognitiveCore,
   createPersistentExistenceEngine,
   personalitySeedFromCompanionConfig,
 } from '../../index.js';
@@ -472,12 +473,17 @@ export class TelegramMemoryBot {
     const key = String(chatId);
     if (!this.bots.has(key)) {
       const userId = telegramUserId(chatId);
+      const cognitiveCore = createPersistentCognitiveCore({
+        userId,
+        companionId: this.companionId,
+      });
       const existence = createPersistentExistenceEngine({
         userId,
         companionId: this.companionId,
         companionName: this.companionName,
         userName: this.subjectName,
         historyStore: this.historyStore,
+        beliefs: cognitiveCore.beliefEngine,
         personalitySeed: personalitySeedFromCompanionConfig(
           this.persona?.config,
         ),
@@ -497,6 +503,7 @@ export class TelegramMemoryBot {
         // P2: 角色专属身体参数 (睡眠时段/发病概率), 喂给 LifeDimension
         lifeConfig: this.persona?.life ?? null,
         deps: {
+          ...cognitiveCore,
           historyStore: this.historyStore,
           existence,
           weather: this.weather,

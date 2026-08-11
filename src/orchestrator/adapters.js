@@ -42,8 +42,24 @@ export class MemoryAdapter {
   // life: 与 StateLayerAdapter 共享的同一个 LifeDimension。observe 时由 Memory 统一演变 life
   // 并把"生病/被照顾"对情绪/关系的耦合增量并进 affect 写入 (L4, 避免双写 life_state)。
   // intimacy: 与 StateLayer 共享 IntimacyDimension (I 线)。
-  constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', life = null, desire = null, intimacy = null, outfit = null }) {
-    this._mem = new Memory({ userId, companionId, subjectName, companionName });
+  constructor({
+    userId,
+    companionId = 'default',
+    subjectName = '对方',
+    companionName = '她',
+    life = null,
+    desire = null,
+    intimacy = null,
+    outfit = null,
+    beliefEngine = null,
+  }) {
+    this._mem = new Memory({
+      userId,
+      companionId,
+      subjectName,
+      companionName,
+      beliefEngine,
+    });
     this._life = life;
     this._desire = desire;
     this._intimacy = intimacy;

@@ -8,6 +8,7 @@ console.log = (...args) => console.error(...args);
 
 import { Memory } from '../memory.js';
 import { Orchestrator } from '../orchestrator/orchestrator.js';
+import { createPersistentCognitiveCore } from '../orchestrator/cognitiveCore.js';
 import { scheduleProspective } from '../memory/prospective.js';
 import { loadPersonaConfig } from '../companion.js';
 import { makeScheduleActivityFn } from '../state/activity.js';
@@ -25,7 +26,14 @@ async function run(req) {
   const companionId = String(req.companionId || 'default').trim() || 'default';
   if (!userId) throw new Error('缺少 userId');
   if (!/^[\w-]{1,64}$/.test(companionId) || companionId.startsWith('.')) throw new Error('角色 ID 不合法');
-  const memory = new Memory({ userId, companionId, subjectName: req.subjectName || '对方', companionName: req.companionName || '她' });
+  const cognitiveCore = createPersistentCognitiveCore({ userId, companionId });
+  const memory = new Memory({
+    userId,
+    companionId,
+    subjectName: req.subjectName || '对方',
+    companionName: req.companionName || '她',
+    beliefEngine: cognitiveCore.beliefEngine,
+  });
 
   switch (req.action) {
     case 'schedule-prospective':
@@ -58,6 +66,7 @@ async function run(req) {
         options: persona?.options ?? {},
         activityFn: persona?.life ? makeScheduleActivityFn(persona.life) : null,
         lifeConfig: persona?.life ?? null,
+        deps: cognitiveCore,
       });
       await orchestrator.init();
       if (!orchestrator.story) throw new Error('这个角色还没有配置公司故事线');
@@ -76,6 +85,7 @@ async function run(req) {
         options: persona?.options ?? {},
         activityFn: persona?.life ? makeScheduleActivityFn(persona.life) : null,
         lifeConfig: persona?.life ?? null,
+        deps: cognitiveCore,
       });
       return req.action === 'train' ? orchestrator.trainNightly() : orchestrator.maintain({ nightly: true });
     }

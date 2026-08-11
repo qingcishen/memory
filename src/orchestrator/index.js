@@ -10,6 +10,13 @@ export {
   isWriteStage,
 } from './turnPipeline.js';
 export { commitValidatedReply, createTurnEventId } from './turnCommit.js';
+export { SupabaseTurnEventStore, InMemoryTurnEventStore } from './turnEventStore.js';
+export {
+  createPersistentCognitiveCore,
+  ResilientBeliefEngine,
+  ResilientTurnEventStore,
+  isMissingCognitiveSchemaError,
+} from './cognitiveCore.js';
 export { normalizeAblationFlags } from './ablation.js';
 export { perceiveTurn, maxKnownGap } from './perceive.js';
 export { interpretTurn } from './interpret.js';

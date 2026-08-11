@@ -2,6 +2,7 @@ import {
   Orchestrator,
   LocalJsonHistoryStore,
   SupabaseHistoryStore,
+  createPersistentCognitiveCore,
   createPersistentExistenceEngine,
   personalitySeedFromCompanionConfig,
   ProactiveScheduler,
@@ -107,12 +108,17 @@ export class MemoryChannel {
     const key = String(senderId);
     if (!this.sessions.has(key)) {
       const userId = this.userId(senderId);
+      const cognitiveCore = createPersistentCognitiveCore({
+        userId,
+        companionId: this.companionId,
+      });
       const existence = createPersistentExistenceEngine({
         userId,
         companionId: this.companionId,
         companionName: this.companionName,
         userName: this.subjectName,
         historyStore: this.historyStore,
+        beliefs: cognitiveCore.beliefEngine,
         personalitySeed: personalitySeedFromCompanionConfig(
           this.persona?.config,
         ),
@@ -130,6 +136,7 @@ export class MemoryChannel {
         activityFn: this.persona?.life ? makeScheduleActivityFn(this.persona.life) : null,
         lifeConfig: this.persona?.life ?? null,
         deps: {
+          ...cognitiveCore,
           historyStore: this.historyStore,
           existence,
           weather: this.weather,

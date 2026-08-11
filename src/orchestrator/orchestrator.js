@@ -208,7 +208,7 @@ export class Orchestrator {
    * @param companionId 多角色隔离键 (默认 'default'); 同一 userId 下不同 companionId 数据互不可见。
    * @param companionName 显示名/称呼; 不显式传时由 companions 表里的 CompanionConfig.name 覆盖。
    * @param config 可选: 预加载好的 CompanionConfig; 不传则 init() 时按 (userId, companionId) 从 companions 表拉。
-   * @param deps 可注入 { memory, stateLayer, relationship, persona, llm, historyStore, existence }，默认用真实适配器。
+   * @param deps 可注入 { memory, stateLayer, relationship, persona, llm, historyStore, beliefEngine, turnEventStore, existence }，默认用真实适配器。
    * @param options { useMonologue=true, historyTurns=6, timeZone='Asia/Shanghai', place='武汉' }
    */
   constructor({ userId, companionId = 'default', subjectName = '对方', companionName = '她', config = null, activityFn = null, lifeConfig = null, deps = {}, options = {} }) {
@@ -263,6 +263,7 @@ export class Orchestrator {
         desire: sharedDesire,
         intimacy: sharedIntimacy,
         outfit: sharedOutfit,
+        beliefEngine: deps.beliefEngine ?? null,
       });
     this.relationship = deps.relationship ?? new RelationshipAdapter(userId, companionId);
     this.persona = deps.persona ?? new PersonaAdapter({ userId, companionId, subjectName: companionName });

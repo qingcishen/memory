@@ -22,6 +22,7 @@ console.log = (...args) => console.error(...args);
 
 import {
   Orchestrator,
+  createPersistentCognitiveCore,
   createPersistentExistenceEngine,
   personalitySeedFromCompanionConfig,
 } from '../../index.js';
@@ -80,16 +81,19 @@ async function main() {
   const narration = new SceneClassifier();
   const photos = [];
   const historyStore = createHistoryStore();
+  const cognitiveCore = createPersistentCognitiveCore({ userId, companionId });
   const existence = createPersistentExistenceEngine({
     userId,
     companionId,
     companionName,
     userName: subjectName,
     historyStore,
+    beliefs: cognitiveCore.beliefEngine,
     personalitySeed: personalitySeedFromCompanionConfig(persona?.config),
   });
 
   let deps = {
+    ...cognitiveCore,
     historyStore,
     existence,
     weather,
@@ -123,6 +127,7 @@ async function main() {
       desire: stateLayer.stateLayer?.desire ?? null,
       intimacy: stateLayer.stateLayer?.intimacy ?? null,
       outfit: stateLayer.stateLayer?.outfit ?? null,
+      beliefEngine: cognitiveCore.beliefEngine,
     });
     const relationship = new RelationshipAdapter(userId, companionId);
     const personaAdapter = new PersonaAdapter({ userId, companionId, subjectName: companionName });
