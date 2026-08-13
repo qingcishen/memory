@@ -8,6 +8,10 @@ const continuousStateSql = readFileSync(
   new URL('../sql/continuous_state.sql', import.meta.url),
   'utf8',
 );
+const memoryCompressionSql = readFileSync(
+  new URL('../sql/memory_compression.sql', import.meta.url),
+  'utf8',
+);
 
 describe('SQL migration contract parity', () => {
   it('keeps temporal belief interval constraints in both install paths', () => {
@@ -40,6 +44,17 @@ describe('SQL migration contract parity', () => {
       expect(sql).toContain('companion_private_memory_silence_unique_idx');
       expect(sql).toContain('last_interaction_at');
       expect(sql).toContain('coherence_score');
+    }
+  });
+
+  it('keeps atomic memory compression in both install paths', () => {
+    for (const sql of [schemaSql, memoryCompressionSql]) {
+      expect(sql).toContain('function commit_memory_compression(');
+      expect(sql).toContain("type in ('episode', 'fact')");
+      expect(sql).toContain('set superseded_by = v_summary_id');
+      expect(sql).toContain(
+        'grant execute on function commit_memory_compression(text,text,uuid[],jsonb)',
+      );
     }
   });
 });

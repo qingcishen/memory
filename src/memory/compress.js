@@ -215,15 +215,18 @@ export async function compressEpisodeClusters(
             llmClient: opts.llmClient ?? llm,
             model: opts.model ?? LLM_MODEL,
           });
-  const insertSummary =
-    typeof opts.insertSummary === 'function'
-      ? opts.insertSummary
-      : (record) => defaultInsertSummary(record, opts.client ?? supabase);
-  const linkCluster =
-    typeof opts.linkCluster === 'function'
-      ? opts.linkCluster
-      : (ids, summaryId) =>
-          defaultLinkCluster(ids, summaryId, opts.client ?? supabase);
+  const legacyWriteInjected =
+    typeof opts.insertSummary === 'function' || typeof opts.linkCluster === 'function';
+  const commitCluster =
+    typeof opts.commitCluster === 'function'
+      ? opts.commitCluster
+      : legacyWriteInjected
+        ? null
+        : (record, ids) => defaultCommitCluster(record, ids, opts.client ?? supabase);
+  const insertSummary = opts.insertSummary ??
+    ((record) => defaultInsertSummary(record, opts.client ?? supabase));
+  const linkCluster = opts.linkCluster ??
+    ((ids, summaryId) => defaultLinkCluster(ids, summaryId, opts.client ?? supabase));
   const embedFn = opts.embedFn ?? embed;
 
   let totalCompressed = 0;
@@ -256,13 +259,17 @@ export async function compressEpisodeClusters(
         now,
         embedFn,
       );
-      const inserted = await insertSummary(record);
-      if (!inserted?.id) continue;
-      const linked = await linkCluster(
-        cluster.map((memory) => memory.id),
-        inserted.id,
-      );
-      if (linked === false) continue;
+      const sourceIds = cluster.map((memory) => memory.id);
+      if (commitCluster) {
+        const committed = await commitCluster(record, sourceIds);
+        if (!committed?.id || Number(committed.linkedCount) !== sourceIds.length) continue;
+      } else {
+        // 仅供单元测试/兼容注入；生产默认始终走上面的单事务 RPC。
+        const inserted = await insertSummary(record);
+        if (!inserted?.id) continue;
+        const linked = await linkCluster(sourceIds, inserted.id);
+        if (linked === false) continue;
+      }
       totalCompressed += cluster.length;
       totalClusters += 1;
     } catch {
@@ -377,6 +384,20 @@ async function defaultInsertSummary(record, client) {
     .maybeSingle();
   if (existing.error) throw existing.error;
   return existing.data ?? null;
+}
+
+async function defaultCommitCluster(record, sourceIds, client) {
+  const { data, error } = await client.rpc('commit_memory_compression', {
+    p_user_id: record.user_id,
+    p_companion_id: record.companion_id,
+    p_source_ids: sourceIds,
+    p_summary: record,
+  });
+  if (error) throw error;
+  const row = Array.isArray(data) ? data[0] : data;
+  return row?.summary_id
+    ? { id: row.summary_id, linkedCount: Number(row.linked_count) || 0 }
+    : null;
 }
 
 async function defaultLinkCluster(ids, summaryId, client) {

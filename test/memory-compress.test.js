@@ -143,6 +143,27 @@ describe('M-3 compression scheduling contract', () => {
 });
 
 describe('M-3 hierarchy write contract', () => {
+  it('uses one atomic commit for a production cluster', async () => {
+    const rows = [memoryRow('m1'), memoryRow('m2'), memoryRow('m3')];
+    const commits = [];
+    const result = await compressEpisodeClusters('u1', 'c1', {
+      now: NOW,
+      loadCandidates: async () => rows,
+      summarize: async () => '原子摘要',
+      embedFn: async () => null,
+      commitCluster: async (record, sourceIds) => {
+        commits.push({ record, sourceIds });
+        return { id: 'summary-atomic', linkedCount: sourceIds.length };
+      },
+    });
+    expect(result).toEqual({ compressed: 3, clusters: 1 });
+    expect(commits).toHaveLength(1);
+    expect(commits[0]).toMatchObject({
+      sourceIds: ['m1', 'm2', 'm3'],
+      record: { type: 'reflection', fact_core: '原子摘要' },
+    });
+  });
+
   it('inserts one reflection and links old rows without deleting them', async () => {
     const rows = [
       memoryRow('m1'),
