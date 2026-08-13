@@ -20,6 +20,10 @@ export function decideActionUtility(input = {}) {
     scoreActionCandidate(candidate, { weights }));
   const feasible = candidates.filter((candidate) => candidate.feasible);
   const selected = [...feasible].sort(compareCandidates)[0] ?? candidates[0] ?? null;
+  const runnerUp = [...feasible].sort(compareCandidates)[1] ?? null;
+  const margin = selected?.hardPriority
+    ? 1
+    : Math.max(0, Number(selected?.utility ?? 0) - Number(runnerUp?.utility ?? 0));
   return {
     selectedAction: selected?.intent ?? 'respond',
     selectedCandidateId: selected?.id ?? 'respond',
@@ -33,7 +37,98 @@ export function decideActionUtility(input = {}) {
       : ['action:respond'],
     weights,
     shadow: input.shadow !== false,
+    margin: round(margin),
+    applied: false,
   };
+}
+
+/**
+ * 把 shadow 决策升级为受控接管。guarded 只允许低风险意图；安全停止无条件接管。
+ * 评测未达标的 share/flirt 即使得分最高，也继续只写 trace。
+ */
+export function activateActionDecision(decision = {}, options = {}) {
+  const mode = ['shadow', 'guarded', 'active'].includes(options.mode)
+    ? options.mode
+    : 'shadow';
+  const selected = (decision.candidates ?? []).find(
+    (candidate) => candidate.id === decision.selectedCandidateId,
+  );
+  const allowed = new Set(
+    options.allowedIntents ?? ['safety_stop', 'ask', 'reassure'],
+  );
+  const minMargin = Math.max(0, Number(options.minMargin) || 0);
+  let reason = 'mode_shadow';
+  let applied = false;
+
+  if (!selected || selected.feasible === false) {
+    reason = 'candidate_infeasible';
+  } else if (selected.constraints?.includes('conflict_lock') && selected.intent === 'flirt') {
+    reason = 'conflict_lock';
+  } else if (selected.intent === 'safety_stop' && selected.constraints?.includes('safety_override')) {
+    applied = mode !== 'shadow';
+    reason = applied ? 'safety_override' : 'mode_shadow';
+  } else if (mode === 'active' || (mode === 'guarded' && allowed.has(selected.intent))) {
+    if (Number(decision.margin) >= minMargin) {
+      applied = true;
+      reason = 'margin_passed';
+    } else {
+      reason = 'margin_too_small';
+    }
+  } else if (mode === 'guarded') {
+    reason = 'intent_not_guarded';
+  }
+
+  return {
+    ...decision,
+    mode,
+    shadow: !applied,
+    applied,
+    takeoverReason: reason,
+    rationaleCodes: [
+      ...(decision.rationaleCodes ?? []),
+      `takeover:${reason}`,
+    ],
+  };
+}
+
+/** 将已获准接管的行为意图落实到公开 structured plan。 */
+export function applyActionDecisionToPlan(structured = {}, decision = {}) {
+  if (!structured || decision.shadow !== false || !decision.applied) return structured;
+  const selected = (decision.candidates ?? []).find(
+    (candidate) => candidate.id === decision.selectedCandidateId,
+  );
+  const sourceGoal = selected?.sourceGoal ?? null;
+  const next = {
+    ...structured,
+    actions: [...(structured.actions ?? [])],
+    source: `${structured.source ?? 'heuristic'}+utility`,
+    utilityAction: decision.selectedAction,
+  };
+  if (decision.selectedAction === 'safety_stop') {
+    next.attitude = 'soft';
+    next.lengthHint = 'terse';
+    next.bubbleCount = 1;
+    next.mentionStory = false;
+    next.mentionUnfinished = false;
+    next.wantPhoto = false;
+    next.actions = [];
+    next.note = '立即确认停止，先照顾边界，不继续推进。';
+  } else if (decision.selectedAction === 'ask') {
+    next.mentionUnfinished = ['prospective', 'unfinished'].includes(sourceGoal);
+    next.note = next.mentionUnfinished
+      ? '先回应当前话题，再自然追问之前约好的事情。'
+      : '先回应，再问一个真正有信息增益的问题。';
+  } else if (decision.selectedAction === 'reassure') {
+    next.attitude = 'soft';
+    next.note = '这轮优先给到具体、不过度承诺的安抚与确认。';
+  } else if (decision.selectedAction === 'share') {
+    next.mentionStory = sourceGoal === 'story';
+    next.note = '先接住对方，再分享一小段相关生活，不抢话题。';
+  } else if (decision.selectedAction === 'flirt') {
+    next.attitude = next._lockIds?.includes('intimate') ? 'intimate' : 'playful';
+    next.note = '只做与当前关系和场景一致的轻度靠近，随时服从边界。';
+  }
+  return next;
 }
 
 export function buildActionCandidates(input = {}) {
@@ -149,6 +244,14 @@ export function replayActionDecision(snapshot = {}, options = {}) {
     candidates,
     weights,
     replay: true,
+    margin: round(
+      Math.max(
+        0,
+        Number(selected?.utility ?? 0) -
+          Number([...candidates].filter((candidate) => candidate.feasible)
+            .sort(compareCandidates)[1]?.utility ?? 0),
+      ),
+    ),
   };
 }
 

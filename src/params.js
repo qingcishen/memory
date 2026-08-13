@@ -431,6 +431,12 @@ export const DEFAULT_PARAMS = {
     compactShortTurns: true,
     // 结构化两阶段计划（启发式 + 可选便宜模型 enrich）
     structuredPlanLlm: true,
+    // 候选行为效用决策：低风险意图灰度接管；share/flirt 继续 shadow 等待行为评测。
+    actionUtility: {
+      mode: 'guarded',
+      minMargin: 0.03,
+      allowedIntents: ['safety_stop', 'ask', 'reassure'],
+    },
     // 生成后一致性检改：默认开启（坏回复最多再生成一次）
     coherenceRetry: true,
     // 关系周记 / 用户画像常驻槽

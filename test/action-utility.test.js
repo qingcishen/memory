@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest';
 import {
   buildActionCandidates,
+  activateActionDecision,
+  applyActionDecisionToPlan,
   compareActionWeightSets,
   decideActionUtility,
   normalizeUtilityWeights,
@@ -70,5 +72,39 @@ describe('action utility decision', () => {
     expect(comparison.baseline.total).toBe(1);
     expect(comparison.needHeavy.selectedCounts).toBeTruthy();
     expect(normalizeUtilityWeights({ safetyRisk: -99 }).safetyRisk).toBe(-2);
+  });
+
+  it('lets guarded mode take over safe intents but keeps flirt in shadow', () => {
+    const reassurance = activateActionDecision({
+      selectedAction: 'reassure',
+      selectedCandidateId: 'desire',
+      margin: 0.2,
+      candidates: [{ id: 'desire', intent: 'reassure', feasible: true, constraints: [] }],
+      rationaleCodes: [],
+    }, { mode: 'guarded', minMargin: 0.03 });
+    expect(reassurance).toMatchObject({ applied: true, shadow: false });
+
+    const flirt = activateActionDecision({
+      selectedAction: 'flirt',
+      selectedCandidateId: 'flirt',
+      margin: 0.4,
+      candidates: [{ id: 'flirt', intent: 'flirt', feasible: true, constraints: [] }],
+      rationaleCodes: [],
+    }, { mode: 'guarded', minMargin: 0.03 });
+    expect(flirt).toMatchObject({ applied: false, shadow: true, takeoverReason: 'intent_not_guarded' });
+  });
+
+  it('turns an applied safety decision into a terse boundary-first plan', () => {
+    const plan = applyActionDecisionToPlan(
+      { attitude: 'intimate', lengthHint: 'chatty', bubbleCount: 3, wantPhoto: true },
+      {
+        selectedAction: 'safety_stop', selectedCandidateId: 'safe', applied: true, shadow: false,
+        candidates: [{ id: 'safe', intent: 'safety_stop', sourceGoal: 'safety' }],
+      },
+    );
+    expect(plan).toMatchObject({
+      attitude: 'soft', lengthHint: 'terse', bubbleCount: 1, wantPhoto: false,
+      utilityAction: 'safety_stop',
+    });
   });
 });

@@ -24,6 +24,8 @@ export { retrieveTurn, emptyEvidencePack } from './retrieveStage.js';
 export { deliberateTurn, planRetrievalTurn } from './deliberate.js';
 export {
   decideActionUtility,
+  activateActionDecision,
+  applyActionDecisionToPlan,
   buildActionCandidates,
   scoreActionCandidate,
   replayActionDecision,

@@ -7,7 +7,11 @@ import {
   enrichStructuredPlan,
   applyStructuredToTurn,
 } from './structuredPlan.js';
-import { decideActionUtility } from './actionUtility.js';
+import {
+  activateActionDecision,
+  applyActionDecisionToPlan,
+  decideActionUtility,
+} from './actionUtility.js';
 
 /**
  * Deliberate 阶段：生成目标、候选约束和最终本轮计划。
@@ -56,6 +60,25 @@ export async function deliberateTurn(input = {}) {
       { client: planClient, signal },
     ).catch(() => structured);
   }
+  const rawActionDecision =
+    input.ablation?.utilityDecision === false
+      ? legacyActionDecision(goals)
+      : decideActionUtility({
+          goals,
+          userMessage,
+          sceneLocks,
+          recentActionIntents: input.recentActionIntents,
+          shadow: true,
+        });
+  const actionConfig = PARAMS.orchestrator?.actionUtility ?? {};
+  const actionDecision = input.ablation?.utilityDecision === false
+    ? rawActionDecision
+    : activateActionDecision(rawActionDecision, {
+        mode: input.options?.actionUtilityMode ?? actionConfig.mode,
+        minMargin: input.options?.actionUtilityMinMargin ?? actionConfig.minMargin,
+        allowedIntents: actionConfig.allowedIntents,
+      });
+  structured = applyActionDecisionToPlan(structured, actionDecision);
   turn = applyStructuredToTurn(turn, structured, behavior);
   if (turn._lengthHintOverride) {
     behavior = {
@@ -67,16 +90,6 @@ export async function deliberateTurn(input = {}) {
   if (turn && typeof turn === 'object') {
     turn.intimacyPhase = intimacyLive?.scene_phase ?? null;
   }
-  const actionDecision =
-    input.ablation?.utilityDecision === false
-      ? legacyActionDecision(goals)
-      : decideActionUtility({
-          goals,
-          userMessage,
-          sceneLocks,
-          recentActionIntents: input.recentActionIntents,
-          shadow: true,
-        });
   return {
     goals,
     candidates: actionDecision.candidates,

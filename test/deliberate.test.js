@@ -15,7 +15,7 @@ describe('Deliberate stage', () => {
     expect(decision.prospectiveToDismiss).toEqual(['p1']);
     expect(decision.turnPlan).toBeTruthy();
     expect(decision.structuredPlan).toBeTruthy();
-    expect(decision.actionDecision).toMatchObject({ shadow: true });
+    expect(decision.actionDecision.mode).toBe('guarded');
     expect(decision.candidates.length).toBeGreaterThan(0);
     expect(decision.rationaleCodes.some((code) => code.startsWith('action:'))).toBe(true);
   });
@@ -30,6 +30,12 @@ describe('Deliberate stage', () => {
     expect(decision.goals[0].kind).toBe('safety');
     expect(decision.constraints.stopIntimate).toBe(true);
     expect(decision.selectedAction).toBe('safety_stop');
+    expect(decision.actionDecision).toMatchObject({ applied: true, shadow: false });
+    expect(decision.structuredPlan).toMatchObject({
+      utilityAction: 'safety_stop',
+      lengthHint: 'terse',
+      bubbleCount: 1,
+    });
   });
 
   it('creates a retrieval query without invoking final deliberation', () => {
