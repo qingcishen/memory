@@ -78,6 +78,11 @@ export class MemoryAdapter {
     return { block, hits, knowledge };
   }
 
+  /** 当前有效的结构化信念；Retrieve 会与文本记忆并行读取并统一做证据预算。 */
+  currentBeliefs(query = {}) {
+    return this._mem.currentBeliefs(query);
+  }
+
   /** M-5: 只读 48h 内工作记忆，供新会话首轮桥接。 */
   recallWorkingMemory(opts = {}) {
     return this._mem.recallWorkingMemory(opts);

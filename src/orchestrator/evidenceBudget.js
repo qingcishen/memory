@@ -67,8 +67,13 @@ export function scoreEvidence(item = {}, { index = 0, now = Date.now() } = {}) {
   const relevance = clamp01(
     item._activation ?? item._score ?? item.similarity ?? item.relevance ?? 0,
   );
+  const isBelief = item.source_kind === 'belief';
   const necessity = item.fact_locked
     ? 1
+    : isBelief && ['identity', 'preference', 'commitment'].includes(item.belief_kind)
+      ? 0.9
+      : isBelief
+        ? 0.72
     : item.type === 'preference' || item.type === 'relationship'
       ? 0.65
       : 0.35;
@@ -91,7 +96,13 @@ export function scoreEvidence(item = {}, { index = 0, now = Date.now() } = {}) {
     index,
     text,
     dedupKey: normalizeText(text),
-    mandatory: Boolean(item.fact_locked) && contradictionRisk < 1,
+    mandatory:
+      contradictionRisk < 1 &&
+      (Boolean(item.fact_locked) ||
+        (isBelief &&
+          item.epistemic_status === 'asserted' &&
+          relevance >= 0.72 &&
+          confidence >= 0.72)),
     relevance,
     necessity,
     confidence,

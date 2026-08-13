@@ -42,4 +42,18 @@ describe('evidence budget selector', () => {
     });
     expect(current.utility).toBeGreaterThan(old.utility);
   });
+
+  it('treats a directly relevant asserted belief as mandatory evidence', () => {
+    const scored = scoreEvidence({
+      id: 'b1',
+      source_kind: 'belief',
+      content: '用户不喜欢香菜',
+      belief_kind: 'preference',
+      epistemic_status: 'asserted',
+      relevance: 1,
+      confidence: 0.95,
+    });
+    expect(scored.mandatory).toBe(true);
+    expect(scored.necessity).toBe(0.9);
+  });
 });

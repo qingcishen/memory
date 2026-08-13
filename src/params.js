@@ -39,6 +39,9 @@ export const DEFAULT_PARAMS = {
       maxChars: 2200,
       maxItems: 7,
     },
+    beliefs: {
+      candidateLimit: 40,
+    },
     llm: {
       maxCandidates: 20,
       maxTokens: 400,
